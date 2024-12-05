@@ -1096,7 +1096,7 @@ static void* hwc_window_service_thread(void* data) {
         goto shutdown;
     }
 
-    configureRpcThreadpool(1, true /*callerWillJoin*/);
+    //configureRpcThreadpool(1, true /*callerWillJoin*/);
 
     status = openfdeWindow->registerAsService();
     if (status != OK) {
