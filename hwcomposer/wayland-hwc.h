@@ -165,6 +165,9 @@ struct display {
 
     bool isMaximized;
     sp<IOpenfdeTask> task;
+    uint32_t serial;
+    int64_t mouse_icon_addr;
+    int additional_refresh_cursor_times;     //In order to get the final cursor shape
 };
 
 struct buffer {
