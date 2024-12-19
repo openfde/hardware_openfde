@@ -122,6 +122,9 @@ struct display {
     struct zwp_relative_pointer_v1 *relative_pointer;
     struct zwp_idle_inhibit_manager_v1 *idle_manager;
     struct wp_fractional_scale_manager_v1 *fractional_scale_manager;
+    struct zwp_pointer_gestures_v1 *pointer_gestures;
+    struct zwp_pointer_gesture_swipe_v1 *pointer_gestures_swipe;
+    struct zwp_pointer_gesture_pinch_v1 *pointer_gestures_pinch;
     int gtype;
     double scale;
 
@@ -132,6 +135,11 @@ struct display {
     double wheelAccumulatorY;
     bool wheelEvtIsDiscrete;
     bool reverseScroll;
+    bool isTouchDown;
+    bool isMouseLeftDown;
+    int axisY;
+    int axisX;
+    int64_t lastAxisEventNanoSeconds;
     int touch_id[MAX_TOUCHPOINTS];
     std::map<struct wl_surface *, struct layerFrame> layers;
     std::map<struct wl_surface *, struct window *> windows;
@@ -169,6 +177,9 @@ struct display {
     uint32_t serial;
     int64_t mouse_icon_addr;
     int additional_refresh_cursor_times;     //In order to get the final cursor shape
+    bool ctrl_key_pressed;
+    wl_fixed_t gesture_scale;
+    bool axis_simulation_two_finger_started;
 };
 
 struct buffer {
