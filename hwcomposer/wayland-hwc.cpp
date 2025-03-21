@@ -749,6 +749,7 @@ keyboard_handle_enter(void *data, struct wl_keyboard *,
                       struct wl_array *)
 {
     struct display *display = (struct display *)data;
+    ALOGD("keyboard_handle_enter");
 
     std::scoped_lock lock(display->windowsMutex);
     if (display->windows.find(surface) == display->windows.end())
@@ -773,6 +774,8 @@ keyboard_handle_leave(void *data, struct wl_keyboard *,
             send_key_event(display, i, WL_KEYBOARD_KEY_STATE_RELEASED);
         }
     }
+    ALOGD("keyboard_handle_leave");
+    display->ctrl_key_pressed = 0;
 }
 
 static void
