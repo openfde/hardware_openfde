@@ -954,8 +954,8 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
         // Use the second touch click to prevent inertial scrolling
         ADD_EVENT(EV_ABS, ABS_MT_SLOT, AXIS_TOUCH_SLOT_ID + 1);
         ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, AXIS_TOUCH_TRACKING_ID + 1);
-        ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, display->ptrPrvX + 1);
-        ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, display->ptrPrvY);
+        ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, -1);
+        ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, -1);
         ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
         ADD_EVENT(EV_SYN, SYN_REPORT, 0);
     }
