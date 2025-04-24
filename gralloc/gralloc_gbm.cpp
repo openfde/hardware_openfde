@@ -362,7 +362,6 @@ struct gbm_device *gbm_dev_create(void)
 	struct gbm_device *gbm;
 	char path[PROPERTY_VALUE_MAX];
 	int fd;
-	ALOGE("FUNC: %s, FILE: %s, LINE: %d,\n", __FUNCTION__, __FILE__, __LINE__);
 
 	property_get("gralloc.gbm.device", path, "/dev/dri/renderD128");
 	fd = open(path, O_RDWR | O_CLOEXEC);

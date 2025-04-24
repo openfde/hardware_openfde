@@ -1719,7 +1719,7 @@ release_pointer_gestures_device(struct display *display)
 
 static void
 seat_handle_capabilities(void *data, struct wl_seat *seat, uint32_t wl_caps)
-{ALOGE("FUNC: %s, FILE: %s, LINE: %d,\n", __FUNCTION__, __FILE__, __LINE__);
+{
     struct display *d = (struct display*)data;
     enum wl_seat_capability caps = (enum wl_seat_capability) wl_caps;
 
@@ -1730,7 +1730,6 @@ seat_handle_capabilities(void *data, struct wl_seat *seat, uint32_t wl_caps)
         d->ptrPrvY = 0;
         d->isTouchDown = false;
         d->reverseScroll = property_get_bool("persist.openfde.reverse_scrolling", false);
-        ALOGE("FUNC: %s, FILE: %s, LINE: %d,\n", __FUNCTION__, __FILE__, __LINE__);
         mkfifo(INPUT_PIPE_NAME[INPUT_POINTER], S_IRWXO | S_IRWXG | S_IRWXU);
         chown(INPUT_PIPE_NAME[INPUT_POINTER], 1000, 1000);
         wl_pointer_add_listener(d->pointer, &pointer_listener, d);
@@ -1746,13 +1745,11 @@ seat_handle_capabilities(void *data, struct wl_seat *seat, uint32_t wl_caps)
         remove(INPUT_PIPE_NAME[INPUT_POINTER]);
         wl_pointer_destroy(d->pointer);
         d->pointer = NULL;
-        ALOGE("FUNC: %s, FILE: %s, LINE: %d,\n", __FUNCTION__, __FILE__, __LINE__);
     }
 
     if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !d->keyboard) {
         d->keyboard = wl_seat_get_keyboard(seat);
         d->input_fd[INPUT_KEYBOARD] = -1;
-        ALOGE("FUNC: %s, FILE: %s, LINE: %d,\n", __FUNCTION__, __FILE__, __LINE__);
         mkfifo(INPUT_PIPE_NAME[INPUT_KEYBOARD], S_IRWXO | S_IRWXG | S_IRWXU);
         chown(INPUT_PIPE_NAME[INPUT_KEYBOARD], 1000, 1000);
         wl_keyboard_add_listener(d->keyboard, &keyboard_listener, d);
@@ -1760,7 +1757,6 @@ seat_handle_capabilities(void *data, struct wl_seat *seat, uint32_t wl_caps)
         remove(INPUT_PIPE_NAME[INPUT_KEYBOARD]);
         wl_keyboard_destroy(d->keyboard);
         d->keyboard = NULL;
-        ALOGE("FUNC: %s, FILE: %s, LINE: %d,\n", __FUNCTION__, __FILE__, __LINE__);
     }
 
     if ((caps & WL_SEAT_CAPABILITY_TOUCH) && !d->touch) {
@@ -1772,12 +1768,10 @@ seat_handle_capabilities(void *data, struct wl_seat *seat, uint32_t wl_caps)
             d->touch_id[i] = -1;
         wl_touch_set_user_data(d->touch, d);
         wl_touch_add_listener(d->touch, &touch_listener, d);
-        ALOGE("FUNC: %s, FILE: %s, LINE: %d,\n", __FUNCTION__, __FILE__, __LINE__);
     } else if (!(caps & WL_SEAT_CAPABILITY_TOUCH) && d->touch) {
         remove(INPUT_PIPE_NAME[INPUT_TOUCH]);
         wl_touch_destroy(d->touch);
         d->touch = NULL;
-        ALOGE("FUNC: %s, FILE: %s, LINE: %d,\n", __FUNCTION__, __FILE__, __LINE__);
     }
 }
 
