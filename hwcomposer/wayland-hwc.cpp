@@ -2368,7 +2368,9 @@ get_gralloc_type(const char *gralloc)
         return GRALLOC_CROS;
     } else if (strcmp(gralloc, "ft2004") == 0) {
         return GRALLOC_X100;
-    } else {
+    } else if (strcmp(gralloc, "LEOPARD") == 0) {
+        return GRALLOC_LEOPARD;
+    }else {
         return GRALLOC_ANDROID;
     }
 }
