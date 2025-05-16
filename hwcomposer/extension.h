@@ -38,7 +38,7 @@ using ::vendor::openfde::display::V1_1::IOpenfdeDisplay;
 
 class OpenfdeDisplay : public IOpenfdeDisplay {
   public:
-    OpenfdeDisplay(struct display *display);
+    OpenfdeDisplay(struct display *display, struct display *secondary_display);
 
     // Methods from ::vendor::openfde::display::V1_0::IOpenfdeDisplay follow.
     Return<Error> setLayerName(uint32_t layer, const hidl_string &name) override;
@@ -50,6 +50,7 @@ class OpenfdeDisplay : public IOpenfdeDisplay {
     Return<Error> setTargetLayerSize(uint32_t width, uint32_t height) override;
   private:
     struct display *mDisplay;
+    struct display *msecondary_Display;
 };
 
 }  // namespace implementation

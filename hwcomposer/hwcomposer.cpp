@@ -64,13 +64,18 @@ struct openfde_hwc_composer_device_1 {
     hwc_composer_device_1_t base; // constant after init
     const hwc_procs_t *procs;     // constant after init
     pthread_t wayland_thread;     // constant after init
+    pthread_t secondary_wayland_thread;     // constant after init
     pthread_t vsync_thread;       // constant after init
     pthread_t extension_thread;   // constant after init
     pthread_t window_service_thread; // constant after init
     pthread_t egl_worker_thread;  // constant after init
+    pthread_t egl_secondary_worker_thread;  // constant after init
     int32_t vsync_period_ns;      // constant after init
     struct display *display;      // constant after init
+    struct display *secondary_display;      // constant after init
+    bool secondary_hotpluged ;
     std::map<std::string, struct window *> windows;
+    std::map<std::string, struct window *> secondary_windows;
     struct window *calib_window;
 
     pthread_mutex_t vsync_lock;
@@ -83,23 +88,23 @@ struct openfde_hwc_composer_device_1 {
     bool multi_windows;
 };
 
-static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos);
+static struct buffer *get_wl_buffer(struct display *disp, hwc_layer_1_t *layer, size_t pos);
 static void setup_viewport_destination(wp_viewport *viewport, hwc_rect_t frame, struct display *display);
 
-static void erase_cursor_layer_buffer(openfde_hwc_composer_device_1* pdev, buffer_handle_t handle){
-    auto it = pdev->display->buffer_map.find(handle);
-    if (it != pdev->display->buffer_map.end()) {
+static void erase_cursor_layer_buffer(struct display* disp, buffer_handle_t handle){
+    auto it = disp->buffer_map.find(handle);
+    if (it != disp->buffer_map.end()) {
         destroy_buffer(it->second);
-        pdev->display->buffer_map.erase(it);
+        disp->buffer_map.erase(it);
     }
 }
 
-static bool update_cursor_surface(openfde_hwc_composer_device_1* pdev, hwc_layer_1_t* fb_layer, size_t layer) {
-    if (!pdev->display->cursor_surface) {
+static bool update_cursor_surface(struct display *disp, hwc_layer_1_t* fb_layer, size_t layer) {
+    if (!disp->cursor_surface) {
         return false;
     }
 
-    std::string layer_name = pdev->display->layer_names[layer];
+    std::string layer_name = disp->layer_names[layer];
 
     if (layer_name.substr(0, 6) != "Sprite" || fb_layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
         return false;
@@ -113,57 +118,61 @@ static bool update_cursor_surface(openfde_hwc_composer_device_1* pdev, hwc_layer
      * Its value is set by SpriteController and PointerController.
      */
     int64_t mouse_icon_addr = property_get_int64("fde.mouse_icon_addr", 0);
-    if (pdev->display->mouse_icon_addr != mouse_icon_addr) {
-        pdev->display->mouse_icon_addr = mouse_icon_addr;
-        pdev->display->additional_refresh_cursor_times = 0;
-        erase_cursor_layer_buffer(pdev, fb_layer->handle);
+    if (disp->mouse_icon_addr != mouse_icon_addr) {
+        disp->mouse_icon_addr = mouse_icon_addr;
+        disp->additional_refresh_cursor_times = 0;
+        erase_cursor_layer_buffer(disp, fb_layer->handle);
     }else{
-        if(pdev->display->additional_refresh_cursor_times > 3){      //Refresh the wayland cursor three additional times
+        if(disp->additional_refresh_cursor_times > 3){      //Refresh the wayland cursor three additional times
             return true;
         }else{
-            erase_cursor_layer_buffer(pdev, fb_layer->handle);
+            erase_cursor_layer_buffer(disp, fb_layer->handle);
         }
     }
 
-    struct buffer *buf = get_wl_buffer(pdev, fb_layer, layer);
+    struct buffer *buf = get_wl_buffer(disp, fb_layer, layer);
     if (!buf) {
         ALOGE("Failed to get wayland buffer");
         return true;
     }
 
-    wl_surface_attach(pdev->display->cursor_surface, buf->buffer, 0, 0);
-    if (wl_surface_get_version(pdev->display->cursor_surface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
-        wl_surface_damage_buffer(pdev->display->cursor_surface, 0, 0, buf->width, buf->height);
+    wl_surface_attach(disp->cursor_surface, buf->buffer, 0, 0);
+    if (wl_surface_get_version(disp->cursor_surface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
+        wl_surface_damage_buffer(disp->cursor_surface, 0, 0, buf->width, buf->height);
     else
-        wl_surface_damage(pdev->display->cursor_surface, 0, 0, buf->width, buf->height);
-    if (!pdev->display->viewporter && pdev->display->scale > 1) {
+        wl_surface_damage(disp->cursor_surface, 0, 0, buf->width, buf->height);
+    if (!disp->viewporter && disp->scale > 1) {
         // With no viewporter the scale is guaranteed to be integer
-        wl_surface_set_buffer_scale(pdev->display->cursor_surface, (int)pdev->display->scale);
-    } else if (pdev->display->viewporter && pdev->display->scale != 1) {
-        setup_viewport_destination(pdev->display->cursor_viewport, fb_layer->displayFrame, pdev->display);
+        wl_surface_set_buffer_scale(disp->cursor_surface, (int)disp->scale);
+    } else if (disp->viewporter && disp->scale != 1) {
+        setup_viewport_destination(disp->cursor_viewport, fb_layer->displayFrame, disp);
     }
 
-    wl_surface_commit(pdev->display->cursor_surface);
+    wl_surface_commit(disp->cursor_surface);
     int32_t icon_hotspot_x = property_get_int32("fde.mouse_icon_hotspot_x", 5);
     int32_t icon_hotspot_y = property_get_int32("fde.mouse_icon_hotspot_y", 5);
-    wl_pointer_set_cursor(pdev->display->pointer, pdev->display->serial,
-                                  pdev->display->cursor_surface, icon_hotspot_x, icon_hotspot_y);
-    pdev->display->additional_refresh_cursor_times++;
+    wl_pointer_set_cursor(disp->pointer, disp->serial,
+                                  disp->cursor_surface, icon_hotspot_x, icon_hotspot_y);
+    disp->additional_refresh_cursor_times++;
 
     return true;
 }
-static int hwc_prepare(hwc_composer_device_1_t* dev,
-                       size_t numDisplays, hwc_display_contents_1_t** displays) {
+
+static int prepare(hwc_composer_device_1_t* dev,
+                       size_t numDisplays, hwc_display_contents_1_t** displays, int target) {
     struct openfde_hwc_composer_device_1 *pdev = (struct openfde_hwc_composer_device_1 *)dev;
 
-    if (!numDisplays || !displays) return 0;
 
-    hwc_display_contents_1_t* contents = displays[HWC_DISPLAY_PRIMARY];
+    hwc_display_contents_1_t* contents;
+    struct display *disp;
 
-    if (!contents) return 0;
-
-    if ((contents->flags & HWC_GEOMETRY_CHANGED) && pdev->use_subsurface)
-        pdev->display->geo_changed = true;
+    if (target == HWC_DISPLAY_PRIMARY){
+	contents = displays[HWC_DISPLAY_PRIMARY];
+	disp = pdev->display;
+    }else {
+    	contents = displays[HWC_DISPLAY_EXTERNAL];
+	disp = pdev->secondary_display;
+    }
 
     std::pair<int, int> skipped(-1, -1);
     for (size_t i = 0; i < contents->numHwLayers; i++) {
@@ -195,6 +204,72 @@ static int hwc_prepare(hwc_composer_device_1_t* dev,
             (pdev->use_subsurface ? HWC_FRAMEBUFFER : HWC_OVERLAY))
             contents->hwLayers[i].compositionType =
                 (pdev->use_subsurface ? HWC_OVERLAY : HWC_FRAMEBUFFER);
+        foundCursorLayer |= update_cursor_surface(disp, &contents->hwLayers[i], i);
+    }
+    if(!foundCursorLayer && disp->mouse_icon_addr != -1){
+        wl_pointer_set_cursor(disp->pointer, disp->serial, NULL, 0, 0);
+        disp->mouse_icon_addr = -1;
+        ALOGI("wayland cursor hidden");
+    }
+
+    return 0;
+}
+
+static int hwc_prepare(hwc_composer_device_1_t* dev,
+                       size_t numDisplays, hwc_display_contents_1_t** displays) {
+    struct openfde_hwc_composer_device_1 *pdev = (struct openfde_hwc_composer_device_1 *)dev;
+
+    if (!numDisplays || !displays) return 0;
+
+    hwc_display_contents_1_t* contents = displays[HWC_DISPLAY_PRIMARY];
+    hwc_display_contents_1_t* external_contents = displays[HWC_DISPLAY_EXTERNAL];
+
+
+    if (!contents && !external_contents) return 0;
+
+    if ((contents->flags & HWC_GEOMETRY_CHANGED) && pdev->use_subsurface)
+        pdev->display->geo_changed = true;
+
+    if ((external_contents->flags & HWC_GEOMETRY_CHANGED) && pdev->use_subsurface)
+        pdev->secondary_display->geo_changed = true;
+
+    if (contents) {
+    	prepare(dev,numDisplays, displays,HWC_DISPLAY_PRIMARY);
+    }
+    if (external_contents){
+    	prepare(dev,numDisplays, displays,HWC_DISPLAY_EXTERNAL);
+    }
+    /*std::pair<int, int> skipped(-1, -1);
+    for (size_t i = 0; i < contents->numHwLayers; i++) {
+      if (!(contents->hwLayers[i].flags & HWC_SKIP_LAYER))
+        continue;
+
+      if (skipped.first == -1)
+        skipped.first = i;
+      skipped.second = i;
+    }
+
+    bool foundCursorLayer = false;
+    for (size_t i = 0; i < contents->numHwLayers; i++) {
+        if (contents->hwLayers[i].compositionType == HWC_FRAMEBUFFER_TARGET)
+            continue;
+        if (contents->hwLayers[i].flags & HWC_SKIP_LAYER)
+            continue;
+	    */
+
+        /* skipped layers have to be composited by SurfaceFlinger; so in order
+           have correct z-ordering, we must ask SurfaceFlinger to composite
+           everything between the first and the last skipped layer. Unfortunately,
+           this can't be done in multi windows mode, which relies on layers not
+           being composited, so we won't render skipped layers correctly in that mode */
+      /*  if (!pdev->multi_windows)
+            if (skipped.first >= 0 && i > skipped.first && i < skipped.second)
+                contents->hwLayers[i].compositionType = HWC_FRAMEBUFFER;
+
+        if (contents->hwLayers[i].compositionType ==
+            (pdev->use_subsurface ? HWC_FRAMEBUFFER : HWC_OVERLAY))
+            contents->hwLayers[i].compositionType =
+                (pdev->use_subsurface ? HWC_OVERLAY : HWC_FRAMEBUFFER);
         foundCursorLayer |= update_cursor_surface(pdev, &contents->hwLayers[i], i);
     }
     if(!foundCursorLayer && pdev->display->mouse_icon_addr != -1){
@@ -202,6 +277,7 @@ static int hwc_prepare(hwc_composer_device_1_t* dev,
         pdev->display->mouse_icon_addr = -1;
         ALOGI("wayland cursor hidden");
     }
+    */
 
     return 0;
 }
@@ -239,22 +315,22 @@ static void update_shm_buffer(struct display* display, struct buffer *buffer)
     }
 }
 
-static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos)
+static struct buffer *get_wl_buffer(struct display *disp, hwc_layer_1_t *layer, size_t pos)
 {
     uint32_t format;
     uint32_t pixel_stride;
     uint32_t width;
     uint32_t height;
     if (layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
-        format = pdev->display->target_layer_handle_ext.format;
-        pixel_stride = pdev->display->target_layer_handle_ext.stride;
-        width = pdev->display->target_layer_handle_ext.width;
-        height = pdev->display->target_layer_handle_ext.height;
+        format = disp->target_layer_handle_ext.format;
+        pixel_stride = disp->target_layer_handle_ext.stride;
+        width = disp->target_layer_handle_ext.width;
+        height = disp->target_layer_handle_ext.height;
     } else {
-        format = pdev->display->layer_handles_ext[pos].format;
-        pixel_stride = pdev->display->layer_handles_ext[pos].stride;
-        width = pdev->display->layer_handles_ext[pos].width;
-        height = pdev->display->layer_handles_ext[pos].height;
+        format = disp->layer_handles_ext[pos].format;
+        pixel_stride = disp->layer_handles_ext[pos].stride;
+        width = disp->layer_handles_ext[pos].width;
+        height = disp->layer_handles_ext[pos].height;
     }
 
     if (!width)
@@ -262,14 +338,14 @@ static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, 
     if (!height)
         height = layer->displayFrame.bottom - layer->displayFrame.top;
 
-    auto it = pdev->display->buffer_map.find(layer->handle);
-    if (it != pdev->display->buffer_map.end()) {
+    auto it = disp->buffer_map.find(layer->handle);
+    if (it != disp->buffer_map.end()) {
         if (it->second->isShm) {
             if (width != it->second->width || height != it->second->height) {
                 destroy_buffer(it->second);
-                pdev->display->buffer_map.erase(it);
+                disp->buffer_map.erase(it);
             } else {
-                update_shm_buffer(pdev->display, it->second);
+                update_shm_buffer(disp, it->second);
                 return it->second;
             }
         } else
@@ -280,43 +356,43 @@ static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, 
     int ret = 0;
 
     buf = new struct buffer();
-    if (pdev->display->gtype == GRALLOC_GBM) {
+    if (disp->gtype == GRALLOC_GBM) {
         struct gralloc_handle_t *drm_handle = (struct gralloc_handle_t *)layer->handle;
-        if (pdev->display->dmabuf) {
-            ret = create_dmabuf_wl_buffer(pdev->display, buf, drm_handle->width, drm_handle->height, drm_handle->format, -1 /* compute drm format */, drm_handle->prime_fd, pixel_stride, drm_handle->stride, 0 /* offset */, drm_handle->modifier, layer->handle);
+        if (disp->dmabuf) {
+            ret = create_dmabuf_wl_buffer(disp, buf, drm_handle->width, drm_handle->height, drm_handle->format, -1 /* compute drm format */, drm_handle->prime_fd, pixel_stride, drm_handle->stride, 0 /* offset */, drm_handle->modifier, layer->handle);
         } else {
-            ret = create_shm_wl_buffer(pdev->display, buf, drm_handle->width, drm_handle->height, drm_handle->format, pixel_stride, layer->handle);
-            update_shm_buffer(pdev->display, buf);
+            ret = create_shm_wl_buffer(disp, buf, drm_handle->width, drm_handle->height, drm_handle->format, pixel_stride, layer->handle);
+            update_shm_buffer(disp, buf);
         }
-    } else if (pdev->display->gtype == GRALLOC_CROS) {
+    } else if (disp->gtype == GRALLOC_CROS) {
         const struct cros_gralloc_handle *cros_handle = (const struct cros_gralloc_handle *)layer->handle;
-        if (pdev->display->dmabuf) {
-            ret = create_dmabuf_wl_buffer(pdev->display, buf, cros_handle->width, cros_handle->height, cros_handle->droid_format, cros_handle->format, cros_handle->fds[0], pixel_stride, cros_handle->strides[0], cros_handle->offsets[0], cros_handle->format_modifier, layer->handle);
+        if (disp->dmabuf) {
+            ret = create_dmabuf_wl_buffer(disp, buf, cros_handle->width, cros_handle->height, cros_handle->droid_format, cros_handle->format, cros_handle->fds[0], pixel_stride, cros_handle->strides[0], cros_handle->offsets[0], cros_handle->format_modifier, layer->handle);
         } else {
-            ret = create_shm_wl_buffer(pdev->display, buf, cros_handle->width, cros_handle->height, cros_handle->droid_format, pixel_stride, layer->handle);
-            update_shm_buffer(pdev->display, buf);
+            ret = create_shm_wl_buffer(disp, buf, cros_handle->width, cros_handle->height, cros_handle->droid_format, pixel_stride, layer->handle);
+            update_shm_buffer(disp, buf);
         }
-    } else if (pdev->display->gtype == GRALLOC_X100) {
+    } else if (disp->gtype == GRALLOC_X100) {
         const X100_native_handle_t *cros_handle = (const X100_native_handle_t *)layer->handle;
-        if (pdev->display->dmabuf) {
+        if (disp->dmabuf) {
             //stride = pixel_stride * 4 is based on aligned memory by page(32bit)
-            ret = create_dmabuf_wl_buffer(pdev->display, buf, cros_handle->iWidth, cros_handle->iHeight, cros_handle->iFormat, -1, cros_handle->fd[0], pixel_stride, pixel_stride *4, 0,DRM_FORMAT_MOD_INVALID, layer->handle);
+            ret = create_dmabuf_wl_buffer(disp, buf, cros_handle->iWidth, cros_handle->iHeight, cros_handle->iFormat, -1, cros_handle->fd[0], pixel_stride, pixel_stride *4, 0,DRM_FORMAT_MOD_INVALID, layer->handle);
             if (ret != 0 ){
                 ALOGE("x100 create dmabuf wl buffer failed");
             }
         } else {
-            ret = create_shm_wl_buffer(pdev->display, buf, cros_handle->iWidth, cros_handle->iHeight, cros_handle->iFormat, pixel_stride, layer->handle);
+            ret = create_shm_wl_buffer(disp, buf, cros_handle->iWidth, cros_handle->iHeight, cros_handle->iFormat, pixel_stride, layer->handle);
             if (ret != 0 ){
                 ALOGE("x100 create shm wl buffer failed");
             }
-            update_shm_buffer(pdev->display, buf);
+            update_shm_buffer(disp, buf);
         }
     } else {
-        if (pdev->display->gtype == GRALLOC_ANDROID) {
-            ret = create_android_wl_buffer(pdev->display, buf, width, height, format, pixel_stride, layer->handle);
+        if (disp->gtype == GRALLOC_ANDROID) {
+            ret = create_android_wl_buffer(disp, buf, width, height, format, pixel_stride, layer->handle);
         } else {
-            ret = create_shm_wl_buffer(pdev->display, buf, width, height, format, pixel_stride, layer->handle);
-            update_shm_buffer(pdev->display, buf);
+            ret = create_shm_wl_buffer(disp, buf, width, height, format, pixel_stride, layer->handle);
+            update_shm_buffer(disp, buf);
         }
     }
 
@@ -324,9 +400,9 @@ static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, 
         ALOGE("failed to create a wayland buffer");
         return NULL;
     }
-    pdev->display->buffer_map[layer->handle] = buf;
+    disp->buffer_map[layer->handle] = buf;
 
-    return pdev->display->buffer_map[layer->handle];
+    return disp->buffer_map[layer->handle];
 }
 
 static void setup_viewport_destination(wp_viewport *viewport, hwc_rect_t frame, struct display *display)
@@ -336,16 +412,16 @@ static void setup_viewport_destination(wp_viewport *viewport, hwc_rect_t frame, 
             fmax(1, ceil((frame.bottom - frame.top) / display->scale)));
 }
 
-static struct wl_surface *get_surface(struct openfde_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, struct window *window, bool multi)
+static struct wl_surface *get_surface(struct display *disp, hwc_layer_1_t *layer, struct window *window, bool multi)
 {
-    pdev->display->windows[window->surface] = window;
+    disp->windows[window->surface] = window;
     if (!multi) {
-        pdev->display->layers[window->surface] = {
+        disp->layers[window->surface] = {
             .x = layer->displayFrame.left,
             .y = layer->displayFrame.top };
-        if (!multi && pdev->display->scale != 1 && pdev->display->viewporter && !window->viewport) {
-            window->viewport = wp_viewporter_get_viewport(pdev->display->viewporter, window->surface);
-            setup_viewport_destination(window->viewport, layer->displayFrame, pdev->display);
+        if (!multi && disp->scale != 1 && disp->viewporter && !window->viewport) {
+            window->viewport = wp_viewporter_get_viewport(disp->viewporter, window->surface);
+            setup_viewport_destination(window->viewport, layer->displayFrame, disp);
         }
         return window->surface;
     }
@@ -355,12 +431,12 @@ static struct wl_surface *get_surface(struct openfde_hwc_composer_device_1 *pdev
     struct wp_viewport *viewport = NULL;
 
     if (window->surfaces.find(window->lastLayer) == window->surfaces.end()) {
-        surface = wl_compositor_create_surface(pdev->display->compositor);
-        subsurface = wl_subcompositor_get_subsurface(pdev->display->subcompositor,
+        surface = wl_compositor_create_surface(disp->compositor);
+        subsurface = wl_subcompositor_get_subsurface(disp->subcompositor,
                                                      surface,
                                                      window->surface);
-        if (pdev->display->viewporter)
-            viewport = wp_viewporter_get_viewport(pdev->display->viewporter, surface);
+        if (disp->viewporter)
+            viewport = wp_viewporter_get_viewport(disp->viewporter, surface);
         window->surfaces[window->lastLayer] = surface;
         window->subsurfaces[window->lastLayer] = subsurface;
         window->viewports[window->lastLayer] = viewport;
@@ -375,23 +451,23 @@ static struct wl_surface *get_surface(struct openfde_hwc_composer_device_1 *pdev
         sourceCrop.bottom = layer->sourceCropi.right;
     }
 
-    if (pdev->display->viewporter) {
+    if (disp->viewporter) {
         wp_viewport_set_source(window->viewports[window->lastLayer],
-                               wl_fixed_from_double(fmax(0, pdev->display->viewporter ? sourceCrop.left : sourceCrop.left / pdev->display->scale)),
-                               wl_fixed_from_double(fmax(0, pdev->display->viewporter ? sourceCrop.top : sourceCrop.top / pdev->display->scale)),
-                               wl_fixed_from_double(fmax(1, pdev->display->viewporter ? (sourceCrop.right - sourceCrop.left) :
-                                                                                        (sourceCrop.right - sourceCrop.left) / pdev->display->scale)),
-                               wl_fixed_from_double(fmax(1, pdev->display->viewporter ? (sourceCrop.bottom - sourceCrop.top) :
-                                                                                        (sourceCrop.bottom - sourceCrop.top) / pdev->display->scale)));
+                               wl_fixed_from_double(fmax(0, disp->viewporter ? sourceCrop.left : sourceCrop.left / disp->scale)),
+                               wl_fixed_from_double(fmax(0, disp->viewporter ? sourceCrop.top : sourceCrop.top / disp->scale)),
+                               wl_fixed_from_double(fmax(1, disp->viewporter ? (sourceCrop.right - sourceCrop.left) :
+                                                                                        (sourceCrop.right - sourceCrop.left) / disp->scale)),
+                               wl_fixed_from_double(fmax(1, disp->viewporter ? (sourceCrop.bottom - sourceCrop.top) :
+                                                                                        (sourceCrop.bottom - sourceCrop.top) / disp->scale)));
 
-        setup_viewport_destination(window->viewports[window->lastLayer], layer->displayFrame, pdev->display);
+        setup_viewport_destination(window->viewports[window->lastLayer], layer->displayFrame, disp);
     }
 
     wl_subsurface_set_position(window->subsurfaces[window->lastLayer],
-                               floor(layer->displayFrame.left / pdev->display->scale),
-                               floor(layer->displayFrame.top / pdev->display->scale));
+                               floor(layer->displayFrame.left / disp->scale),
+                               floor(layer->displayFrame.top / disp->scale));
 
-    pdev->display->layers[window->surfaces[window->lastLayer]] = {
+    disp->layers[window->surfaces[window->lastLayer]] = {
         .x = layer->displayFrame.left,
         .y = layer->displayFrame.top };
     return window->surfaces[window->lastLayer];
@@ -416,6 +492,7 @@ static void* hwc_vsync_thread(void* data) {
               __FILE__, __LINE__, strerror(errno));
     }
     bool vsync_enabled = false;
+    bool hotpluged = false;
 
     struct timespec wait_time;
     wait_time.tv_sec = 0;
@@ -438,6 +515,7 @@ static void* hwc_vsync_thread(void* data) {
 
         pthread_mutex_lock(&pdev->vsync_lock);
         vsync_enabled = pdev->vsync_callback_enabled;
+	hotpluged = pdev->secondary_hotpluged;
         pthread_mutex_unlock(&pdev->vsync_lock);
 
         if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -453,7 +531,14 @@ static void* hwc_vsync_thread(void* data) {
             ATRACE_END();
             continue;
         }
-
+	    if (  !pdev->procs || !pdev->procs->hotplug ){
+		ALOGW("hotplug is null");
+	    } else {
+		if (!hotpluged){
+			pdev->procs->hotplug(pdev->procs,1,1);
+			pdev->secondary_hotpluged = true;
+		}
+	    }
         int64_t timestamp = (uint64_t)rt.tv_sec * 1e9 + rt.tv_nsec;
         pdev->procs->vsync(pdev->procs, 0, timestamp);
         ATRACE_END();
@@ -499,26 +584,61 @@ static const struct wp_presentation_feedback_listener feedback_listener = {
     feedback_discarded
 };
 
+static int set(struct hwc_composer_device_1* dev,size_t numDisplays, hwc_display_contents_1_t** displays, int target);
+
 static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                    hwc_display_contents_1_t** displays) {
     char property[PROPERTY_VALUE_MAX];
     struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
-
     if (!numDisplays || !displays) {
         return 0;
     }
-
+    int ret = 0 ;
     hwc_display_contents_1_t* contents = displays[HWC_DISPLAY_PRIMARY];
+    hwc_display_contents_1_t* external_contents = displays[HWC_DISPLAY_EXTERNAL];
+    if (contents){
+	    ALOGE("gy set primary display");
+	    ret = set(dev,numDisplays,displays,HWC_DISPLAY_PRIMARY);
+    }
+    if (external_contents){
+	    ALOGE("gy set external display");
+	    ret = set(dev,numDisplays,displays,HWC_DISPLAY_EXTERNAL);
+    }
+    return ret;
+
+}
+
+static int set(struct hwc_composer_device_1* dev,size_t numDisplays, hwc_display_contents_1_t** displays, int target) {
+    char property[PROPERTY_VALUE_MAX];
+    struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
+
+    /*if (!numDisplays || !displays) {
+        return 0;
+    }
+    */
+
+    struct display * disp = pdev->display;
+    hwc_display_contents_1_t* contents;
+    std::map<std::string, struct window *> windows = pdev->windows;
+
+    if (target == HWC_DISPLAY_PRIMARY){
+	contents = displays[HWC_DISPLAY_PRIMARY];
+    }else if (target == HWC_DISPLAY_EXTERNAL){
+    	disp = pdev->secondary_display;
+	contents = displays[HWC_DISPLAY_EXTERNAL];
+	windows = pdev->secondary_windows;
+    }
+
     size_t fb_target = -1;
     int err = 0;
 
-    if (pdev->display->geo_changed) {
-        for (auto it = pdev->display->buffer_map.begin(); it != pdev->display->buffer_map.end(); it++) {
+    if (disp->geo_changed) {
+        for (auto it = disp->buffer_map.begin(); it != disp->buffer_map.end(); it++) {
             if (it->second) {
                 destroy_buffer(it->second);
             }
         }
-        pdev->display->buffer_map.clear();
+        disp->buffer_map.clear();
     }
 
     std::pair<int, int> skipped(-1, -1);
@@ -548,7 +668,13 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
      * "Openfde": Shows android screen in a single window
      * "AppID": Shows apps in related windows as explained above
      */
-    property_get("openfde.active_apps", property, "none");
+
+    if (target == HWC_DISPLAY_PRIMARY){
+    	property_get("openfde.active_apps", property, "none");
+    }else{
+    	property_get("openfde1.active_apps", property, "none");
+	ALOGE("num layers external %d", contents->numHwLayers);
+    }
     std::string active_apps = std::string(property);
     property_get("openfde.blacklist_apps", property, "com.android.launcher3");
     std::string blacklist_apps = std::string(property);
@@ -557,7 +683,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
 
     if (active_apps != "Openfde" && !property_get_bool("openfde.background_start", true)) {
         for (size_t l = 0; l < contents->numHwLayers; l++) {
-            std::string layer_name = pdev->display->layer_names[l];
+            std::string layer_name = disp->layer_names[l];
             if (layer_name.rfind("BootAnimation#", 0) == 0) {
                 // force single window mode during boot animation
                 active_apps = "Openfde";
@@ -566,40 +692,47 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         }
     }
 
-    std::scoped_lock lock(pdev->display->windowsMutex);
+    std::scoped_lock lock(disp->windowsMutex);
     if (active_apps == "none") {
         // Clear all open windows
-        for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
+	
+        for (auto it = windows.begin(); it != windows.end(); it++) {
             if (it->second)
                 destroy_window(it->second);
         }
-        pdev->windows.clear();
+        windows.clear();
         for (size_t layer = 0; layer < contents->numHwLayers; layer++) {
             hwc_layer_1_t* fb_layer = &contents->hwLayers[layer];
             if (fb_layer->acquireFenceFd != -1)
                 close(fb_layer->acquireFenceFd);
         }
 
-        property_set("openfde.open_windows", "0");
+	property_set("openfde.open_windows", "0");
         goto sync;
     } else if (active_apps == "Openfde") {
         // Clear all open windows if there's any and just keep "Openfde"
-        if (pdev->windows.find(active_apps) == pdev->windows.end() || !pdev->windows[active_apps]->isActive) {
-            for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
+        if (windows.find(active_apps) == windows.end() || !windows[active_apps]->isActive) {
+            for (auto it = windows.begin(); it != windows.end(); it++) {
                 if (it->second) {
                     destroy_window(it->second);
                 }
             }
-            pdev->windows.clear();
+            windows.clear();
         } else {
-            pdev->windows[active_apps]->lastLayer = 0;
-            pdev->windows[active_apps]->last_layer_buffer = nullptr;
+		if (target == HWC_DISPLAY_PRIMARY) {
+		    pdev->windows[active_apps]->lastLayer = 0;
+		    pdev->windows[active_apps]->last_layer_buffer = nullptr;
+		}else{
+		    pdev->secondary_windows[active_apps]->lastLayer = 0;
+		    pdev->secondary_windows[active_apps]->last_layer_buffer = nullptr;
+		}
         }
     } else if (!pdev->multi_windows) {
         // Single window mode, detecting if any unblacklisted app is on screen
         bool showWindow = false;
+	ALOGE("num layers in single %d", contents->numHwLayers);
         for (size_t l = 0; l < contents->numHwLayers; l++) {
-            std::string layer_name = pdev->display->layer_names[l];
+            std::string layer_name = disp->layer_names[l];
             if (layer_name.substr(0, 4) == "TID:") {
                 std::string layer_tid = layer_name.substr(4, layer_name.find('#') - 4);
                 std::string layer_aid = layer_name.substr(layer_name.find('#') + 1, layer_name.find('/') - layer_name.find('#') - 1);
@@ -616,37 +749,42 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                             single_layer_tid = layer_tid;
                             single_layer_aid = layer_aid;
                         }
-                        if (pdev->windows.find(single_layer_tid) != pdev->windows.end()) {
-                            pdev->windows[single_layer_tid]->lastLayer = 0;
-                            pdev->windows[single_layer_tid]->last_layer_buffer = nullptr;
-                        }
+                        if (windows.find(single_layer_tid) != windows.end()) {
+				if (target == HWC_DISPLAY_PRIMARY) {
+				    pdev->windows[single_layer_tid]->lastLayer = 0;
+				    pdev->windows[single_layer_tid]->last_layer_buffer = nullptr;
+				}else {
+				    pdev->secondary_windows[single_layer_tid]->lastLayer = 0;
+				    pdev->secondary_windows[single_layer_tid]->last_layer_buffer = nullptr;
+				}
+			}
                     }
                 }
             }
-        }
+        }//end for
         // Nothing to show on screen, so clear all open windows
         if (!showWindow) {
-            for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
+            for (auto it = windows.begin(); it != windows.end(); it++) {
                 if (it->second)
                     destroy_window(it->second);
             }
-            pdev->windows.clear();
+            windows.clear();
             for (size_t layer = 0; layer < contents->numHwLayers; layer++) {
                 hwc_layer_1_t* fb_layer = &contents->hwLayers[layer];
                 if (fb_layer->acquireFenceFd != -1)
                     close(fb_layer->acquireFenceFd);
             }
 
-            property_set("openfde.open_windows", "0");
+	    property_set("openfde.open_windows", "0");
             goto sync;
         }
         bool shouldCloseLeftover = true;
-        for (auto it = pdev->windows.cbegin(); it != pdev->windows.cend();) {
+        for (auto it = windows.cbegin(); it != windows.cend();) {
             if (it->second) {
                 // This window is closed, but android is still showing leftover layers, we detect it here
                 if (!it->second->isActive || it->first == "Openfde") {
                     for (size_t l = 0; l < contents->numHwLayers; l++) {
-                        std::string layer_name = pdev->display->layer_names[l];
+                        std::string layer_name = disp->layer_names[l];
                         if (layer_name.substr(0, 4) == "TID:") {
                             std::string layer_tid = layer_name.substr(4, layer_name.find('#') - 4);
                             if (layer_tid == it->first) {
@@ -657,10 +795,10 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                     }
                     if (shouldCloseLeftover) {
                         destroy_window(it->second);
-                        pdev->windows.erase(it++);
+                        windows.erase(it++);
                         shouldCloseLeftover = true;
-                        std::string windows_size_str = std::to_string(pdev->windows.size());
-                        property_set("openfde.open_windows", windows_size_str.c_str());
+                        std::string windows_size_str = std::to_string(windows.size());
+			property_set("openfde.open_windows", windows_size_str.c_str());
                     } else
                         ++it;
                 } else
@@ -670,11 +808,10 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         }
     } else {
         // Multi window mode
-        // Checking current open windows to detect and kill obsolete ones
-        for (auto it = pdev->windows.cbegin(); it != pdev->windows.cend();) {
+        /*for (auto it = pdev->windows.cbegin(); it != pdev->windows.cend();) {
             bool foundApp = false;
             for (size_t l = 0; l < contents->numHwLayers; l++) {
-                std::string layer_name = pdev->display->layer_names[l];
+                std::string layer_name = disp->layer_names[l];
                 if (layer_name.substr(0, 4) == "TID:") {
                     std::string layer_tid = layer_name.substr(4, layer_name.find('#') - 4);
                     if (layer_tid == it->first) {
@@ -706,8 +843,11 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                 ++it;
             }
         }
+	*/
+        // Checking current open windows to detect and kill obsolete ones
     }
 
+    //find fb_target by checking compositionType equal HWC_FRAMEBUFFER_TARGET
     for (size_t l = 0; l < contents->numHwLayers; l++) {
         hwc_layer_1_t* fb_layer = &contents->hwLayers[l];
         if (fb_layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
@@ -755,24 +895,34 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         }
 
         struct window *window = NULL;
-        std::string layer_name = pdev->display->layer_names[layer];
+        std::string layer_name = disp->layer_names[layer];
 
         if (active_apps == "Openfde") {
             // Show everything in a single window
-            if (pdev->windows.find(active_apps) == pdev->windows.end()) {
-                pdev->windows[active_apps] = create_window(pdev->display, pdev->use_subsurface, active_apps, "0", {0, 0, 0, 255});
-                std::string windows_size_str = std::to_string(pdev->windows.size());
-                property_set("openfde.open_windows", windows_size_str.c_str());
+            if (windows.find(active_apps) == windows.end()) {
+		    if (target == HWC_DISPLAY_PRIMARY){
+                	pdev->windows[active_apps] = create_window(disp, pdev->use_subsurface, active_apps, "0", {0, 0, 0, 255});
+                	std::string windows_size_str = std::to_string(pdev->windows.size());
+                	property_set("openfde.open_windows", windows_size_str.c_str());
+		    }else {
+                	pdev->secondary_windows[active_apps] = create_window(disp, pdev->use_subsurface, active_apps, "0", {0, 0, 0, 255});
+                	std::string windows_size_str = std::to_string(pdev->secondary_windows.size());
+		    }
             }
-            window = pdev->windows[active_apps];
+            window = windows[active_apps];
         } else if (!pdev->multi_windows) {
             if (single_layer_tid.length()) {
                 if (pdev->windows.find(single_layer_tid) == pdev->windows.end()) {
-                    pdev->windows[single_layer_tid] = create_window(pdev->display, pdev->use_subsurface, single_layer_aid, single_layer_tid, {0, 0, 0, 255});
-                    std::string windows_size_str = std::to_string(pdev->windows.size());
-                    property_set("openfde.open_windows", windows_size_str.c_str());
+		    if (target == HWC_DISPLAY_PRIMARY){
+			    pdev->windows[single_layer_tid] = create_window(disp, pdev->use_subsurface, single_layer_aid, single_layer_tid, {0, 0, 0, 255});
+			    std::string windows_size_str = std::to_string(pdev->windows.size());
+			    property_set("openfde.open_windows", windows_size_str.c_str());
+		    }else{
+			    pdev->secondary_windows[single_layer_tid] = create_window(disp, pdev->use_subsurface, single_layer_aid, single_layer_tid, {0, 0, 0, 255});
+			    std::string windows_size_str = std::to_string(pdev->secondary_windows.size());
+		    }
                 }
-                window = pdev->windows[single_layer_tid];
+                window = windows[single_layer_tid];
             }
         } else {
             // Create windows based on Task ID in layer name
@@ -792,13 +942,18 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                 }
 
                 if (showWindow) {
-                    if (pdev->windows.find(layer_tid) == pdev->windows.end()) {
-                        pdev->windows[layer_tid] = create_window(pdev->display, pdev->use_subsurface, layer_aid, layer_tid, {0, 0, 0, 0});
-                        std::string windows_size_str = std::to_string(pdev->windows.size());
-                        property_set("openfde.open_windows", windows_size_str.c_str());
+                    if (windows.find(layer_tid) == windows.end()) {
+			    if (target == HWC_DISPLAY_PRIMARY){
+				    pdev->windows[layer_tid] = create_window(pdev->display, pdev->use_subsurface, layer_aid, layer_tid, {0, 0, 0, 0});
+				    std::string windows_size_str = std::to_string(pdev->windows.size());
+				    property_set("openfde.open_windows", windows_size_str.c_str());
+			    }else{
+				    pdev->secondary_windows[layer_tid] = create_window(pdev->display, pdev->use_subsurface, layer_aid, layer_tid, {0, 0, 0, 0});
+				    std::string windows_size_str = std::to_string(pdev->secondary_windows.size());
+			    }
                     }
-                    if (pdev->windows.find(layer_tid) != pdev->windows.end())
-                        window = pdev->windows[layer_tid];
+                    if (windows.find(layer_tid) != windows.end())
+                        window = windows[layer_tid];
                 }
             }
         }
@@ -808,9 +963,9 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             std::string LayerRawName;
             std::istringstream issLayer(layer_name);
             std::getline(issLayer, LayerRawName, '#');
-            if (LayerRawName == "Sprite" && pdev->display->pointer_surface) {
-                if (pdev->display->cursor_surface) {
-                    struct buffer *buf = get_wl_buffer(pdev, fb_layer, layer);
+            if (LayerRawName == "Sprite" && disp->pointer_surface) {
+                if (disp->cursor_surface) {
+                    struct buffer *buf = get_wl_buffer(disp, fb_layer, layer);
                     if (!buf) {
                         ALOGE("Failed to get wayland buffer");
                         if (fb_layer->acquireFenceFd != -1) {
@@ -819,33 +974,33 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                         continue;
                     }
 
-                    wl_surface_attach(pdev->display->cursor_surface, buf->buffer, 0, 0);
-                    if (wl_surface_get_version(pdev->display->cursor_surface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
-                        wl_surface_damage_buffer(pdev->display->cursor_surface, 0, 0, buf->width, buf->height);
+                    wl_surface_attach(disp->cursor_surface, buf->buffer, 0, 0);
+                    if (wl_surface_get_version(disp->cursor_surface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
+                        wl_surface_damage_buffer(disp->cursor_surface, 0, 0, buf->width, buf->height);
                     else
-                        wl_surface_damage(pdev->display->cursor_surface, 0, 0, buf->width, buf->height);
-                    if (!pdev->display->viewporter && pdev->display->scale > 1) {
+                        wl_surface_damage(disp->cursor_surface, 0, 0, buf->width, buf->height);
+                    if (!disp->viewporter && disp->scale > 1) {
                         // With no viewporter the scale is guaranteed to be integer
-                        wl_surface_set_buffer_scale(pdev->display->cursor_surface, (int)pdev->display->scale);
-                    } else if (pdev->display->viewporter && pdev->display->scale != 1) {
-                        setup_viewport_destination(pdev->display->cursor_viewport, fb_layer->displayFrame, pdev->display);
+                        wl_surface_set_buffer_scale(disp->cursor_surface, (int)disp->scale);
+                    } else if (disp->viewporter && disp->scale != 1) {
+                        setup_viewport_destination(disp->cursor_viewport, fb_layer->displayFrame, disp);
                     }
 
-                    wl_surface_commit(pdev->display->cursor_surface);
+                    wl_surface_commit(disp->cursor_surface);
 
                     if (fb_layer->acquireFenceFd != -1) {
                         close(fb_layer->acquireFenceFd);
                     }
                     continue;
                 } else {
-                    for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
+                    for (auto it = windows.begin(); it != windows.end(); it++) {
                         if (it->second) {
-                            if (it->second->surface == pdev->display->pointer_surface) {
+                            if (it->second->surface == disp->pointer_surface) {
                                 window = it->second;
                                 break;
                             }
                             for (auto itt = it->second->surfaces.begin(); itt != it->second->surfaces.end(); itt++) {
-                                if (itt->second == pdev->display->pointer_surface) {
+                                if (itt->second == disp->pointer_surface) {
                                     window = it->second;
                                     break;
                                 }
@@ -855,13 +1010,18 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                 }
             }
             if (LayerRawName == "InputMethod") {
-                if (pdev->windows.find(LayerRawName) == pdev->windows.end()) {
-                    pdev->windows[LayerRawName] = create_window(pdev->display, pdev->use_subsurface, LayerRawName, "none", {0, 0, 0, 0});
-                    std::string windows_size_str = std::to_string(pdev->windows.size());
-                    property_set("openfde.open_windows", windows_size_str.c_str());
+                if (windows.find(LayerRawName) == windows.end()) {
+		    if (target == HWC_DISPLAY_PRIMARY){
+			    pdev->windows[LayerRawName] = create_window(disp, pdev->use_subsurface, LayerRawName, "none", {0, 0, 0, 0});
+			    std::string windows_size_str = std::to_string(pdev->windows.size());
+			    property_set("openfde.open_windows", windows_size_str.c_str());
+		    }else{
+			    pdev->secondary_windows[LayerRawName] = create_window(disp, pdev->use_subsurface, LayerRawName, "none", {0, 0, 0, 0});
+			    std::string windows_size_str = std::to_string(pdev->secondary_windows.size());
+		    }
                 }
-                if (pdev->windows.find(LayerRawName) != pdev->windows.end())
-                    window = pdev->windows[LayerRawName];
+                if (windows.find(LayerRawName) != windows.end())
+                    window = windows[LayerRawName];
             }
         }
 
@@ -872,7 +1032,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             continue;
         }
 
-        struct buffer *buf = get_wl_buffer(pdev, fb_layer, layer);
+        struct buffer *buf = get_wl_buffer(disp, fb_layer, layer);
         if (!buf) {
             ALOGE("Failed to get wayland buffer");
             if (fb_layer->acquireFenceFd != -1) {
@@ -884,7 +1044,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         // TODO: Implement per-layer explicit synchronization
         fb_layer->releaseFenceFd = -1;
 
-        struct wl_surface *surface = get_surface(pdev, fb_layer, window, pdev->use_subsurface);
+        struct wl_surface *surface = get_surface(disp, fb_layer, window, pdev->use_subsurface);
         if (!surface) {
             ALOGE("Failed to get surface");
             continue;
@@ -897,9 +1057,9 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             wl_surface_damage_buffer(surface, 0, 0, buf->width, buf->height);
         else
             wl_surface_damage(surface, 0, 0, buf->width, buf->height);
-        if (!pdev->display->viewporter && pdev->display->scale > 1) {
+        if (!disp->viewporter && disp->scale > 1) {
             // With no viewporter the scale is guaranteed to be integer
-            wl_surface_set_buffer_scale(surface, (int)pdev->display->scale);
+            wl_surface_set_buffer_scale(surface, (int)disp->scale);
         }
         switch (fb_layer->transform) {
             case HWC_TRANSFORM_FLIP_H:
@@ -952,8 +1112,8 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         close(fb_layer->acquireFenceFd);
     }
     // Layers order is changed from SF so we rearrange wayland surfaces
-    if (pdev->display->geo_changed) {
-        for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
+    if (disp->geo_changed) {
+        for (auto it = windows.begin(); it != windows.end(); it++) {
             if (it->second) {
                 // This window has no changes in layers, leaving it
                 if (!it->second->lastLayer)
@@ -967,27 +1127,27 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                 }
             }
         }
-        pdev->display->geo_changed = false;
+        disp->geo_changed = false;
     }
 
     if (!pdev->multi_windows && single_layer_tid.length() && active_apps != "Openfde") {
-        for (auto const& [layer_tid, window] : pdev->windows) {
+        for (auto const& [layer_tid, window] : windows) {
             // Replace inactive app window buffer with snapshot in staged mode
             if (layer_tid != single_layer_tid && !window->snapshot_buffer) {
-                pdev->display->egl_work_queue.push_back(std::bind(snapshot_inactive_app_window, pdev->display, window));
+                disp->egl_work_queue.push_back(std::bind(snapshot_inactive_app_window, disp, window));
             }
         }
-        if (!pdev->display->egl_work_queue.empty()) {
-            sem_post(&pdev->display->egl_go);
-            sem_wait(&pdev->display->egl_done);
+        if (!disp->egl_work_queue.empty()) {
+            sem_post(&disp->egl_go);
+            sem_wait(&disp->egl_done);
         }
     }
 
     if (pdev->use_subsurface)
-        for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++)
+        for (auto it = windows.begin(); it != windows.end(); it++)
             if (it->second)
                 wl_surface_commit(it->second->surface);
-    wl_display_flush(pdev->display->display);
+    wl_display_flush(disp->display);
 
 sync:
     sw_sync_timeline_inc(pdev->timeline_fd, 1);
@@ -1048,7 +1208,7 @@ static int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
         return 0;
     }
 
-    if (disp == HWC_DISPLAY_PRIMARY) {
+    if (disp == HWC_DISPLAY_PRIMARY || disp == HWC_DISPLAY_EXTERNAL) {
         configs[0] = 0;
         *numConfigs = 1;
         return 0;
@@ -1100,7 +1260,7 @@ static int hwc_get_display_attributes(struct hwc_composer_device_1* dev __unused
                                       const uint32_t* attributes, int32_t* values) {
     struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
     for (int i = 0; attributes[i] != HWC_DISPLAY_NO_ATTRIBUTE; i++) {
-        if (disp == HWC_DISPLAY_PRIMARY) {
+        if (disp == HWC_DISPLAY_PRIMARY || disp == HWC_DISPLAY_EXTERNAL) {
             values[i] = hwc_attribute(pdev, attributes[i]);
             if (values[i] == -EINVAL) {
                 return -EINVAL;
@@ -1116,20 +1276,42 @@ static int hwc_get_display_attributes(struct hwc_composer_device_1* dev __unused
 
 static int hwc_close(hw_device_t* dev) {
     struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
-
+    
     for (std::map<buffer_handle_t, struct buffer *>::iterator it = pdev->display->buffer_map.begin(); it != pdev->display->buffer_map.end(); it++)
     {
         destroy_buffer(it->second);
     }
     pdev->display->buffer_map.clear();
-
     destroy_display(pdev->display);
 
+    for (std::map<buffer_handle_t, struct buffer *>::iterator it = pdev->secondary_display->buffer_map.begin(); it != pdev->secondary_display->buffer_map.end(); it++)
+    {
+        destroy_buffer(it->second);
+    }
+
+    pdev->secondary_display->buffer_map.clear();
+    destroy_display(pdev->secondary_display);
+
     pthread_kill(pdev->wayland_thread, SIGTERM);
+    pthread_kill(pdev->secondary_wayland_thread, SIGTERM);
     pthread_join(pdev->wayland_thread, NULL);
+    pthread_join(pdev->secondary_wayland_thread, NULL);
 
     delete dev;
     return 0;
+}
+static void* hwc_secondary_wayland_thread(void* data) {
+    struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)data;
+    int ret = 0;
+
+    setpriority(PRIO_PROCESS, 0, HAL_PRIORITY_URGENT_DISPLAY);
+
+    while (ret != -1)
+        ret = wl_display_dispatch(pdev->secondary_display->display);
+
+    ALOGE("*** %s: secondary Wayland client was disconnected: %s", __PRETTY_FUNCTION__, strerror(ret));
+
+    return NULL;
 }
 
 static void* hwc_wayland_thread(void* data) {
@@ -1153,7 +1335,7 @@ static void* hwc_extension_thread(void* data) {
 
     setpriority(PRIO_PROCESS, 0, HAL_PRIORITY_URGENT_DISPLAY);
 
-    openfdeDisplay = new OpenfdeDisplay(pdev->display);
+    openfdeDisplay = new OpenfdeDisplay(pdev->display,pdev->secondary_display);
     if (openfdeDisplay == nullptr) {
         ALOGE("Can not create an instance of Openfde Display HAL, exiting.");
         goto shutdown;
@@ -1256,28 +1438,44 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     }
     if (property_get("ro.hardware.gralloc", property, "default") > 0) {
         pdev->display = create_display(property);
+        setenv("WAYLAND_DISPLAY", "fde-wayland-1", 1);
+        pdev->secondary_display = create_display(property);
     }
     if (!pdev->display) {
         ALOGE("failed to open wayland connection");
         return -ENODEV;
     }
     ALOGE("wayland display %p", pdev->display);
+
+    if (!pdev->secondary_display) {
+        ALOGE("failed to open wayland connection");
+        return -ENODEV;
+    }
+    ALOGE("wayland secondary_display %p", pdev->secondary_display);
+
     pdev->display->mouse_icon_addr = -1;
+    pdev->secondary_display->mouse_icon_addr = -1;
 
     pthread_mutex_init(&pdev->vsync_lock, NULL);
     pdev->vsync_callback_enabled = true;
 
     // Initialize width and height with user-provided overrides if any
     choose_width_height(pdev->display, 0, 0);
+    choose_width_height(pdev->secondary_display, 0, 0);
 
+    auto secondary_window = create_window(pdev->secondary_display, pdev->use_subsurface, "Openfde", "0", {0, 0, 0, 255});
     auto first_window = create_window(pdev->display, pdev->use_subsurface, "Openfde", "0", {0, 0, 0, 255});
     if (!property_get_bool("openfde.background_start", true)) {
         pdev->windows["Openfde"] = first_window;
+        pdev->secondary_windows["Openfde"] = secondary_window;
         property_set("openfde.active_apps", "Openfde");
+        property_set("openfde1.active_apps", "Openfde");
         property_set("openfde.open_windows", "1");
     } else {
         destroy_window(first_window);
+        destroy_window(secondary_window);
     }
+
 
     if (pdev->display->refresh > 1000 && pdev->display->refresh < 1000000)
         pdev->vsync_period_ns = 1000 * 1000 * 1000 / (pdev->display->refresh / 1000);
@@ -1312,6 +1510,11 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
         ALOGE("openfde_hw_composer could not start wayland_thread\n");
     }
 
+    ret = pthread_create (&pdev->secondary_wayland_thread, NULL, hwc_secondary_wayland_thread, pdev);
+    if (ret) {
+        ALOGE("openfde_hw_composer could not start wayland_thread\n");
+    }
+
     ret = pthread_create (&pdev->extension_thread, NULL, hwc_extension_thread, pdev);
     if (ret) {
         ALOGE("openfde_hw_composer could not start extension_thread\n");
@@ -1320,6 +1523,11 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     ret = pthread_create(&pdev->window_service_thread, NULL, hwc_window_service_thread, pdev);
     if (ret) {
         ALOGE("openfde_hw_composer could not start window_service_thread\n");
+    }
+
+    ret = pthread_create(&pdev->egl_secondary_worker_thread, NULL, egl_loop, pdev->secondary_display);
+    if (ret) {
+        ALOGE("openfde_hw_composer could not start egl_worker_thread");
     }
 
     ret = pthread_create(&pdev->egl_worker_thread, NULL, egl_loop, pdev->display);
