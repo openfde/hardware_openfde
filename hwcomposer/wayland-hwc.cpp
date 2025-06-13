@@ -2311,8 +2311,8 @@ registry_handle_global(void *data, struct wl_registry *registry,
                (strcmp(interface, "android_wlegl") == 0)) {
         d->android_wlegl = (struct android_wlegl*)wl_registry_bind(registry, id,
                 &android_wlegl_interface, 1);
-    } else if ((d->gtype == GRALLOC_GBM || d->gtype == GRALLOC_CROS || d->gtype == GRALLOC_X100) &&
-               (strcmp(interface, "zwp_linux_dmabuf_v1") == 0)) {
+    } else if ((d->gtype == GRALLOC_GBM || d->gtype == GRALLOC_CROS || d->gtype == GRALLOC_X100 ||
+               d->gtype == GRALLOC_LEOPARD) && (strcmp(interface, "zwp_linux_dmabuf_v1") == 0)) {
         if (version < 3)
             return;
         d->dmabuf = (struct zwp_linux_dmabuf_v1*)wl_registry_bind(registry, id,
