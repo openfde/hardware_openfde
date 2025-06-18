@@ -551,8 +551,8 @@ int gralloc_gbm_bo_lock_ycbcr(buffer_handle_t handle,
 	case HAL_PIXEL_FORMAT_YCbCr_420_888:
 		ystride = cstride = GRALLOC_ALIGN(hnd->width, 16);
 		ycbcr->y = addr;
-		ycbcr->cr = (unsigned char *)addr + ystride * hnd->height;
-		ycbcr->cb = (unsigned char *)addr + ystride * hnd->height + 1;
+		ycbcr->cb = (unsigned char *)addr + ystride * hnd->height;
+		ycbcr->cr = (unsigned char *)addr + ystride * hnd->height + 1;
 		ycbcr->ystride = ystride;
 		ycbcr->cstride = cstride;
 		ycbcr->chroma_step = 2;
