@@ -17,7 +17,7 @@
 #define VENDOR_WAYDROID_DISPLAY_V1_1_WAYDROIDDISPLAY_H
 
 #include <android/hardware/graphics/composer/2.1/IComposer.h>
-#include <vendor/waydroid/display/1.1/IWaydroidDisplay.h>
+#include <vendor/openfde/display/1.1/IOpenfdeDisplay.h>
 #include <hidl/HidlTransportSupport.h>
 #include <hidl/MQDescriptor.h>
 #include <hidl/Status.h>
@@ -25,7 +25,7 @@
 #include "x11-hwc.h"
 
 namespace vendor {
-namespace waydroid {
+namespace openfde {
 namespace display {
 namespace V1_1 {
 namespace implementation {
@@ -34,11 +34,11 @@ using ::android::hardware::hidl_string;
 using ::android::hardware::Return;
 using ::android::hardware::graphics::composer::V2_1::Error;
 using ::android::sp;
-using ::vendor::waydroid::display::V1_1::IWaydroidDisplay;
+using ::vendor::openfde::display::V1_1::IOpenfdeDisplay;
 
-class WaydroidDisplay : public IWaydroidDisplay {
+class OpenfdeDisplay : public IOpenfdeDisplay {
   public:
-    WaydroidDisplay(struct display *display);
+    OpenfdeDisplay(struct display *display);
 
     // Methods from ::vendor::waydroid::display::V1_0::IWaydroidDisplay follow.
     Return<Error> setLayerName(uint32_t layer, const hidl_string &name) override;

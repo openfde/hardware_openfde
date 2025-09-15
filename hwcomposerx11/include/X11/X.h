@@ -112,7 +112,7 @@ typedef unsigned char KeyCode;
  *****************************************************************/
 
 #ifndef None
-#define None                 0L	/* universal null resource or null atom */
+#define None1                 0L	/* universal null resource or null atom */
 #endif
 
 #define ParentRelative       1L	/* background pixmap in CreateWindow
@@ -349,7 +349,7 @@ are reserved in the protocol for errors and replies. */
 
 #define Success		   0	/* everything's okay */
 #define BadRequest	   1	/* bad request code */
-#define BadValue	   2	/* int parameter out of range */
+#define BadValue1	   2	/* int parameter out of range */
 #define BadWindow	   3	/* parameter not a Window */
 #define BadPixmap	   4	/* parameter not a Pixmap */
 #define BadAtom		   5	/* parameter not an Atom */

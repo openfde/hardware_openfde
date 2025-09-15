@@ -47,7 +47,7 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <hardware/hwcomposer.h>
-#include <vendor/waydroid/task/1.0/IWaydroidTask.h>
+#include <vendor/openfde/task/1.0/IOpenfdeTask.h>
 #include <wayland-util.h>
 
 #define EGL_EGLEXT_PROTOTYPES
@@ -72,7 +72,7 @@
 #include <xcb-imdkit/imclient_p.h>
 
 using ::android::sp;
-using ::vendor::waydroid::task::V1_0::IWaydroidTask;
+using ::vendor::openfde::task::V1_0::IOpenfdeTask;
 
 enum {
     INPUT_TOUCH,
@@ -168,7 +168,7 @@ struct display {
     std::array<uint8_t, 239> keysDown;
 
     bool isMaximized;
-    sp<IWaydroidTask> task;
+    sp<IOpenfdeTask> task;
     uint32_t serial;
     int64_t mouse_icon_addr;
     int additional_refresh_cursor_times;     //In order to get the final cursor shape

@@ -16,13 +16,13 @@
 
 #pragma once
 
-#include <vendor/waydroid/window/1.2/IWaydroidWindow.h>
+#include <vendor/openfde/window/1.2/IOpenfdeWindow.h>
 #include <hidl/MQDescriptor.h>
 #include <hidl/Status.h>
 
 #include "x11-hwc.h"
 
-namespace vendor::waydroid::window::implementation {
+namespace vendor::openfde::window::implementation {
 
 using ::android::hardware::hidl_array;
 using ::android::hardware::hidl_memory;
@@ -32,9 +32,9 @@ using ::android::hardware::Return;
 using ::android::hardware::Void;
 using ::android::sp;
 
-struct WaydroidWindow : public V1_2::IWaydroidWindow {
+struct OpenfdeWindow : public V1_2::IOpenfdeWindow {
   public:
-    WaydroidWindow(struct display *display, std::map<std::string, struct window *> *windows);
+    OpenfdeWindow(struct display *display, std::map<std::string, struct window *> *windows);
     // Methods from ::vendor::waydroid::window::V1_0::IWaydroidWindow follow.
     Return<bool> minimize(const hidl_string& packageName) override;
 

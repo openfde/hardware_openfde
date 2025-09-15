@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 The Waydroid Project
+ * Copyright (C) 2021 The Openfde Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,22 +17,22 @@
 #include "extension.h"
 
 namespace vendor {
-namespace waydroid {
+namespace openfde {
 namespace display {
 namespace V1_1 {
 namespace implementation {
 
-WaydroidDisplay::WaydroidDisplay(struct display *display)
+OpenfdeDisplay::OpenfdeDisplay(struct display *display)
     : mDisplay(display)
 {
 }
 
 // Methods from ::vendor::waydroid::display::V1_0::IWaydroidDisplay follow.
-Return<Error> WaydroidDisplay::setLayerName(uint32_t layer, const hidl_string &name) {
+Return<Error> OpenfdeDisplay::setLayerName(uint32_t layer, const hidl_string &name) {
     mDisplay->layer_names[layer] = std::string(name);
     return Error::NONE;
 }
-Return<Error> WaydroidDisplay::setLayerHandleInfo(uint32_t layer, uint32_t format, uint32_t stride) {
+Return<Error> OpenfdeDisplay::setLayerHandleInfo(uint32_t layer, uint32_t format, uint32_t stride) {
     mDisplay->layer_handles_ext[layer] = 
     {
         .format = format,
@@ -40,7 +40,7 @@ Return<Error> WaydroidDisplay::setLayerHandleInfo(uint32_t layer, uint32_t forma
     };
     return Error::NONE;
 }
-Return<Error> WaydroidDisplay::setTargetLayerHandleInfo(uint32_t format, uint32_t stride) {
+Return<Error> OpenfdeDisplay::setTargetLayerHandleInfo(uint32_t format, uint32_t stride) {
     mDisplay->target_layer_handle_ext = 
     {
         .format = format,
@@ -50,13 +50,13 @@ Return<Error> WaydroidDisplay::setTargetLayerHandleInfo(uint32_t format, uint32_
 }
 
 // Methods from ::vendor::waydroid::display::V1_1::IWaydroidDisplay follow.
-Return<Error> WaydroidDisplay::setLayerSize(uint32_t layer, uint32_t width, uint32_t height) {
+Return<Error> OpenfdeDisplay::setLayerSize(uint32_t layer, uint32_t width, uint32_t height) {
     mDisplay->layer_handles_ext[layer].width = width;
     mDisplay->layer_handles_ext[layer].height = height;
     return Error::NONE;
 }
 
-Return<Error> WaydroidDisplay::setTargetLayerSize(uint32_t width, uint32_t height) {
+Return<Error> OpenfdeDisplay::setTargetLayerSize(uint32_t width, uint32_t height) {
     mDisplay->target_layer_handle_ext.width = width;
     mDisplay->target_layer_handle_ext.height = height;
     return Error::NONE;

@@ -26,9 +26,9 @@
 #include <xcb/xcb.h>
 #include <xcb/xcb_icccm.h>
 
-namespace vendor::waydroid::window::implementation {
+namespace vendor::openfde::window::implementation {
 
-WaydroidWindow::WaydroidWindow(struct display *display, std::map<std::string, struct window *> *windows)
+OpenfdeWindow::OpenfdeWindow(struct display *display, std::map<std::string, struct window *> *windows)
     : mDisplay(display),mWindows(windows)
 {
 }
@@ -40,7 +40,7 @@ WaydroidWindow::WaydroidWindow(struct display *display, std::map<std::string, st
 
 
 // Methods from ::vendor::waydroid::window::V1_0::IWaydroidWindow follow.
-Return<bool> WaydroidWindow::minimize(const hidl_string& packageName) {
+Return<bool> OpenfdeWindow::minimize(const hidl_string& packageName) {
     ALOGE("WaydroidWindow minimize packageName %s", packageName.c_str());
 
     if(!mWindows || mWindows->size() < 1)
@@ -51,7 +51,7 @@ Return<bool> WaydroidWindow::minimize(const hidl_string& packageName) {
    if (!mDisplay->xcbconnection)
         return false;
 
-    property_get("waydroid.active_apps", property, "Openfde");
+    property_get("openfde.active_apps", property, "Openfde");
     if (!strcmp(property, "Openfde"))
         return false;
 
@@ -88,7 +88,7 @@ Return<bool> WaydroidWindow::minimize(const hidl_string& packageName) {
 }
 
 // Methods from ::vendor::waydroid::window::V1_1::IWaydroidWindow follow.
-Return<void> WaydroidWindow::setPointerCapture(const hidl_string& packageName, bool enabled) {
+Return<void> OpenfdeWindow::setPointerCapture(const hidl_string& packageName, bool enabled) {
     /*char property[PROPERTY_VALUE_MAX];
     std::string windowName = packageName;
     */
@@ -101,7 +101,7 @@ Return<void> WaydroidWindow::setPointerCapture(const hidl_string& packageName, b
     if (!mDisplay->pointer)
         return Void();
 
-    property_get("waydroid.active_apps", property, "Openfde");
+    property_get("openfde.active_apps", property, "Openfde");
     if (!strcmp(property, "Openfde"))
         windowName = "Openfde";
 
@@ -143,14 +143,14 @@ Return<void> WaydroidWindow::setPointerCapture(const hidl_string& packageName, b
 }
 
 // Methods from ::vendor::waydroid::window::V1_2::IWaydroidWindow follow.
-Return<void> WaydroidWindow::setIdleInhibit(const hidl_string& task, bool enabled) {
+Return<void> OpenfdeWindow::setIdleInhibit(const hidl_string& task, bool enabled) {
     char property[PROPERTY_VALUE_MAX];
     std::string taskID = task;
 
     if (enabled)
         return Void();
 
-    property_get("waydroid.active_apps", property, "Openfde");
+    property_get("openfde.active_apps", property, "Openfde");
     if (!strcmp(property, "Openfde"))
         taskID = "0";
 

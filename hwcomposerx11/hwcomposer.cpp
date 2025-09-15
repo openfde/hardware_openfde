@@ -50,7 +50,6 @@
 #include <xcb/present.h>
 #include <xcb/xproto.h>
 
-#include <gralloc_cb_bp.h>
 
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
 #include <cutils/trace.h>
@@ -60,13 +59,13 @@
 #include "WaydroidWindow.h"
 #include "egl-tools.h"
 
-using ::android::hardware::configureRpcThreadpool;
+//using ::android::hardware::configureRpcThreadpool;
 using ::android::hardware::joinRpcThreadpool;
 
-using ::vendor::waydroid::display::V1_1::IWaydroidDisplay;
-using ::vendor::waydroid::display::V1_1::implementation::WaydroidDisplay;
-using ::vendor::waydroid::window::V1_1::IWaydroidWindow;
-using ::vendor::waydroid::window::implementation::WaydroidWindow;
+using ::vendor::openfde::display::V1_1::IOpenfdeDisplay;
+using ::vendor::openfde::display::V1_1::implementation::OpenfdeDisplay;
+using ::vendor::openfde::window::V1_1::IOpenfdeWindow;
+using ::vendor::openfde::window::implementation::OpenfdeWindow;
 
 using ::android::OK;
 using ::android::status_t;
@@ -94,7 +93,7 @@ struct waydroid_hwc_composer_device_1 {
 };
 
 int cancel_maximum(xcb_connection_t *conn,xcb_screen_t * screen, xcb_window_t main_win);
-static struct buffer *get_x11_buffer(struct waydroid_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos,struct window *window);
+static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos,struct window *window);
 
 static void erase_cursor_layer_buffer(waydroid_hwc_composer_device_1* pdev, buffer_handle_t handle){
     auto it = pdev->display->buffer_map.find(handle);
@@ -119,7 +118,7 @@ static void x11_set_custom_cursor(waydroid_hwc_composer_device_1* pdev, Picture 
 
     // Create the cursor from the picture
     Cursor cursor = XRenderCreateCursor(display->x11display, xpicture, hot_x, hot_y);
-    if(cursor == None){
+    if(cursor == None1){
         return;
     }
     std::scoped_lock lock(pdev->display->windowsMutex);
@@ -152,7 +151,7 @@ static bool update_cursor_surface(waydroid_hwc_composer_device_1* pdev, hwc_laye
         }
     }
 
-    struct buffer *buf = get_x11_buffer(pdev, fb_layer, layer,NULL);
+    struct buffer *buf = get_wl_buffer(pdev, fb_layer, layer,NULL);
     if (!buf) {
         ALOGE("Failed to get wayland buffer");
         return false;
@@ -216,14 +215,14 @@ static int set_black_background(struct waydroid_hwc_composer_device_1 * pdev, st
 	Pixmap tempPixmap = XCreatePixmap(pdev->display->x11display, win->xcbwindow, pdev->display->width,pdev->display->height, 32);
 	Picture temp_picture = XRenderCreatePicture(pdev->display->x11display, tempPixmap, pdev->display->argb_format, 0, NULL);
 	// Copy current backxpicture to temporary picture
-	XRenderComposite(pdev->display->x11display, PictOpSrc, win->backxpicture, None, temp_picture,
+	XRenderComposite(pdev->display->x11display, PictOpSrc, win->backxpicture, None1, temp_picture,
 		    0, 0, 0, 0, 0, 0, pdev->display->width, pdev->display->height);
 	Picture solid_picture = XRenderCreateSolidFill(pdev->display->x11display, &frame_color);
-	XRenderComposite(pdev->display->x11display, PictOpSrc, solid_picture, None, win->backxpicture,
+	XRenderComposite(pdev->display->x11display, PictOpSrc, solid_picture, None1, win->backxpicture,
 		    src_x, src_y, 0, 0, frame_x, frame_y, frame_width , frame_height);
 	XRenderFreePicture(pdev->display->x11display, solid_picture);
 	// Blend the temporary picture back onto backxpicture with PictOpOver
-	XRenderComposite(pdev->display->x11display, PictOpOver, temp_picture, None, win->backxpicture,
+	XRenderComposite(pdev->display->x11display, PictOpOver, temp_picture, None1, win->backxpicture,
 		    0, 0, 0, 0, 0, 0, pdev->display->width, pdev->display->height);
 	XFreePixmap(pdev->display->x11display, tempPixmap);
 	// Clean up temporary picture
@@ -436,59 +435,59 @@ static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pde
 		prime_fd = drm_handle->prime_fd;
 		size = dst_gb->getStride() * height * 4;
 		stride = dst_gb->getStride() * 4 ;
-    }else {//end of the formating transfer to HAL_PIXEL_FORMAT_BGRA_8888
-        if (buf->xcbpixmap) { // if the format is HAL_PIXEL_FORMAT_BGRA_8888, and the xcbpixmap is already created, no need to recreate
+    }
+    if (window != NULL ) {
+	//ALOGE("Found  app: %s layer  ,drop %d", window->appID.c_str(), lastlayer);
+        xcb_window_t xcbwindow = window->xcbwindow;
+        int x11_fd = dup(prime_fd);
+        if (x11_fd >= 0) {
+            fcntl(x11_fd, F_SETFD, FD_CLOEXEC);
+        }else {
+            ALOGE("dup fd failed");
             return ;
         }
-    }
-    int x11_fd = dup(prime_fd);
-    if (x11_fd >= 0) {
-        fcntl(x11_fd, F_SETFD, FD_CLOEXEC);
-    }else {
-        ALOGE("dup fd failed");
-        return ;
-    }
 
-    /*
-    the original buffer is the same handle, but the format is not BGRA_8888, we create a new dstination buffer to store the converted data
-    so we need to recreate the xcbpimap and xpicture according to the new destination buffer
-    */
-    if (buf->xcbpixmap) {
-        xcb_free_pixmap(pdev->display->xcbconnection, buf->xcbpixmap);
-        buf->xcbpixmap = 0;
-    }
-    buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
-    XRenderPictureAttributes pa;
-    pa.repeat = False;
-
-    xcb_void_cookie_t pixmap_cookie;
-    
-    if (window != NULL ) {
-        //ALOGE("Found  app: %s layer  ,drop %d", window->appID.c_str(), lastlayer);
-        xcb_window_t xcbwindow = window->xcbwindow;
-        pixmap_cookie = xcb_dri3_pixmap_from_buffer(pdev->display->xcbconnection,
+        buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
+        XRenderPictureAttributes pa;
+        pa.repeat = False;
+        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(pdev->display->xcbconnection,
             buf->xcbpixmap, xcbwindow, size, width, height, stride, 32, 32, x11_fd);
-    }else {
-        pixmap_cookie = xcb_dri3_pixmap_from_buffer(pdev->display->xcbconnection,
-            buf->xcbpixmap, pdev->display->xcbscreen->root, size, width, height, stride, 32, 32, x11_fd);
-    }
-    xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
-    if (pixmap_error) {
-        ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
-        free(pixmap_error);
+        xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        if (pixmap_error) {
+           ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
+           free(pixmap_error);
+           close(x11_fd);
+           return ;
+        }
+        buf->xpicture = XRenderCreatePicture(pdev->display->x11display, buf->xcbpixmap,pdev->display->argb_format, CPRepeat, &pa);
         close(x11_fd);
-        return ;
+    }else{
+        int x11_fd = dup(prime_fd);
+        if (x11_fd >= 0) {
+            fcntl(x11_fd, F_SETFD, FD_CLOEXEC);
+        }else {
+            ALOGE("dup fd failed");
+            return ;
+        }
+
+        buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
+        XRenderPictureAttributes pa;
+        pa.repeat = False;
+        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(pdev->display->xcbconnection,
+            buf->xcbpixmap, pdev->display->xcbscreen->root, size, width, height, stride, 32, 32, x11_fd);
+        xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        if (pixmap_error) {
+           ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
+           free(pixmap_error);
+           close(x11_fd);
+           return ;
+        }
+        buf->xpicture = XRenderCreatePicture(pdev->display->x11display, buf->xcbpixmap,pdev->display->argb_format, CPRepeat, &pa);
+        close(x11_fd);
     }
-    if (buf->xpicture) {
-        XRenderFreePicture(pdev->display->x11display, buf->xpicture);
-        buf->xpicture = 0;
-    }
-    buf->xpicture = XRenderCreatePicture(pdev->display->x11display, buf->xcbpixmap,pdev->display->argb_format, CPRepeat, &pa);
-    close(x11_fd);
 }
 
-
-static struct buffer *get_x11_buffer(struct waydroid_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos,struct window *window)
+static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos,struct window *window)
 {
     uint32_t format;
     uint32_t pixel_stride;
@@ -522,7 +521,6 @@ static struct buffer *get_x11_buffer(struct waydroid_hwc_composer_device_1 *pdev
                 return it->second;
             }
         } else {
-            createDri3XRenderPicture(pdev, layer, window, it->second,pixel_stride);
             return it->second;
 	}
     }
@@ -538,35 +536,35 @@ static struct buffer *get_x11_buffer(struct waydroid_hwc_composer_device_1 *pdev
         struct gralloc_handle_t *drm_handle = (struct gralloc_handle_t *)layer->handle;
         buf->width=drm_handle->width;
         buf->height=drm_handle->height;
-	    buf->pixel_stride = pixel_stride;
+	buf->pixel_stride = pixel_stride;
         createDri3XRenderPicture(pdev, layer, window, buf,pixel_stride);
         if (!buf->xpicture) {
             delete buf;
             return NULL;
         }
-    } else if (pdev->display->gtype == GRALLOC_RANCHU) {
+    /*} else if (pdev->display->gtype == GRALLOC_RANCHU) {
         struct cb_handle_t* cb_handle = (struct cb_handle_t*)layer->handle;
         auto width = cb_handle->width;
         auto height = cb_handle->height;
         auto hal_format = cb_handle->format;
-        create_shm_buffer(buf, width, height, hal_format,pixel_stride,layer->handle);
-        buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
-        xcb_void_cookie_t create_pixmap_cookie;
-        if (window != NULL){
-            create_pixmap_cookie = xcb_create_pixmap(
-                pdev->display->xcbconnection, 32, buf->xcbpixmap, window->xcbwindow, width, height);
-        }else {
-            create_pixmap_cookie = xcb_create_pixmap(
-                pdev->display->xcbconnection, 32, buf->xcbpixmap, pdev->display->xcbscreen->root, width, height);
-        }
-        xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, create_pixmap_cookie);
-        if (pixmap_error) {
-            ALOGE("XCB error in xcb_create_pixmap: %d\n", pixmap_error->error_code);
-            free(pixmap_error);
-            delete buf;
-            return NULL;
-        }
-	    update_shm_pixmap(pdev->display, buf,window);
+	create_shm_buffer(buf, width, height, hal_format,pixel_stride,layer->handle);
+	buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
+	xcb_void_cookie_t create_pixmap_cookie;
+	if (window != NULL){
+		create_pixmap_cookie = xcb_create_pixmap(
+		    pdev->display->xcbconnection, 32, buf->xcbpixmap, window->xcbwindow, width, height);
+	}else {
+		create_pixmap_cookie = xcb_create_pixmap(
+		    pdev->display->xcbconnection, 32, buf->xcbpixmap, pdev->display->xcbscreen->root, width, height);
+	}
+	xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, create_pixmap_cookie);
+	if (pixmap_error) {
+	    ALOGE("XCB error in xcb_create_pixmap: %d\n", pixmap_error->error_code);
+	    free(pixmap_error);
+	    delete buf;
+	    return NULL;
+	}
+	update_shm_pixmap(pdev->display, buf,window);
         XRenderPictureAttributes pa;
         pa.repeat = False;
         buf->xpicture = XRenderCreatePicture(pdev->display->x11display, buf->xcbpixmap,
@@ -575,6 +573,7 @@ static struct buffer *get_x11_buffer(struct waydroid_hwc_composer_device_1 *pdev
             delete buf;
             return NULL;
         }
+	*/
     } else if (pdev->display->gtype == GRALLOC_CROS) {
         const struct cros_gralloc_handle *cros_handle = (const struct cros_gralloc_handle *)layer->handle;
         buf->width=cros_handle->width;
@@ -689,7 +688,7 @@ static int adjust_window_geo(struct waydroid_hwc_composer_device_1 * pdev, hwc_l
 
     ALOGI("src x %d y%d dst width %d dst height %d values.x %d, values.y %d app %s lastLayer %d  display right%d", src_x,src_y, dst_width, dst_height,
 			values.x,values.y,window->appID.c_str(), window->lastLayer, layer->displayFrame.right);
-    XRenderComposite(pdev->display->x11display, PictOpOver, buf->xpicture, None, window->backxpicture,
+    XRenderComposite(pdev->display->x11display, PictOpOver, buf->xpicture, None1, window->backxpicture,
                   src_x, src_y, 0, 0, values.x, values.y, dst_width, dst_height);
 
     return 0;
@@ -822,27 +821,27 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
      * In prop "persist.waydroid.multi_windows" we detect HWC let SF rander layers
      * And just show the target client layer (single windows mode) or
      * render each layers in wayland surface and subsurfaces.
-     * In prop "waydroid.active_apps" we choose what to be shown in window
+     * In prop "openfde.active_apps" we choose what to be shown in window
      * and here if HWC is in single mode we show the screen only if any task are in screen
      * and in multi windows mode we group layers with same task ID in a wayland window.
      * And in prop "waydroid.blacklist_apps" we select apps to not show in display.
      *
-     * "waydroid.active_apps" prop can be:
+     * "openfde.active_apps" prop can be:
      * "none": No windows
      * "Waydroid": Shows android screen in a single window
      * "AppID": Shows apps in related windows as explained above
      */
-    property_get("waydroid.active_apps", property, "none");
+    property_get("openfde.active_apps", property, "none");
     std::string active_apps = std::string(property);
     std::string blacklist_apps = std::string("com.android.launcher3");
-    property_get("waydroid.blacklist_apps", property, "");
+    property_get("openfde.blacklist_apps", property, "");
     if (strlen(property) > 0 && strncmp(property, "com.android.launcher3", strlen("com.android.launcher3")) != 0) {
         blacklist_apps = blacklist_apps + ":" + std::string(property);
     }
     std::string single_layer_tid;
     std::string single_layer_aid;
 
-    if (active_apps != "Openfde" && !property_get_bool("waydroid.background_start", true)) {
+    if (active_apps != "Openfde" && !property_get_bool("openfde.background_start", true)) {
         for (size_t l = 0; l < contents->numHwLayers; l++) {
             std::string layer_name = pdev->display->layer_names[l];
             if (layer_name.rfind("BootAnimation#", 0) == 0) {
@@ -867,7 +866,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                 close(fb_layer->acquireFenceFd);
         }
 
-        property_set("waydroid.open_windows", "0");
+        property_set("openfde.open_windows", "0");
         goto sync;
     } else if (active_apps == "Openfde") {
         // Clear all open windows if there's any and just keep "Waydroid"
@@ -924,7 +923,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                     close(fb_layer->acquireFenceFd);
             }
 
-            property_set("waydroid.open_windows", "0");
+            property_set("openfde.open_windows", "0");
             goto sync;
         }
         bool shouldCloseLeftover = true;
@@ -947,7 +946,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                         pdev->windows.erase(it++);
                         shouldCloseLeftover = true;
                         std::string windows_size_str = std::to_string(pdev->windows.size());
-                        property_set("waydroid.open_windows", windows_size_str.c_str());
+                        property_set("openfde.open_windows", windows_size_str.c_str());
                     } else
                         ++it;
                 } else
@@ -990,7 +989,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                     destroy_window(it->second);
                 pdev->windows.erase(it++);
                 std::string windows_size_str = std::to_string(pdev->windows.size());
-                property_set("waydroid.open_windows", windows_size_str.c_str());
+                property_set("openfde.open_windows", windows_size_str.c_str());
             } else {
                 ++it;
             }
@@ -1060,7 +1059,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             if (pdev->windows.find(active_apps) == pdev->windows.end()) {
                 pdev->windows[active_apps] = create_window(pdev->display, pdev->use_subsurface, active_apps, "0", {0, 0, 0, 255});
                 std::string windows_size_str = std::to_string(pdev->windows.size());
-                property_set("waydroid.open_windows", windows_size_str.c_str());
+                property_set("openfde.open_windows", windows_size_str.c_str());
             }
             window = pdev->windows[active_apps];
         } else if (!pdev->multi_windows) {
@@ -1068,7 +1067,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                 if (pdev->windows.find(single_layer_tid) == pdev->windows.end()) {
                     pdev->windows[single_layer_tid] = create_window(pdev->display, pdev->use_subsurface, single_layer_aid, single_layer_tid, {0, 0, 0, 255});
                     std::string windows_size_str = std::to_string(pdev->windows.size());
-                    property_set("waydroid.open_windows", windows_size_str.c_str());
+                    property_set("openfde.open_windows", windows_size_str.c_str());
                 }
                 window = pdev->windows[single_layer_tid];
             }
@@ -1093,7 +1092,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                     if (pdev->windows.find(layer_tid) == pdev->windows.end()) {
                         pdev->windows[layer_tid] = create_window(pdev->display, pdev->use_subsurface, layer_aid, layer_tid, {0, 0, 0, 0});
                         std::string windows_size_str = std::to_string(pdev->windows.size());
-                        property_set("waydroid.open_windows", windows_size_str.c_str());
+                        property_set("openfde.open_windows", windows_size_str.c_str());
                     }
                     if (pdev->windows.find(layer_tid) != pdev->windows.end())
                         window = pdev->windows[layer_tid];
@@ -1110,7 +1109,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                 if (pdev->windows.find(LayerRawName) == pdev->windows.end()) {
                     pdev->windows[LayerRawName] = create_window(pdev->display, pdev->use_subsurface, LayerRawName, "none", {0, 0, 0, 0});
                     std::string windows_size_str = std::to_string(pdev->windows.size());
-                    property_set("waydroid.open_windows", windows_size_str.c_str());
+                    property_set("openfde.open_windows", windows_size_str.c_str());
                 }
                 if (pdev->windows.find(LayerRawName) != pdev->windows.end()) {
                     window = pdev->windows[LayerRawName];
@@ -1125,7 +1124,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             continue;
         }
 
-        struct buffer *buf = get_x11_buffer(pdev, fb_layer, layer,window);
+        struct buffer *buf = get_wl_buffer(pdev, fb_layer, layer,window);
         if (!buf) {
             ALOGE("Failed to get wayland buffer");
             if (fb_layer->acquireFenceFd != -1) {
@@ -1230,7 +1229,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         if (pdev->use_subsurface ) {
         	adjust_window_geo(pdev, fb_layer, buf,window, pdev->use_subsurface);
         }else {
-	     	XRenderComposite(pdev->display->x11display, PictOpSrc, buf->xpicture, None, window->xpicture,
+	     	XRenderComposite(pdev->display->x11display, PictOpOver, buf->xpicture, None1, window->xpicture,
 		   	 0, 0, 0, 0, 0,0, pdev->display->width, pdev->display->height);
         }
         window->last_layer_buffer = buf;
@@ -1259,7 +1258,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                 {
                     set_black_background(pdev,it->second);
                 }
-                XRenderComposite(pdev->display->x11display, PictOpSrc, it->second->backxpicture, None, it->second->xpicture,
+                XRenderComposite(pdev->display->x11display, PictOpSrc, it->second->backxpicture, None1, it->second->xpicture,
                     0, 0, 0, 0, 0,0, pdev->display->width, pdev->display->height);
                 if (!it->second->rects.empty()) {
                     xcb_shape_rectangles(pdev->display->xcbconnection,
@@ -1271,7 +1270,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                                         it->second->rects.size(),
                                         it->second->rects.data());
                 }
-	        }
+	}
     XFlush(pdev->display->x11display);
     if (pdev->display->geo_changed) {
         for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
@@ -1371,17 +1370,17 @@ static int32_t hwc_attribute(struct waydroid_hwc_composer_device_1* pdev,
         case HWC_DISPLAY_VSYNC_PERIOD:
             return pdev->vsync_period_ns;
         case HWC_DISPLAY_WIDTH: {
-            if (property_get("persist.waydroid.width_padding", property, nullptr) > 0)
+            if (property_get("persist.openfde.width_padding", property, nullptr) > 0)
                 width -= atoi(property);
             std::string width_str = std::to_string(width);
-            property_set("waydroid.display_width", width_str.c_str());
+            property_set("openfde.display_width", width_str.c_str());
             return width;
         }
         case HWC_DISPLAY_HEIGHT: {
-            if (property_get("persist.waydroid.height_padding", property, nullptr) > 0)
+            if (property_get("persist.openfde.height_padding", property, nullptr) > 0)
                 height -= atoi(property);
             std::string height_str = std::to_string(height);
-            property_set("waydroid.display_height", height_str.c_str());
+            property_set("openfde.display_height", height_str.c_str());
             return height;
         }
         case HWC_DISPLAY_DPI_X:
@@ -1434,18 +1433,18 @@ static int hwc_close(hw_device_t* dev) {
 
 static void* hwc_extension_thread(void* data) {
     struct waydroid_hwc_composer_device_1* pdev = (struct waydroid_hwc_composer_device_1*)data;
-    sp<IWaydroidDisplay> waydroidDisplay;
+    sp<IOpenfdeDisplay> waydroidDisplay;
     status_t status;
 
     setpriority(PRIO_PROCESS, 0, HAL_PRIORITY_URGENT_DISPLAY);
 
-    waydroidDisplay = new WaydroidDisplay(pdev->display);
+    waydroidDisplay = new OpenfdeDisplay(pdev->display);
     if (waydroidDisplay == nullptr) {
         ALOGE("Can not create an instance of Waydroid Display HAL, exiting.");
         goto shutdown;
     }
 
-    configureRpcThreadpool(1, true /*callerWillJoin*/);
+    //configureRpcThreadpool(1, true /*callerWillJoin*/);
 
     status = waydroidDisplay->registerAsService();
     if (status != OK) {
@@ -1464,16 +1463,17 @@ shutdown:
 
 static void* hwc_window_service_thread(void* data) {
     struct waydroid_hwc_composer_device_1* pdev = (struct waydroid_hwc_composer_device_1*)data;
-    sp<IWaydroidWindow> waydroidWindow;
+    sp<IOpenfdeWindow> waydroidWindow;
     status_t status;
 
-    waydroidWindow = new WaydroidWindow(pdev->display, &pdev->windows);
+    //configureRpcThreadpool(1, true /*callerWillJoin*/);
+
+    waydroidWindow = new OpenfdeWindow(pdev->display, &pdev->windows);
     if (waydroidWindow == nullptr) {
         ALOGE("Can not create an instance of Waydroid Window HAL, exiting.");
         goto shutdown;
     }
 
-    configureRpcThreadpool(1, true /*callerWillJoin*/);
 
     status = waydroidWindow->registerAsService();
     if (status != OK) {
@@ -1529,21 +1529,21 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
 
     pdev->vsync_period_ns = 1000*1000*1000/60; // vsync is 60 hz
 
-    pdev->multi_windows = property_get_bool("persist.waydroid.multi_windows", false);
-    pdev->use_subsurface = property_get_bool("persist.waydroid.use_subsurface", false) || pdev->multi_windows;
+    pdev->multi_windows = property_get_bool("persist.openfde.multi_windows", false);
+    pdev->use_subsurface = property_get_bool("persist.openfde.use_subsurface", false) || pdev->multi_windows;
     pdev->timeline_fd = sw_sync_timeline_create();
     pdev->next_sync_point = 1;
 
-    if (property_get("waydroid.xmodifiers", property, "@im=fcitx") > 0) {
+    if (property_get("openfde.xmodifiers", property, "@im=fcitx") > 0) {
         setenv("XMODIFIERS", property, 1);
     }
     // Init global state for compound text encoding.
     xcb_compound_text_init();
 
-    if (property_get("waydroid.xdg_runtime_dir", property, "/run/user/1000") > 0) {
+    if (property_get("openfde.xdg_runtime_dir", property, "/run/user/1000") > 0) {
         setenv("XDG_RUNTIME_DIR", property, 1);
     }
-    if (property_get("waydroid.x11_display", property, ":0") > 0) {
+    if (property_get("openfde.x11_display", property, ":0") > 0) {
         setenv("DISPLAY", property, 1);
     }
     if (property_get("ro.hardware.gralloc", property, "default") > 0) {
@@ -1563,10 +1563,10 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
 
     //create Openfde window to match desktop file openfde.desktop
     auto first_window = create_window(pdev->display, pdev->use_subsurface, "Openfde", "0", {0, 0, 0, 255});
-    if (!property_get_bool("waydroid.background_start", true)) {
+    if (!property_get_bool("openfde.background_start", true)) {
         pdev->windows["Openfde"] = first_window;
-        property_set("waydroid.active_apps", "Openfde");
-        property_set("waydroid.open_windows", "1");
+        property_set("openfde.active_apps", "Openfde");
+        property_set("openfde.open_windows", "1");
     } else {
         destroy_window(first_window);
     }
@@ -1648,7 +1648,7 @@ hwc_module_t HAL_MODULE_INFO_SYM = {
         .module_api_version = HWC_MODULE_API_VERSION_0_1,
         .hal_api_version = HARDWARE_HAL_API_VERSION,
         .id = HWC_HARDWARE_MODULE_ID,
-        .name = "waydroid hwcomposer module",
+        .name = "openfde hwcomposer module",
         .author = "The Android Open Source Project",
         .methods = &hwc_module_methods,
     }

@@ -62,7 +62,6 @@
 #include <cutils/properties.h>
 
 #include <xkbcommon/xkbcommon.h>
-#include <X11/XKBlib.h>
 
 #include <wayland-client.h>
 #include <wayland-android-client-protocol.h>
@@ -192,7 +191,7 @@ finished_computing_scale(struct display *d)
     char property[PROPERTY_VALUE_MAX];
     int default_density = 180;
     std::string display_scale = std::to_string(d->scale);
-    property_set("waydroid.display_scale", display_scale.c_str());
+    property_set("openfde.display_scale", display_scale.c_str());
     if (property_get("ro.sf.lcd_density", property, nullptr) <= 0) {
         std::string lcd_density = std::to_string(int(default_density * d->scale));
         property_set("ro.sf.lcd_density", lcd_density.c_str());
@@ -205,12 +204,12 @@ void choose_width_height(struct display* display, int32_t hint_width, int32_t hi
     int height = hint_height;
 
     // Ignore hint it requested
-    if (property_get("persist.waydroid.width", property, nullptr) > 0) {
+    if (property_get("persist.openfde.width", property, nullptr) > 0) {
         display->isMaximized = false;
         width = atoi(property);
     }
 
-    if (property_get("persist.waydroid.height", property, nullptr) > 0) {
+    if (property_get("persist.openfde.height", property, nullptr) > 0) {
         display->isMaximized = false;
         height = atoi(property);
     }
@@ -528,12 +527,6 @@ void on_key_release(void *data, xcb_key_release_event_t *event) {
         display->ctrl_key_pressed = 0;
     }
     send_key_event((struct display*)data, key, (wl_keyboard_key_state)0);
-    if(key == KEY_CAPSLOCK){
-        bool internalCapsLockState = property_get_bool("openfde.caps.lock.state", false);
-        std::string str_target_state = internalCapsLockState ? "0" : "1";
-        property_set("openfde.caps.lock.state", str_target_state.c_str());
-        ALOGE("on_key_release update openfde.caps.lock.state %d", !internalCapsLockState);
-    }
 }
 
 static void handle_pinch_update(void *data, uint32_t time, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t scale, wl_fixed_t rotation)
@@ -992,22 +985,6 @@ void *event_loop_thread(void *arg) {
                     }
                 }
                 disable_auto_repeat(display->x11display);
-                bool internalCapsLockState = property_get_bool("openfde.caps.lock.state", false);
-                XkbStateRec state;
-                XkbGetState(display->x11display, XkbUseCoreKbd, &state);
-                bool externalCapsLockState = state.locked_mods & LockMask;
-                if(internalCapsLockState != externalCapsLockState){
-                    if (externalCapsLockState) {
-                        ALOGE("External Caps Lock is ON");
-                    }else{
-                        ALOGE("External Caps Lock is OFF");
-                    }
-                    std::string str_target_state = internalCapsLockState ? "0" : "1";
-                    property_set("openfde.caps.lock.state", str_target_state.c_str());
-                    ALOGE("set openfde.caps.lock.state %d", !internalCapsLockState);
-                    send_key_event(display, KEY_CAPSLOCK, (wl_keyboard_key_state)1);
-                    send_key_event(display, KEY_CAPSLOCK, (wl_keyboard_key_state)0);
-                }
                 break;
             }
             case XCB_FOCUS_OUT:{
@@ -1047,24 +1024,10 @@ void *event_loop_thread(void *arg) {
             }
             case XCB_BUTTON_PRESS:{
                     ALOGV("XCB_BUTTON_PRESS received");
-                    xcb_button_press_event_t *xcb_button_event = (xcb_button_press_event_t *)event;
-                    xcb_window_t focus_window = xcb_button_event->event;
-                    for (auto it = display->x11_windows->begin(); it != display->x11_windows->end(); it++) {
-                        ALOGE("XCB_BUTTON_PRESS Task : %s", it->first.c_str());
-                        if (it->second->xcbwindow == focus_window){
-                            ALOGE("XCB_BUTTON_PRESS Task %s gained focus", it->first.c_str());
-                            if (display->task != nullptr) {
-                                if (it->first != "Openfde" && it->first != "none" && it->first != "0") {
-                                    if(isValidInteger(it->first)){
-                                        display->task->setFocusedTask(stoi(it->first));
-                                    }
-                                }
-                            }
-                        }
-                    }
                     if (dispatcher.button_press_cb) {
                         dispatcher.button_press_cb(arg, (xcb_button_press_event_t *)event);
                     }
+                    xcb_button_press_event_t *xcb_button_event = (xcb_button_press_event_t *)event;
                     if(display->im){
                         xcb_point_t spot = {xcb_button_event->root_x, xcb_button_event->root_y};
                         ALOGI("on button press update_spot_location x: %d, y: %d", spot.x, spot.y);
@@ -1362,7 +1325,7 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
     pa.repeat = False;
     window->xpicture = XRenderCreatePicture(display->x11display, window->xcbwindow,display->argb_format, CPRepeat, &pa);
     window->backpixmap = XCreatePixmap(display->x11display, window->xcbwindow, display->width, display->height, 32);
-    if (window->backpixmap == None) {
+    if (window->backpixmap == None1) {
         return NULL;
     }
     window->backxpicture = XRenderCreatePicture(display->x11display, window->backpixmap,display->argb_format, CPRepeat, &pa);
@@ -1478,7 +1441,7 @@ create_display(const char *gralloc)
         std::string display_str(display_env);
         // remove the colon from :0
         display_str.erase(std::remove(display_str.begin(), display_str.end(), ':'), display_str.end());
-        display_path = "unix:/tmp/.X11-unix/X" + display_str;
+        display_path = "unix:/tmpx11/.X11-unix/X" + display_str;
     }
     display->x11display = XOpenDisplay(display_path.c_str());
     if (!display->x11display){
@@ -1510,8 +1473,6 @@ create_display(const char *gralloc)
         return NULL;
     }
 
-    property_set("openfde.caps.lock.state", "0");
-
     property_set("openfde.x11.display", "1");
     sem_init(&display->egl_go, 0, 0);
     sem_init(&display->egl_done, 0, 0);
@@ -1519,7 +1480,7 @@ create_display(const char *gralloc)
     umask(0);
     mkdir("/dev/input", S_IRWXO | S_IRWXG | S_IRWXU);
     chown("/dev/input", 1000, 1000);
-    display->task = IWaydroidTask::getService();
+    display->task = IOpenfdeTask::getService();
     display->isTouchDown = false;
     display->lastAxisEventNanoSeconds = 0;
     display->gesture_scale = 260;

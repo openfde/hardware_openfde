@@ -39,7 +39,7 @@ cc_prebuilt_library_shared {
     ],
     proprietary : true,
     vendor: false,
-    visibility: ["//hardware/waydroid/hwcomposerx11"],
+    visibility: ["//hardware/openfde/hwcomposerx11"],
 }
 cc_prebuilt_library_shared {
     name: "libX11-xcb",
@@ -65,7 +65,7 @@ cc_prebuilt_library_shared {
     ],
     proprietary : true,
     vendor: false,
-    visibility: ["//hardware/waydroid/hwcomposerx11"],
+    visibility: ["//hardware/openfde/hwcomposerx11"],
 }
 cc_prebuilt_library_shared {
     name: "libxcb-shape",
@@ -91,7 +91,7 @@ cc_prebuilt_library_shared {
     ],
     proprietary : true,
     vendor: false,
-    visibility: ["//hardware/waydroid/hwcomposerx11"],
+    visibility: ["//hardware/openfde/hwcomposerx11"],
 }
 cc_prebuilt_library_shared {
     name: "libX11",
@@ -117,7 +117,7 @@ cc_prebuilt_library_shared {
     ],
     proprietary : true,
     vendor: false,
-    visibility: ["//hardware/waydroid/hwcomposerx11"],
+    visibility: ["//hardware/openfde/hwcomposerx11"],
 }
 
 cc_prebuilt_library_shared {
@@ -164,7 +164,7 @@ cc_prebuilt_library_shared {
     },
     proprietary : true,
     vendor: false,
-    visibility: ["//hardware/waydroid/hwcomposerx11"],
+    visibility: ["//hardware/openfde/hwcomposerx11"],
 }
 
 cc_prebuilt_library_shared {
@@ -307,15 +307,15 @@ cc_library_shared {
         "libxcb-util",
         "libxcb-dri3",
         "libxcb-shape",
-        "vendor.waydroid.display@1.0",
-        "vendor.waydroid.display@1.1",
-        "vendor.waydroid.task@1.0",
-        "vendor.waydroid.window@1.0",
-        "vendor.waydroid.window@1.1",
-        "vendor.waydroid.window@1.2",
+        "vendor.openfde.display@1.0",
+        "vendor.openfde.display@1.1",
+        "vendor.openfde.task@1.0",
+        "vendor.openfde.window@1.0",
+        "vendor.openfde.window@1.1",
+        "vendor.openfde.window@1.2",
     ],
     static_libs: [
-        "libwayland_client",
+        "libwayland_client_static",
         "libffi",
         "libwayland_extension_client_protocols",
         "libxkbcommon",
@@ -330,15 +330,11 @@ cc_library_shared {
     header_libs: [
         "libsystem_headers",
         "minigbm_headers",
-//        "libgralloc_cb.ranchu",
     ],
     include_dirs: [
         "system/core",
         "system/core/libsync",
         "system/core/libsync/include",
-        "device/generic/goldfish-opengl/shared/gralloc_cb/include",
-        "device/generic/goldfish-opengl/shared/qemupipe/include",
-        "device/generic/goldfish-opengl/shared/qemupipe/include-types",
     ],
 
     local_include_dirs: [
