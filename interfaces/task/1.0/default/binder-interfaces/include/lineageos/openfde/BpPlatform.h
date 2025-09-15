@@ -15,6 +15,8 @@ public:
   explicit BpPlatform(const ::android::sp<::android::IBinder>& _aidl_impl);
   virtual ~BpPlatform() = default;
   ::android::binder::Status getAppName(const ::android::String16& packageName, ::android::String16* _aidl_return) override;
+  ::android::binder::Status commitText(const ::android::String16& text) override;
+  ::android::binder::Status sendKeyEvent(int32_t action, int32_t code) override;
 };  // class BpPlatform
 
 }  // namespace openfde

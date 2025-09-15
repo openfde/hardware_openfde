@@ -1,0 +1,372 @@
+// Copyright (C) 2021 The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// HAL module implemenation stored in
+// hw/<OVERLAY_HARDWARE_MODULE_ID>.<ro.product.board>.so
+cc_prebuilt_library_shared {
+    name: "libXrender",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libXrender.so"],
+        },
+    },
+
+    shared_libs: [
+        "libX11",
+        "libxcb",
+        "libandroid-support",
+        "libdl",
+    ],
+    proprietary : true,
+    vendor: false,
+    visibility: ["//hardware/waydroid/hwcomposerx11"],
+}
+cc_prebuilt_library_shared {
+    name: "libX11-xcb",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libX11-xcb.so"],
+        },
+    },
+
+    shared_libs: [
+        "libxcb",
+        "libandroid-support",
+        "libdl",
+    ],
+    proprietary : true,
+    vendor: false,
+    visibility: ["//hardware/waydroid/hwcomposerx11"],
+}
+cc_prebuilt_library_shared {
+    name: "libxcb-shape",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libxcb-shape.so"],
+        },
+    },
+
+    shared_libs: [
+        "libxcb",
+        "libXau",
+        "libXdmcp",
+    ],
+    proprietary : true,
+    vendor: false,
+    visibility: ["//hardware/waydroid/hwcomposerx11"],
+}
+cc_prebuilt_library_shared {
+    name: "libX11",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libX11.so"],
+        },
+    },
+
+    shared_libs: [
+        "libxcb",
+        "libandroid-support",
+        "libdl",
+    ],
+    proprietary : true,
+    vendor: false,
+    visibility: ["//hardware/waydroid/hwcomposerx11"],
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb-dri3",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libxcb-dri3.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+        "libxcb",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
+
+cc_prebuilt_library_shared {
+    name: "libandroid-support",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libandroid-support.so"],
+        },
+    },
+    proprietary : true,
+    vendor: false,
+    visibility: ["//hardware/waydroid/hwcomposerx11"],
+}
+
+cc_prebuilt_library_shared {
+    name: "libXau",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libXau.so"],
+        },
+    },
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libXdmcp",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libXdmcp.so"],
+        },
+    },
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libxcb.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb-util",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libxcb-util.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+        "libxcb",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb-imdkit",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libxcb-imdkit.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+        "libxcb",
+        "libxcb-util",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
+cc_library_shared {
+    name: "hwcomposer.x11",
+    relative_install_path: "hw",
+    vendor: true,
+    shared_libs: [
+        "liblog",
+        "libutils",
+        "libcutils",
+        "libhardware",
+        "libhidlbase",
+        "libhidltransport",
+        "libhwbinder",
+        "libsync",
+        "libui",
+        "libdrm",
+        "libEGL",
+        "libGLESv2",
+        "libX11",
+        "libX11-xcb",
+        "libXrender",
+        "libxcb",
+        "libxcb-imdkit",
+        "libxcb-util",
+        "libxcb-dri3",
+        "libxcb-shape",
+        "vendor.waydroid.display@1.0",
+        "vendor.waydroid.display@1.1",
+        "vendor.waydroid.task@1.0",
+        "vendor.waydroid.window@1.0",
+        "vendor.waydroid.window@1.1",
+        "vendor.waydroid.window@1.2",
+    ],
+    static_libs: [
+        "libwayland_client",
+        "libffi",
+        "libwayland_extension_client_protocols",
+        "libxkbcommon",
+    ],
+    srcs: [
+        "extension.cpp",
+        "hwcomposer.cpp",
+        "x11-hwc.cpp",
+        "WaydroidWindow.cpp",
+        "egl-tools.cpp",
+    ],
+    header_libs: [
+        "libsystem_headers",
+        "minigbm_headers",
+//        "libgralloc_cb.ranchu",
+    ],
+    include_dirs: [
+        "system/core",
+        "system/core/libsync",
+        "system/core/libsync/include",
+        "device/generic/goldfish-opengl/shared/gralloc_cb/include",
+        "device/generic/goldfish-opengl/shared/qemupipe/include",
+        "device/generic/goldfish-opengl/shared/qemupipe/include-types",
+    ],
+
+    local_include_dirs: [
+        "include"
+    ],
+
+    arch : {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            enabled: true,
+        },
+    },
+
+    cflags: [
+        "-DLOG_TAG=\"hwcomposer\"",
+        "-Wall",
+        "-Werror",
+        "-Wno-writable-strings",
+    ],
+    generated_sources: ["wayland_android_client_protocol_sources"],
+    generated_headers: ["wayland_android_client_protocol_headers"],
+}
+

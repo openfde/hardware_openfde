@@ -49,6 +49,9 @@ struct OpenfdeTask : public IOpenfdeTask {
     Return<void> removeTask(uint32_t taskID) override;
     Return<void> removeAllVisibleRecentTasks() override;
     Return<void> getAppName(const hidl_string& packageName, getAppName_cb _hidl_cb) override;
+    Return<void> commitText(const hidl_string& text) override;
+    Return<void> sendKeyEvent(int32_t action, int32_t code) override;
+
   private:
     sp<IActivityTaskManager> mActivityTaskManager;
     sp<IPlatform> mPlatform;
