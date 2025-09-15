@@ -15,6 +15,14 @@ IMPLEMENT_META_INTERFACE(Platform, "lineageos.openfde.IPlatform")
   return ::android::binder::Status::fromStatusT(::android::UNKNOWN_TRANSACTION);
 }
 
+::android::binder::Status IPlatformDefault::commitText(const ::android::String16&) {
+  return ::android::binder::Status::fromStatusT(::android::UNKNOWN_TRANSACTION);
+}
+
+::android::binder::Status IPlatformDefault::sendKeyEvent(int32_t, int32_t) {
+  return ::android::binder::Status::fromStatusT(::android::UNKNOWN_TRANSACTION);
+}
+
 }  // namespace openfde
 
 }  // namespace lineageos
@@ -62,6 +70,69 @@ BpPlatform::BpPlatform(const ::android::sp<::android::IBinder>& _aidl_impl)
   _aidl_status.setFromStatusT(_aidl_ret_status);
   return _aidl_status;
 }
+
+::android::binder::Status BpPlatform::commitText(const ::android::String16& text) {
+  ::android::Parcel _aidl_data;
+  ::android::Parcel _aidl_reply;
+  ::android::status_t _aidl_ret_status = ::android::OK;
+  ::android::binder::Status _aidl_status;
+  _aidl_ret_status = _aidl_data.writeInterfaceToken(getInterfaceDescriptor());
+  if (((_aidl_ret_status) != (::android::OK))) {
+    goto _aidl_error;
+  }
+  _aidl_ret_status = _aidl_data.writeString16(text);
+  if (((_aidl_ret_status) != (::android::OK))) {
+    goto _aidl_error;
+  }
+  _aidl_ret_status = remote()->transact(::android::IBinder::FIRST_CALL_TRANSACTION + 19 /* commitText */, _aidl_data, &_aidl_reply);
+  if (((_aidl_ret_status) != (::android::OK))) {
+    goto _aidl_error;
+  }
+  _aidl_ret_status = _aidl_status.readFromParcel(_aidl_reply);
+  if (((_aidl_ret_status) != (::android::OK))) {
+    goto _aidl_error;
+  }
+  if (!_aidl_status.isOk()) {
+    return _aidl_status;
+  }
+  _aidl_error:
+  _aidl_status.setFromStatusT(_aidl_ret_status);
+  return _aidl_status;
+}
+
+::android::binder::Status BpPlatform::sendKeyEvent(int32_t action, int32_t code) {
+  ::android::Parcel _aidl_data;
+  ::android::Parcel _aidl_reply;
+  ::android::status_t _aidl_ret_status = ::android::OK;
+  ::android::binder::Status _aidl_status;
+  _aidl_ret_status = _aidl_data.writeInterfaceToken(getInterfaceDescriptor());
+  if (((_aidl_ret_status) != (::android::OK))) {
+    goto _aidl_error;
+  }
+  _aidl_ret_status = _aidl_data.writeInt32(action);
+  if (((_aidl_ret_status) != (::android::OK))) {
+    goto _aidl_error;
+  }
+  _aidl_ret_status = _aidl_data.writeInt32(code);
+  if (((_aidl_ret_status) != (::android::OK))) {
+    goto _aidl_error;
+  }
+  _aidl_ret_status = remote()->transact(::android::IBinder::FIRST_CALL_TRANSACTION + 20 /* sendKeyEvent */, _aidl_data, &_aidl_reply);
+  if (((_aidl_ret_status) != (::android::OK))) {
+    goto _aidl_error;
+  }
+  _aidl_ret_status = _aidl_status.readFromParcel(_aidl_reply);
+  if (((_aidl_ret_status) != (::android::OK))) {
+    goto _aidl_error;
+  }
+  if (!_aidl_status.isOk()) {
+    return _aidl_status;
+  }
+  _aidl_error:
+  _aidl_status.setFromStatusT(_aidl_ret_status);
+  return _aidl_status;
+}
+
 
 }  // namespace openfde
 
