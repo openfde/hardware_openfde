@@ -1441,7 +1441,7 @@ create_display(const char *gralloc)
         std::string display_str(display_env);
         // remove the colon from :0
         display_str.erase(std::remove(display_str.begin(), display_str.end(), ':'), display_str.end());
-        display_path = "unix:/tmpx11/.X11-unix/X" + display_str;
+        display_path = "unix:/tmpx11/X" + display_str;
     }
     display->x11display = XOpenDisplay(display_path.c_str());
     if (!display->x11display){
