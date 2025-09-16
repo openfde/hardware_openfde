@@ -1436,7 +1436,7 @@ create_display(const char *gralloc)
     display->x11display = NULL;
     ALOGI("x11 display env %s", getenv("DISPLAY"));
     const char* display_env = getenv("DISPLAY");
-    std::string display_path = "unix:/tmp/.X11-unix/X0";
+    std::string display_path = "unix:/tmpx11/X0";
     if (display_env && strlen(display_env) > 0) {
         std::string display_str(display_env);
         // remove the colon from :0
