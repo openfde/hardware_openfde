@@ -514,6 +514,9 @@ void on_key_press(void *data, xcb_key_press_event_t *event) {
     if (key == KEY_LEFTCTRL || key == KEY_RIGHTCTRL){
         display->ctrl_key_pressed = 1;
     }
+    if(key == KEY_CAPSLOCK){
+        return;
+    }
     send_key_event((struct display*)data, key, (wl_keyboard_key_state)1);
 }
 
@@ -525,6 +528,24 @@ void on_key_release(void *data, xcb_key_release_event_t *event) {
     struct display* display = (struct display*)data;
     if (key == KEY_LEFTCTRL || key == KEY_RIGHTCTRL){
         display->ctrl_key_pressed = 0;
+    }
+    if(key == KEY_CAPSLOCK){
+        XkbStateRec state;
+        XkbGetState(display->x11display, XkbUseCoreKbd, &state);
+        bool externalCapsLockState = state.locked_mods & LockMask;
+        if (externalCapsLockState) {
+            ALOGE("on_key_release External Caps Lock is ON");
+        }else{
+            ALOGE("on_key_release External Caps Lock is OFF");
+        }
+        std::scoped_lock caps_lock(display->internalCapsLockStateMutex);
+        if(display->internalCapsLockState != externalCapsLockState){
+            display->internalCapsLockState = externalCapsLockState;
+            ALOGE("on_key_release update display->internalCapsLockState: %d", display->internalCapsLockState);
+            send_key_event(display, KEY_CAPSLOCK, (wl_keyboard_key_state)1);
+            send_key_event(display, KEY_CAPSLOCK, (wl_keyboard_key_state)0);
+        }
+        return;
     }
     send_key_event((struct display*)data, key, (wl_keyboard_key_state)0);
 }
@@ -985,6 +1006,21 @@ void *event_loop_thread(void *arg) {
                     }
                 }
                 disable_auto_repeat(display->x11display);
+                XkbStateRec state;
+                XkbGetState(display->x11display, XkbUseCoreKbd, &state);
+                bool externalCapsLockState = state.locked_mods & LockMask;
+                if (externalCapsLockState) {
+                    ALOGE("XCB_FOCUS_IN External Caps Lock is ON");
+                }else{
+                    ALOGE("XCB_FOCUS_IN External Caps Lock is OFF");
+                }
+                std::scoped_lock caps_lock(display->internalCapsLockStateMutex);
+                if(display->internalCapsLockState != externalCapsLockState){
+                    display->internalCapsLockState = externalCapsLockState;
+                    ALOGE("XCB_FOCUS_IN update display->internalCapsLockState: %d", display->internalCapsLockState);
+                    send_key_event(display, KEY_CAPSLOCK, (wl_keyboard_key_state)1);
+                    send_key_event(display, KEY_CAPSLOCK, (wl_keyboard_key_state)0);
+                }
                 break;
             }
             case XCB_FOCUS_OUT:{
@@ -1473,6 +1509,7 @@ create_display(const char *gralloc)
         return NULL;
     }
 
+    display->internalCapsLockState = false;
     property_set("openfde.x11.display", "1");
     sem_init(&display->egl_go, 0, 0);
     sem_init(&display->egl_done, 0, 0);

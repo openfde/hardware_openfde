@@ -175,6 +175,8 @@ struct display {
     bool ctrl_key_pressed;
     wl_fixed_t gesture_scale;
     bool axis_simulation_two_finger_started;
+    bool internalCapsLockState;
+    std::mutex internalCapsLockStateMutex;
 };
 
 struct buffer {
