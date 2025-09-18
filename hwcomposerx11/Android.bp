@@ -335,6 +335,9 @@ cc_library_shared {
         "system/core",
         "system/core/libsync",
         "system/core/libsync/include",
+        "device/generic/goldfish-opengl/shared/gralloc_cb/include",
+        "device/generic/goldfish-opengl/shared/qemupipe/include",
+        "device/generic/goldfish-opengl/shared/qemupipe/include-types",
     ],
 
     local_include_dirs: [
