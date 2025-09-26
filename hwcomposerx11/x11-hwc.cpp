@@ -305,7 +305,7 @@ send_key_event(display *data, uint32_t key, wl_keyboard_key_state state)
     }
     ADD_EVENT(EV_KEY, key, state);
 
-    ALOGE("send_key_event write INPUT_KEYBOARD");
+    ALOGE("send_key_event write INPUT_KEYBOARD key: %d, state: %d", key, state);
     res = write(display->input_fd[INPUT_KEYBOARD], &event, sizeof(event));
     if (res < sizeof(event))
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -508,7 +508,7 @@ void register_motion_notify_callback(MotionNotifyCallback cb) { dispatcher.motio
 void on_key_press(void *data, xcb_key_press_event_t *event) {
     ALOGI("x11 keyboard press: keycode=%u\n", event->detail);
     uint32_t key = event->detail - 8;
-    if (event->detail == KEY_POWER)
+    if (key == KEY_POWER)
         return;
     struct display* display = (struct display*)data;
     if (key == KEY_LEFTCTRL || key == KEY_RIGHTCTRL){
