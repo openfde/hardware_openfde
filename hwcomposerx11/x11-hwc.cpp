@@ -62,6 +62,8 @@
 #include <cutils/properties.h>
 
 #include <xkbcommon/xkbcommon.h>
+#include <X11/XKBlib.h>
+
 
 #include <wayland-client.h>
 #include <wayland-android-client-protocol.h>
