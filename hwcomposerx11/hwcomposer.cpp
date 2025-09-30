@@ -41,6 +41,7 @@
 #include <viewporter-client-protocol.h>
 #include <gralloc_handle.h>
 #include <cros_gralloc/cros_gralloc_handle.h>
+#include <gralloc_cb_bp.h>
 #include <system/graphics.h>
 
 #include <X11/Xlib.h>
@@ -542,7 +543,7 @@ static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev,
             delete buf;
             return NULL;
         }
-    /*} else if (pdev->display->gtype == GRALLOC_RANCHU) {
+    } else if (pdev->display->gtype == GRALLOC_RANCHU) {
         struct cb_handle_t* cb_handle = (struct cb_handle_t*)layer->handle;
         auto width = cb_handle->width;
         auto height = cb_handle->height;
@@ -573,7 +574,6 @@ static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev,
             delete buf;
             return NULL;
         }
-	*/
     } else if (pdev->display->gtype == GRALLOC_CROS) {
         const struct cros_gralloc_handle *cros_handle = (const struct cros_gralloc_handle *)layer->handle;
         buf->width=cros_handle->width;
