@@ -4,7 +4,7 @@
 #include <binder/IBinder.h>
 #include <binder/IInterface.h>
 #include <utils/Errors.h>
-#include <lineageos/openfde/IPlatform.h>
+#include <android/openfde/IPlatform.h>
 
 namespace lineageos {
 

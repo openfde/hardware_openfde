@@ -23,7 +23,7 @@
 #include <hidl/Status.h>
 
 #include <android/app/IActivityTaskManager.h>
-#include <lineageos/openfde/IPlatform.h>
+#include <android/openfde/IPlatform.h>
 
 namespace vendor {
 namespace openfde {

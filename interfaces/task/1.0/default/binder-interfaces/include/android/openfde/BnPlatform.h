@@ -2,7 +2,7 @@
 #define AIDL_GENERATED_LINEAGEOS_WAYDROID_BN_PLATFORM_H_
 
 #include <binder/IInterface.h>
-#include <lineageos/openfde/IPlatform.h>
+#include <android/openfde/IPlatform.h>
 
 namespace lineageos {
 

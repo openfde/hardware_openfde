@@ -1,11 +1,11 @@
-#include <lineageos/openfde/IPlatform.h>
-#include <lineageos/openfde/BpPlatform.h>
+#include <android/openfde/IPlatform.h>
+#include <android/openfde/BpPlatform.h>
 
 namespace lineageos {
 
 namespace openfde {
 
-IMPLEMENT_META_INTERFACE(Platform, "lineageos.openfde.IPlatform")
+IMPLEMENT_META_INTERFACE(Platform, "android.openfde.IPlatform")
 
 ::android::IBinder* IPlatformDefault::onAsBinder() {
   return nullptr;
@@ -26,7 +26,7 @@ IMPLEMENT_META_INTERFACE(Platform, "lineageos.openfde.IPlatform")
 }  // namespace openfde
 
 }  // namespace lineageos
-#include <lineageos/openfde/BpPlatform.h>
+#include <android/openfde/BpPlatform.h>
 #include <binder/Parcel.h>
 #include <android-base/macros.h>
 
@@ -84,7 +84,7 @@ BpPlatform::BpPlatform(const ::android::sp<::android::IBinder>& _aidl_impl)
   if (((_aidl_ret_status) != (::android::OK))) {
     goto _aidl_error;
   }
-  _aidl_ret_status = remote()->transact(::android::IBinder::FIRST_CALL_TRANSACTION + 19 /* commitText */, _aidl_data, &_aidl_reply);
+  _aidl_ret_status = remote()->transact(::android::IBinder::FIRST_CALL_TRANSACTION + 13 /* commitText */, _aidl_data, &_aidl_reply);
   if (((_aidl_ret_status) != (::android::OK))) {
     goto _aidl_error;
   }
@@ -117,7 +117,7 @@ BpPlatform::BpPlatform(const ::android::sp<::android::IBinder>& _aidl_impl)
   if (((_aidl_ret_status) != (::android::OK))) {
     goto _aidl_error;
   }
-  _aidl_ret_status = remote()->transact(::android::IBinder::FIRST_CALL_TRANSACTION + 20 /* sendKeyEvent */, _aidl_data, &_aidl_reply);
+  _aidl_ret_status = remote()->transact(::android::IBinder::FIRST_CALL_TRANSACTION + 14 /* sendKeyEvent */, _aidl_data, &_aidl_reply);
   if (((_aidl_ret_status) != (::android::OK))) {
     goto _aidl_error;
   }
@@ -137,7 +137,7 @@ BpPlatform::BpPlatform(const ::android::sp<::android::IBinder>& _aidl_impl)
 }  // namespace openfde
 
 }  // namespace lineageos
-#include <lineageos/openfde/BnPlatform.h>
+#include <android/openfde/BnPlatform.h>
 #include <binder/Parcel.h>
 
 namespace lineageos {
