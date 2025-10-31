@@ -136,7 +136,7 @@ static bool update_cursor_surface(openfde_hwc_composer_device_1* pdev, hwc_layer
         wl_surface_damage_buffer(pdev->display->cursor_surface, 0, 0, buf->width, buf->height);
     else
         wl_surface_damage(pdev->display->cursor_surface, 0, 0, buf->width, buf->height);
-    if (!pdev->display->viewporter && pdev->display->scale > 1) {
+    if ((pdev->display->gtype == GRALLOC_LEOPARD || !pdev->display->viewporter) && pdev->display->scale > 1) {
         // With no viewporter the scale is guaranteed to be integer
         wl_surface_set_buffer_scale(pdev->display->cursor_surface, (int)pdev->display->scale);
     } else if (pdev->display->viewporter && pdev->display->scale != 1) {
