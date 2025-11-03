@@ -971,22 +971,24 @@ void *event_loop_thread(void *arg) {
         }
         uint8_t event_type = event->response_type & ~0x80;
         ALOGD("Processing event: type=%d", event_type);
-        if(display->im){
-            if (!xcb_xim_filter_event(display->im, event)) {
-                // Forward event to input method if IC is created.
-                if (display->ic && (((event->response_type & ~0x80) == XCB_KEY_PRESS) ||
-                           ((event->response_type & ~0x80) == XCB_KEY_RELEASE))) {
-                    xcb_xim_forward_event(display->im, display->ic, (xcb_key_press_event_t *)event);
+        if(display->multi_windows){
+            if(display->im){
+                if (!xcb_xim_filter_event(display->im, event)) {
+                    // Forward event to input method if IC is created.
+                    if (display->ic && (((event->response_type & ~0x80) == XCB_KEY_PRESS) ||
+                               ((event->response_type & ~0x80) == XCB_KEY_RELEASE))) {
+                        xcb_xim_forward_event(display->im, display->ic, (xcb_key_press_event_t *)event);
+                        free(event);
+                        continue;
+                    }
+                }else{
+                    ALOGI("event has been consumed by input method. ");
                     free(event);
                     continue;
                 }
             }else{
-                ALOGI("event has been consumed by input method. ");
-                free(event);
-                continue;
+                ALOGE("error im is null. ");
             }
-        }else{
-            ALOGE("error im is null. ");
         }
 
         switch (event_type) {
@@ -1082,6 +1084,16 @@ void *event_loop_thread(void *arg) {
             case XCB_MOTION_NOTIFY:
                 if (dispatcher.motion_notify_cb) {
                     dispatcher.motion_notify_cb(arg, (xcb_motion_notify_event_t *)event);
+                }
+                break;
+            case XCB_KEY_PRESS:
+                if (dispatcher.key_press_cb) {
+                    dispatcher.key_press_cb(display, (xcb_key_press_event_t *)event);
+                }
+                break;
+            case XCB_KEY_RELEASE:
+                if (dispatcher.key_release_cb) {
+                    dispatcher.key_release_cb(display, (xcb_key_release_event_t *)event);
                 }
                 break;
         }
@@ -1499,16 +1511,19 @@ create_display(const char *gralloc)
     display->screen_default_nbr = XDefaultScreen(display->x11display);
     ALOGE("XDefaultScreen display->screen_default_nbr: %d", display->screen_default_nbr);
 
-    display->im = xcb_xim_create(display->xcbconnection, display->screen_default_nbr, NULL);
-    xcb_xim_set_im_callback(display->im, &callback, display);
-    xcb_xim_set_use_compound_text(display->im, true);
-    xcb_xim_set_use_utf8_string(display->im, true);
+    display->multi_windows = property_get_bool("persist.openfde.multi_windows", false);
+    if(display->multi_windows){
+        display->im = xcb_xim_create(display->xcbconnection, display->screen_default_nbr, NULL);
+        xcb_xim_set_im_callback(display->im, &callback, display);
+        xcb_xim_set_use_compound_text(display->im, true);
+        xcb_xim_set_use_utf8_string(display->im, true);
 
-    // Open connection to XIM server.
-    bool result = xcb_xim_open(display->im, open_im_callback, true, display);
-    ALOGE("xcb_xim_open result = %d", result);
-    if(!result){
-        return NULL;
+        // Open connection to XIM server.
+        bool result = xcb_xim_open(display->im, open_im_callback, true, display);
+        ALOGE("xcb_xim_open result = %d", result);
+        if(!result){
+            return NULL;
+        }
     }
 
     display->internalCapsLockState = false;
