@@ -177,6 +177,7 @@ struct display {
     bool axis_simulation_two_finger_started;
     bool internalCapsLockState;
     std::mutex internalCapsLockStateMutex;
+    bool multi_windows;
 };
 
 struct buffer {

@@ -1534,11 +1534,13 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     pdev->timeline_fd = sw_sync_timeline_create();
     pdev->next_sync_point = 1;
 
-    if (property_get("openfde.xmodifiers", property, "@im=fcitx") > 0) {
-        setenv("XMODIFIERS", property, 1);
+    if(pdev->multi_windows){
+        if (property_get("openfde.xmodifiers", property, "@im=fcitx") > 0) {
+            setenv("XMODIFIERS", property, 1);
+        }
+        // Init global state for compound text encoding.
+        xcb_compound_text_init();
     }
-    // Init global state for compound text encoding.
-    xcb_compound_text_init();
 
     if (property_get("openfde.xdg_runtime_dir", property, "/run/user/1000") > 0) {
         setenv("XDG_RUNTIME_DIR", property, 1);
