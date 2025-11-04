@@ -756,7 +756,8 @@ x11_pointer_handle_axis(void *data,  uint32_t axis, int value)
 void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
     ALOGI("on_button_press: botton=%u, position=(%d, %d)\n",
            xcb_button_event->detail, xcb_button_event->event_x, xcb_button_event->event_y);
-    if(xcb_button_event->detail == XCB_BUTTON_INDEX_4 || xcb_button_event->detail == XCB_BUTTON_INDEX_5){
+    if(xcb_button_event->detail == XCB_BUTTON_INDEX_4 || xcb_button_event->detail == XCB_BUTTON_INDEX_5
+        || xcb_button_event->detail == 6 || xcb_button_event->detail == 7){
         ALOGE("on_button_press %d return", xcb_button_event->detail);
         return;
     }
@@ -817,6 +818,12 @@ void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event)
     if(xcb_button_event->detail == XCB_BUTTON_INDEX_4 || xcb_button_event->detail == XCB_BUTTON_INDEX_5){
         uint32_t axis = 0;
         int value = (xcb_button_event->detail == XCB_BUTTON_INDEX_4) ? -2560 : 2560;
+        display->wheelEvtIsDiscrete = true;
+        x11_pointer_handle_axis(data, axis, value);
+        return;
+    }else if(xcb_button_event->detail == 6 || xcb_button_event->detail == 7){
+        uint32_t axis = 1;
+        int value = (xcb_button_event->detail == 6) ? -2560 : 2560;
         display->wheelEvtIsDiscrete = true;
         x11_pointer_handle_axis(data, axis, value);
         return;
