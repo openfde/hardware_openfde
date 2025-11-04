@@ -1063,20 +1063,22 @@ void *event_loop_thread(void *arg) {
                 break;
             }
             case XCB_BUTTON_PRESS:{
-                    ALOGV("XCB_BUTTON_PRESS received");
+                    ALOGD("XCB_BUTTON_PRESS received");
                     if (dispatcher.button_press_cb) {
                         dispatcher.button_press_cb(arg, (xcb_button_press_event_t *)event);
                     }
-                    xcb_button_press_event_t *xcb_button_event = (xcb_button_press_event_t *)event;
-                    if(display->im){
-                        xcb_point_t spot = {xcb_button_event->root_x, xcb_button_event->root_y};
-                        ALOGI("on button press update_spot_location x: %d, y: %d", spot.x, spot.y);
-                        update_spot_location(display->im, display->ic, spot);
+                    if(display->multi_windows){
+                        xcb_button_press_event_t *xcb_button_event = (xcb_button_press_event_t *)event;
+                        if(display->im){
+                            xcb_point_t spot = {xcb_button_event->root_x, xcb_button_event->root_y};
+                            ALOGI("on button press update_spot_location x: %d, y: %d", spot.x, spot.y);
+                            update_spot_location(display->im, display->ic, spot);
+                        }
                     }
                     break;
                 }
             case XCB_BUTTON_RELEASE:
-                ALOGV("XCB_BUTTON_RELEASE received");
+                ALOGD("XCB_BUTTON_RELEASE received");
                 if (dispatcher.button_release_cb) {
                     dispatcher.button_release_cb(arg, (xcb_button_release_event_t *)event);
                 }
@@ -1087,22 +1089,30 @@ void *event_loop_thread(void *arg) {
                 }
                 break;
             case XCB_KEY_PRESS:
+                ALOGD("XCB_KEY_PRESS received");
                 if (dispatcher.key_press_cb) {
-                    dispatcher.key_press_cb(display, (xcb_key_press_event_t *)event);
+                    dispatcher.key_press_cb(arg, (xcb_key_press_event_t *)event);
+                }else{
+                    ALOGE("error dispatcher.key_press_cb is null.");
                 }
                 break;
             case XCB_KEY_RELEASE:
+                ALOGD("XCB_KEY_RELEASE received");
                 if (dispatcher.key_release_cb) {
-                    dispatcher.key_release_cb(display, (xcb_key_release_event_t *)event);
+                    dispatcher.key_release_cb(arg, (xcb_key_release_event_t *)event);
+                }else{
+                    ALOGE("error dispatcher.key_release_cb is null.");
                 }
                 break;
         }
         free(event);
     }
-    if(display->im){
-        xcb_xim_close(display->im);
-        xcb_xim_destroy(display->im);
-	display->im = NULL;
+    if(display->multi_windows){
+        if(display->im){
+            xcb_xim_close(display->im);
+            xcb_xim_destroy(display->im);
+            display->im = NULL;
+        }
     }
 
     ALOGE("Exiting XCB event loop");
@@ -1593,10 +1603,12 @@ destroy_display(struct display *display)
     if (display->ic) {
         display->ic = 0;
     }
-    if (display->im) {
-        xcb_xim_close(display->im);
-        xcb_xim_destroy(display->im);
-        display->im = NULL;
+    if(display->multi_windows){
+        if (display->im) {
+            xcb_xim_close(display->im);
+            xcb_xim_destroy(display->im);
+            display->im = NULL;
+        }
     }
 
     if (display->xcbscreen) {
