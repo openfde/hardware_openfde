@@ -82,6 +82,7 @@ using ::android::hardware::hidl_string;
 
 const int AXIS_TOUCH_SLOT_ID = 8;
 const int AXIS_TOUCH_TRACKING_ID = AXIS_TOUCH_SLOT_ID;
+const int SCROLLING_STRIDE = 2560;
 
 static int find_argb_visual(struct display *display) ;
 void
@@ -817,13 +818,13 @@ void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event)
     struct display* display = (struct display*)data;
     if(xcb_button_event->detail == XCB_BUTTON_INDEX_4 || xcb_button_event->detail == XCB_BUTTON_INDEX_5){
         uint32_t axis = 0;
-        int value = (xcb_button_event->detail == XCB_BUTTON_INDEX_4) ? -2560 : 2560;
+        int value = (xcb_button_event->detail == XCB_BUTTON_INDEX_4) ? -SCROLLING_STRIDE : SCROLLING_STRIDE;
         display->wheelEvtIsDiscrete = true;
         x11_pointer_handle_axis(data, axis, value);
         return;
     }else if(xcb_button_event->detail == 6 || xcb_button_event->detail == 7){
         uint32_t axis = 1;
-        int value = (xcb_button_event->detail == 6) ? -2560 : 2560;
+        int value = (xcb_button_event->detail == 6) ? -SCROLLING_STRIDE : SCROLLING_STRIDE;
         display->wheelEvtIsDiscrete = true;
         x11_pointer_handle_axis(data, axis, value);
         return;
