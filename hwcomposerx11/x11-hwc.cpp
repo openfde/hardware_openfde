@@ -64,9 +64,6 @@
 #include <xkbcommon/xkbcommon.h>
 #include <X11/XKBlib.h>
 
-
-#include <wayland-client.h>
-#include <wayland-android-client-protocol.h>
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
 #include "presentation-time-client-protocol.h"
@@ -287,7 +284,7 @@ ensure_pipe(struct display* display, int input_type)
     event[n].value = value_;                       \
     n++;
 static void
-send_key_event(display *data, uint32_t key, wl_keyboard_key_state state)
+send_key_event(display *data, uint32_t key, x11_keyboard_key_state state)
 {
     struct display* display = (struct display*)data;
     struct input_event event[1];
@@ -520,7 +517,7 @@ void on_key_press(void *data, xcb_key_press_event_t *event) {
     if(key == KEY_CAPSLOCK || key == KEY_NUMLOCK){
         return;
     }
-    send_key_event((struct display*)data, key, (wl_keyboard_key_state)1);
+    send_key_event((struct display*)data, key, X11_KEYBOARD_KEY_STATE_PRESSED);
 }
 
 void on_key_release(void *data, xcb_key_release_event_t *event) {
@@ -545,8 +542,8 @@ void on_key_release(void *data, xcb_key_release_event_t *event) {
         if(display->internalCapsLockState != externalCapsLockState){
             display->internalCapsLockState = externalCapsLockState;
             ALOGD("on_key_release update display->internalCapsLockState: %d", display->internalCapsLockState);
-            send_key_event(display, KEY_CAPSLOCK, (wl_keyboard_key_state)1);
-            send_key_event(display, KEY_CAPSLOCK, (wl_keyboard_key_state)0);
+            send_key_event(display, KEY_CAPSLOCK, X11_KEYBOARD_KEY_STATE_PRESSED);
+            send_key_event(display, KEY_CAPSLOCK, X11_KEYBOARD_KEY_STATE_RELEASED);
         }
         return;
     }
@@ -563,12 +560,12 @@ void on_key_release(void *data, xcb_key_release_event_t *event) {
         if(display->internalNumLockState != externalNumLockState){
             display->internalNumLockState = externalNumLockState;
             ALOGD("on_key_release update display->internalNumLockState: %d", display->internalNumLockState);
-            send_key_event(display, KEY_NUMLOCK, (wl_keyboard_key_state)1);
-            send_key_event(display, KEY_NUMLOCK, (wl_keyboard_key_state)0);
+            send_key_event(display, KEY_NUMLOCK, X11_KEYBOARD_KEY_STATE_PRESSED);
+            send_key_event(display, KEY_NUMLOCK, X11_KEYBOARD_KEY_STATE_RELEASED);
         }
         return;
     }
-    send_key_event((struct display*)data, key, (wl_keyboard_key_state)0);
+    send_key_event((struct display*)data, key, X11_KEYBOARD_KEY_STATE_RELEASED);
 }
 
 static void handle_pinch_update(void *data, uint32_t time, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t scale, wl_fixed_t rotation)
@@ -1048,8 +1045,8 @@ void *event_loop_thread(void *arg) {
                 if(display->internalCapsLockState != externalCapsLockState){
                     display->internalCapsLockState = externalCapsLockState;
                     ALOGD("XCB_FOCUS_IN update display->internalCapsLockState: %d", display->internalCapsLockState);
-                    send_key_event(display, KEY_CAPSLOCK, (wl_keyboard_key_state)1);
-                    send_key_event(display, KEY_CAPSLOCK, (wl_keyboard_key_state)0);
+                    send_key_event(display, KEY_CAPSLOCK, X11_KEYBOARD_KEY_STATE_PRESSED);
+                    send_key_event(display, KEY_CAPSLOCK, X11_KEYBOARD_KEY_STATE_RELEASED);
                 }
 
                 bool externalNumLockState = state.locked_mods & Mod2Mask;
@@ -1062,16 +1059,16 @@ void *event_loop_thread(void *arg) {
                 if(display->internalNumLockState != externalNumLockState){
                     display->internalNumLockState = externalNumLockState;
                     ALOGD("XCB_FOCUS_IN update display->internalNumLockState: %d", display->internalNumLockState);
-                    send_key_event(display, KEY_NUMLOCK, (wl_keyboard_key_state)1);
-                    send_key_event(display, KEY_NUMLOCK, (wl_keyboard_key_state)0);
+                    send_key_event(display, KEY_NUMLOCK, X11_KEYBOARD_KEY_STATE_PRESSED);
+                    send_key_event(display, KEY_NUMLOCK, X11_KEYBOARD_KEY_STATE_RELEASED);
                 }
                 break;
             }
             case XCB_FOCUS_OUT:{
                 enable_auto_repeat(display->x11display);
                 for (size_t i = 0; i < display->keysDown.size(); i++) {
-                    if (display->keysDown[i] == WL_KEYBOARD_KEY_STATE_PRESSED) {
-                        send_key_event(display, i, WL_KEYBOARD_KEY_STATE_RELEASED);
+                    if (display->keysDown[i] == X11_KEYBOARD_KEY_STATE_PRESSED) {
+                        send_key_event(display, i, X11_KEYBOARD_KEY_STATE_RELEASED);
                     }
                 }
                 break;
