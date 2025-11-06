@@ -176,7 +176,9 @@ struct display {
     wl_fixed_t gesture_scale;
     bool axis_simulation_two_finger_started;
     bool internalCapsLockState;
+    bool internalNumLockState;
     std::mutex internalCapsLockStateMutex;
+    std::mutex internalNumLockStateMutex;
     bool multi_windows;
 };
 

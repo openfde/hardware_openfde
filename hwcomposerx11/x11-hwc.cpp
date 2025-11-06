@@ -517,7 +517,7 @@ void on_key_press(void *data, xcb_key_press_event_t *event) {
     if (key == KEY_LEFTCTRL || key == KEY_RIGHTCTRL){
         display->ctrl_key_pressed = 1;
     }
-    if(key == KEY_CAPSLOCK){
+    if(key == KEY_CAPSLOCK || key == KEY_NUMLOCK){
         return;
     }
     send_key_event((struct display*)data, key, (wl_keyboard_key_state)1);
@@ -547,6 +547,24 @@ void on_key_release(void *data, xcb_key_release_event_t *event) {
             ALOGE("on_key_release update display->internalCapsLockState: %d", display->internalCapsLockState);
             send_key_event(display, KEY_CAPSLOCK, (wl_keyboard_key_state)1);
             send_key_event(display, KEY_CAPSLOCK, (wl_keyboard_key_state)0);
+        }
+        return;
+    }
+    if(key == KEY_NUMLOCK){
+        XkbStateRec state;
+        XkbGetState(display->x11display, XkbUseCoreKbd, &state);
+        bool externalNumLockState = state.locked_mods & Mod2Mask;
+        if (externalNumLockState) {
+            ALOGE("on_key_release External Num Lock is ON");
+        }else{
+            ALOGE("on_key_release External Num Lock is OFF");
+        }
+        std::scoped_lock num_lock(display->internalNumLockStateMutex);
+        if(display->internalNumLockState != externalNumLockState){
+            display->internalNumLockState = externalNumLockState;
+            ALOGE("on_key_release update display->internalNumLockState: %d", display->internalNumLockState);
+            send_key_event(display, KEY_NUMLOCK, (wl_keyboard_key_state)1);
+            send_key_event(display, KEY_NUMLOCK, (wl_keyboard_key_state)0);
         }
         return;
     }
@@ -1032,6 +1050,20 @@ void *event_loop_thread(void *arg) {
                     ALOGE("XCB_FOCUS_IN update display->internalCapsLockState: %d", display->internalCapsLockState);
                     send_key_event(display, KEY_CAPSLOCK, (wl_keyboard_key_state)1);
                     send_key_event(display, KEY_CAPSLOCK, (wl_keyboard_key_state)0);
+                }
+
+                bool externalNumLockState = state.locked_mods & Mod2Mask;
+                if (externalNumLockState) {
+                    ALOGE("XCB_FOCUS_IN External Num Lock is ON");
+                }else{
+                    ALOGE("XCB_FOCUS_IN External Num Lock is OFF");
+                }
+                std::scoped_lock num_lock(display->internalNumLockStateMutex);
+                if(display->internalNumLockState != externalNumLockState){
+                    display->internalNumLockState = externalNumLockState;
+                    ALOGE("XCB_FOCUS_IN update display->internalNumLockState: %d", display->internalNumLockState);
+                    send_key_event(display, KEY_NUMLOCK, (wl_keyboard_key_state)1);
+                    send_key_event(display, KEY_NUMLOCK, (wl_keyboard_key_state)0);
                 }
                 break;
             }
@@ -1545,6 +1577,7 @@ create_display(const char *gralloc)
     }
 
     display->internalCapsLockState = false;
+    display->internalNumLockState = false;
     property_set("openfde.x11.display", "1");
     sem_init(&display->egl_go, 0, 0);
     sem_init(&display->egl_done, 0, 0);
