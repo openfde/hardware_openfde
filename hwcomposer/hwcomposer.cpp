@@ -136,7 +136,7 @@ static bool update_cursor_surface(openfde_hwc_composer_device_1* pdev, hwc_layer
         wl_surface_damage_buffer(pdev->display->cursor_surface, 0, 0, buf->width, buf->height);
     else
         wl_surface_damage(pdev->display->cursor_surface, 0, 0, buf->width, buf->height);
-    if ((pdev->display->gtype == GRALLOC_LEOPARD || !pdev->display->viewporter) && pdev->display->scale > 1) {
+    if ((pdev->display->gtype == GRALLOC_FTG340 || !pdev->display->viewporter) && pdev->display->scale > 1) {
         // With no viewporter the scale is guaranteed to be integer
         wl_surface_set_buffer_scale(pdev->display->cursor_surface, (int)pdev->display->scale);
     } else if (pdev->display->viewporter && pdev->display->scale != 1) {
@@ -311,7 +311,7 @@ static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, 
             }
             update_shm_buffer(pdev->display, buf);
         }
-    } else if (pdev->display->gtype == GRALLOC_LEOPARD) {
+    } else if (pdev->display->gtype == GRALLOC_FTG340) {
         const gc_private_handle_t *gc_handle = (const gc_private_handle_t *)layer->handle;
         if (pdev->display->dmabuf) {
             ret = create_dmabuf_wl_buffer(pdev->display, buf, gc_handle->width, gc_handle->height, gc_handle->format,

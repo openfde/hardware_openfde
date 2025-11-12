@@ -96,7 +96,7 @@ enum {
     GRALLOC_X100,
     GRALLOC_DEFAULT,
     GRALLOC_RANCHU,
-    GRALLOC_LEOPARD
+    GRALLOC_FTG340
 };
 
 enum x11_keyboard_key_state {
