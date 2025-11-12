@@ -360,7 +360,7 @@ static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pde
         format = drm_handle->format;
         usage = drm_handle->usage;
         prime_fd = drm_handle->prime_fd;
-    }else if (pdev->display->gtype == GRALLOC_LEOPARD) {
+    }else if (pdev->display->gtype == GRALLOC_FTG340) {
         const gc_private_handle_t *gc_handle = (const gc_private_handle_t *)layer->handle;
         width = gc_handle->width;
         height = gc_handle->height;
@@ -592,7 +592,7 @@ static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev,
             delete buf;
             return NULL;
         }
-    } else if (pdev->display->gtype == GRALLOC_LEOPARD) {
+    } else if (pdev->display->gtype == GRALLOC_FTG340) {
         const gc_private_handle_t *gc_handle = (const gc_private_handle_t *)layer->handle;
 	    buf->width=gc_handle->width;
 	    buf->height=gc_handle->height;

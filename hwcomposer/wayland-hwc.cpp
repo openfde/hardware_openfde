@@ -2312,7 +2312,7 @@ registry_handle_global(void *data, struct wl_registry *registry,
         d->android_wlegl = (struct android_wlegl*)wl_registry_bind(registry, id,
                 &android_wlegl_interface, 1);
     } else if ((d->gtype == GRALLOC_GBM || d->gtype == GRALLOC_CROS || d->gtype == GRALLOC_X100 ||
-               d->gtype == GRALLOC_LEOPARD) && (strcmp(interface, "zwp_linux_dmabuf_v1") == 0)) {
+               d->gtype == GRALLOC_FTG340) && (strcmp(interface, "zwp_linux_dmabuf_v1") == 0)) {
         if (version < 3)
             return;
         d->dmabuf = (struct zwp_linux_dmabuf_v1*)wl_registry_bind(registry, id,
@@ -2368,8 +2368,8 @@ get_gralloc_type(const char *gralloc)
         return GRALLOC_CROS;
     } else if (strcmp(gralloc, "ft2004") == 0) {
         return GRALLOC_X100;
-    } else if (strcmp(gralloc, "LEOPARD") == 0) {
-        return GRALLOC_LEOPARD;
+    } else if (strcmp(gralloc, "FTG340") == 0) {
+        return GRALLOC_FTG340;
     }else {
         return GRALLOC_ANDROID;
     }
