@@ -99,6 +99,18 @@ enum {
     GRALLOC_LEOPARD
 };
 
+enum x11_keyboard_key_state {
+        /**
+         * key is not pressed
+         */
+        X11_KEYBOARD_KEY_STATE_RELEASED = 0,
+        /**
+         * key is pressed
+         */
+        X11_KEYBOARD_KEY_STATE_PRESSED = 1,
+};
+
+
 #define MAX_TOUCHPOINTS 10
 
 struct layerFrame {
@@ -176,7 +188,9 @@ struct display {
     wl_fixed_t gesture_scale;
     bool axis_simulation_two_finger_started;
     bool internalCapsLockState;
+    bool internalNumLockState;
     std::mutex internalCapsLockStateMutex;
+    std::mutex internalNumLockStateMutex;
     bool multi_windows;
 };
 
