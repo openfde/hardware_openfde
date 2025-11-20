@@ -80,6 +80,10 @@ using ::android::hardware::hidl_string;
 const int AXIS_TOUCH_SLOT_ID = 8;
 const int AXIS_TOUCH_TRACKING_ID = AXIS_TOUCH_SLOT_ID;
 const int SCROLLING_STRIDE = 2560;
+struct display *mDisplay;
+int timer_active = 0;
+struct itimerval timer;
+#define TIMEOUT_MS 240
 
 static int find_argb_visual(struct display *display) ;
 void
@@ -482,6 +486,38 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
     return true;
 }
 
+void timer_handler(int sig) {
+    if (sig == SIGALRM) {
+        ALOGD("pointer axis stopped.");
+        if(mDisplay){
+            if(mDisplay->axis_simulation_two_finger_started){
+                pointer_cancel_axis_to_two_finger_touch(mDisplay);
+            }else{
+                pointer_cancel_axis_to_touch(mDisplay, true, true);
+            }
+        }
+        timer_active = 0;
+    }
+}
+
+void reset_timer() {
+    memset(&timer, 0, sizeof(timer));
+
+    timer.it_value.tv_sec = 0;
+    timer.it_value.tv_usec = TIMEOUT_MS * 1000;
+
+    setitimer(ITIMER_REAL, &timer, NULL);
+    timer_active = 1;
+}
+
+void init_timer() {
+    struct sigaction sa;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = timer_handler;
+    sigaction(SIGALRM, &sa, NULL);
+}
+
 
 typedef void (*KeyPressCallback)(void *data, xcb_key_press_event_t *event);
 typedef void (*KeyReleaseCallback)(void *data, xcb_key_release_event_t *event);
@@ -596,10 +632,10 @@ static void handle_pinch_update(void *data, uint32_t time, wl_fixed_t dx, wl_fix
     double iscale = wl_fixed_to_double(scale);
     double irotation = 90;
 
-    int x0 = x - (240.0 * iscale * cos(irotation));
-    int y0 = y - (240.0 * iscale * sin(irotation));
-    int x1 = x + (240.0 * iscale * cos(irotation));
-    int y1 = y + (240.0 * iscale * sin(irotation));
+    int x0 = x - (120.0 * iscale * cos(irotation));
+    int y0 = y - (120.0 * iscale * sin(irotation));
+    int x1 = x + (120.0 * iscale * cos(irotation));
+    int y1 = y + (120.0 * iscale * sin(irotation));
 
     ADD_EVENT(EV_ABS, ABS_MT_SLOT, 0);
     ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, 0);
@@ -734,10 +770,10 @@ x11_pointer_handle_axis(void *data,  uint32_t axis, int value)
     if(property_get_bool("fde.click_as_touch", false)){
         if(display->ctrl_key_pressed){
             if(touchMove > 0){
-                display->gesture_scale += 15;
+                display->gesture_scale += 40;
             }else{
-                display->gesture_scale -= 15;
-                if(display->gesture_scale < 15){
+                display->gesture_scale -= 40;
+                if(display->gesture_scale < 40){
                     display->gesture_scale = 5;
                 }
             }
@@ -775,6 +811,7 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
     if(xcb_button_event->detail == XCB_BUTTON_INDEX_4 || xcb_button_event->detail == XCB_BUTTON_INDEX_5
         || xcb_button_event->detail == 6 || xcb_button_event->detail == 7){
         ALOGE("on_button_press %d return", xcb_button_event->detail);
+        reset_timer();
         return;
     }
     struct display* display = (struct display*)data;
@@ -1626,6 +1663,9 @@ create_display(const char *gralloc)
     if (pthread_create(&event_thread, NULL, event_loop_thread, display) != 0) {
         ALOGE("Unable to create event processing thread\n");
     }
+
+    init_timer();
+    mDisplay = display;
 
     return display;
 }
