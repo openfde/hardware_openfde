@@ -83,7 +83,9 @@ const int SCROLLING_STRIDE = 2560;
 struct display *mDisplay;
 int timer_active = 0;
 struct itimerval timer;
-#define TIMEOUT_MS 240
+#define SCROLL_END_TIMEOUT_MS 240
+#define GESTURE_SCALING_STRIDE 40
+#define GESTURE_SCALING_START_DISTANCE 120.0
 
 static int find_argb_visual(struct display *display) ;
 void
@@ -504,7 +506,7 @@ void reset_timer() {
     memset(&timer, 0, sizeof(timer));
 
     timer.it_value.tv_sec = 0;
-    timer.it_value.tv_usec = TIMEOUT_MS * 1000;
+    timer.it_value.tv_usec = SCROLL_END_TIMEOUT_MS * 1000;
 
     setitimer(ITIMER_REAL, &timer, NULL);
     timer_active = 1;
@@ -632,10 +634,10 @@ static void handle_pinch_update(void *data, uint32_t time, wl_fixed_t dx, wl_fix
     double iscale = wl_fixed_to_double(scale);
     double irotation = 90;
 
-    int x0 = x - (120.0 * iscale * cos(irotation));
-    int y0 = y - (120.0 * iscale * sin(irotation));
-    int x1 = x + (120.0 * iscale * cos(irotation));
-    int y1 = y + (120.0 * iscale * sin(irotation));
+    int x0 = x - (GESTURE_SCALING_START_DISTANCE * iscale * cos(irotation));
+    int y0 = y - (GESTURE_SCALING_START_DISTANCE * iscale * sin(irotation));
+    int x1 = x + (GESTURE_SCALING_START_DISTANCE * iscale * cos(irotation));
+    int y1 = y + (GESTURE_SCALING_START_DISTANCE * iscale * sin(irotation));
 
     ADD_EVENT(EV_ABS, ABS_MT_SLOT, 0);
     ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, 0);
@@ -770,10 +772,10 @@ x11_pointer_handle_axis(void *data,  uint32_t axis, int value)
     if(property_get_bool("fde.click_as_touch", false)){
         if(display->ctrl_key_pressed){
             if(touchMove > 0){
-                display->gesture_scale += 40;
+                display->gesture_scale += GESTURE_SCALING_STRIDE;
             }else{
-                display->gesture_scale -= 40;
-                if(display->gesture_scale < 40){
+                display->gesture_scale -= GESTURE_SCALING_STRIDE;
+                if(display->gesture_scale < GESTURE_SCALING_STRIDE){
                     display->gesture_scale = 5;
                 }
             }
