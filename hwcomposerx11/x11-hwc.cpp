@@ -63,6 +63,7 @@
 
 #include <xkbcommon/xkbcommon.h>
 #include <X11/XKBlib.h>
+#include <xcb/xinput.h>
 
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
@@ -91,6 +92,7 @@ struct itimerval timer;
 
 static double gesture_scaling_start_distance;
 static int gesture_scaling_stride;
+static uint8_t xi_opcode;
 
 static int find_argb_visual(struct display *display) ;
 void
@@ -1038,6 +1040,169 @@ void update_spot_location(xcb_xim_t *im, xcb_xic_t ic, xcb_point_t spot) {
     free(nested.data);
 }
 
+static int
+get_touch_id(struct display *display, int id)
+{
+    int i = 0;
+    for (i = 0; i < MAX_TOUCHPOINTS; i++) {
+        if (display->touch_id[i] == id)
+            return i;
+    }
+    for (i = 0; i < MAX_TOUCHPOINTS; i++) {
+        if (display->touch_id[i] == -1) {
+            display->touch_id[i] = id;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int
+flush_touch_id(struct display *display, int id)
+{
+    for (int i = 0; i < MAX_TOUCHPOINTS; i++) {
+        if (display->touch_id[i] == id) {
+            display->touch_id[i] = -1;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void
+touch_handle_down(void *data,
+          int32_t id, int x, int y)
+{
+    struct display* display = (struct display*)data;
+    struct input_event event[6];
+    struct timespec rt;
+    unsigned int res, n = 0;
+
+    if (ensure_pipe(display, INPUT_TOUCH))
+        return;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
+       ALOGE("%s:%d error in touch clock_gettime: %s",
+            __FILE__, __LINE__, strerror(errno));
+    }
+
+    if (display->scale != 1) {
+        x = int(x * display->scale);
+        y = int(y * display->scale);
+    }
+
+    ADD_EVENT(EV_ABS, ABS_MT_SLOT, get_touch_id(display, id));
+    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, get_touch_id(display, id));
+    ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x);
+    ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y);
+    ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
+    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+
+    ALOGI("touch_handle_down write INPUT_TOUCH id: %d", get_touch_id(display, id));
+    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
+    if (res < sizeof(event))
+        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
+}
+
+static void
+touch_handle_up(void *data, int32_t id)
+{
+    struct display* display = (struct display*)data;
+    struct input_event event[3];
+    struct timespec rt;
+    unsigned int res, n = 0;
+
+    if (ensure_pipe(display, INPUT_TOUCH))
+        return;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
+       ALOGE("%s:%d error in touch clock_gettime: %s",
+            __FILE__, __LINE__, strerror(errno));
+    }
+
+    ADD_EVENT(EV_ABS, ABS_MT_SLOT, flush_touch_id(display, id));
+    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
+    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+
+    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
+    if (res < sizeof(event))
+        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
+}
+
+static void
+touch_handle_motion(void *data,      int32_t id, int x, int y)
+{
+    struct display* display = (struct display*)data;
+    struct input_event event[6];
+    struct timespec rt;
+
+    unsigned int res, n = 0;
+
+    if (ensure_pipe(display, INPUT_TOUCH))
+        return;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
+       ALOGE("%s:%d error in touch clock_gettime: %s",
+            __FILE__, __LINE__, strerror(errno));
+    }
+
+    if (display->scale != 1) {
+        x = int(x * display->scale);
+        y = int(y * display->scale);
+    }
+
+    ADD_EVENT(EV_ABS, ABS_MT_SLOT, get_touch_id(display, id));
+    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, get_touch_id(display, id));
+    ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x);
+    ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y);
+    ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
+    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+
+    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
+    if (res < sizeof(event))
+        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
+}
+
+static void
+touch_handle_cancel(void *data)
+{
+    struct display* display = (struct display*)data;
+    struct input_event event[6];
+    struct timespec rt;
+    unsigned int res, n;
+    int i, id;
+
+    if (ensure_pipe(display, INPUT_TOUCH))
+        return;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
+       ALOGE("%s:%d error in touch clock_gettime: %s",
+            __FILE__, __LINE__, strerror(errno));
+    }
+
+    // Cancel all touch points.
+    for (i = 0; i < MAX_TOUCHPOINTS; i++) {
+        if (display->touch_id[i] != -1) {
+            id = display->touch_id[i];
+            display->touch_id[i] = -1;
+
+            n = 0;
+            // Turn finger into palm.
+            ADD_EVENT(EV_ABS, ABS_MT_SLOT, i);
+            ADD_EVENT(EV_ABS, ABS_MT_TOOL_TYPE, MT_TOOL_PALM);
+            ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+            // Lift off.
+            ADD_EVENT(EV_ABS, ABS_MT_TOOL_TYPE, MT_TOOL_FINGER);
+            ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
+            ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+
+            res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
+            if (res < sizeof(event))
+                ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
+        }
+    }
+}
+
 void *event_loop_thread(void *arg) {
     ALOGE("input_loop_event start");
     struct display* display = (struct display*)arg;
@@ -1262,6 +1427,38 @@ void *event_loop_thread(void *arg) {
                     dispatcher.key_release_cb(arg, (xcb_key_release_event_t *)event);
                 }else{
                     ALOGE("error dispatcher.key_release_cb is null.");
+                }
+                break;
+            case XCB_GE_GENERIC:
+                xcb_ge_generic_event_t *ge = (xcb_ge_generic_event_t *)event;
+
+                if (ge->extension == xi_opcode) {
+                    switch (ge->event_type) {
+                        case XCB_INPUT_TOUCH_BEGIN: {
+                            xcb_input_touch_begin_event_t *tb = (xcb_input_touch_begin_event_t *)ge;
+                            double x = (double)tb->event_x / 65536.0;
+                            double y = (double)tb->event_y / 65536.0;
+                            ALOGD("Touch Begin: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", tb->detail, x, y, tb->deviceid);
+                            touch_handle_down(display, tb->detail, (int)x, (int)y);
+                            break;
+                        }
+                        case XCB_INPUT_TOUCH_UPDATE: {
+                            xcb_input_touch_update_event_t *tu = (xcb_input_touch_update_event_t *)ge;
+                            double x = (double)tu->event_x / 65536.0;
+                            double y = (double)tu->event_y / 65536.0;
+                            //ALOGD("Touch Update: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", tu->detail, x, y, tu->deviceid);
+                            touch_handle_motion(display, tu->detail, (int)x, (int)y);
+                            break;
+                        }
+                        case XCB_INPUT_TOUCH_END: {
+                            xcb_input_touch_end_event_t *te = (xcb_input_touch_end_event_t *)ge;
+                            double x = (double)te->event_x / 65536.0;
+                            double y = (double)te->event_y / 65536.0;
+                            ALOGD("Touch End: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", te->detail, x, y, te->deviceid);
+                            touch_handle_up(display, te->detail);
+                            break;
+                        }
+                    }
                 }
                 break;
         }
@@ -1630,6 +1827,47 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
     xcb_map_window(display->xcbconnection, window->xcbwindow);
     ALOGI("xcreate xcb window %s color %d, width %d height %d",appID_title.c_str(),color.a, display->width,display->height);
 
+    /* Check the XInput extension and get the opcode. */
+    const xcb_query_extension_reply_t *ext_reply =
+        xcb_get_extension_data(display->xcbconnection, &xcb_input_id);
+    if (!ext_reply || !ext_reply->present) {
+        ALOGE("XInput extension is unavailable.");
+        return window;
+    }
+    xi_opcode = ext_reply->major_opcode;
+
+    xcb_input_xi_query_version_reply_t *ver_reply =
+        xcb_input_xi_query_version_reply(display->xcbconnection,
+                                         xcb_input_xi_query_version(display->xcbconnection, 2, 2),
+                                         NULL);
+    if (!ver_reply || ver_reply->major_version < 2 ||
+        (ver_reply->major_version == 2 && ver_reply->minor_version < 2)) {
+        ALOGE("XInput version is too low and does not support touch events.");
+        free(ver_reply);
+        return window;
+    }
+    free(ver_reply);
+    ALOGE("XInput version: %d.%d\n", ver_reply->major_version, ver_reply->minor_version);
+
+    uint32_t touch_mask = XCB_INPUT_XI_EVENT_MASK_TOUCH_BEGIN |
+                          XCB_INPUT_XI_EVENT_MASK_TOUCH_UPDATE |
+                          XCB_INPUT_XI_EVENT_MASK_TOUCH_END;
+    // Optional：add XCB_INPUT_XI_EVENT_MASK_TOUCH_OWNERSHIP to handle ownership
+
+    struct {
+        xcb_input_event_mask_t head;
+        uint32_t               mask;
+    } event_select;
+
+    memset(&event_select, 0, sizeof(event_select));
+
+    event_select.head.deviceid = XCB_INPUT_DEVICE_ALL_MASTER;
+    event_select.head.mask_len = 1;
+    event_select.mask = touch_mask;
+
+    xcb_input_xi_select_events(display->xcbconnection, window->xcbwindow, 1, &event_select.head);
+    xcb_flush(display->xcbconnection);
+
     return window;
 }
 
@@ -1733,6 +1971,8 @@ create_display(const char *gralloc)
     d->input_fd[INPUT_TOUCH] = -1;
     mkfifo(INPUT_PIPE_NAME[INPUT_TOUCH], S_IRWXO | S_IRWXG | S_IRWXU);
     chown(INPUT_PIPE_NAME[INPUT_TOUCH], 1000, 1000);
+    for (int i = 0; i < MAX_TOUCHPOINTS; i++)
+            d->touch_id[i] = -1;
 
     d->input_fd[INPUT_KEYBOARD] = -1;
     mkfifo(INPUT_PIPE_NAME[INPUT_KEYBOARD], S_IRWXO | S_IRWXG | S_IRWXU);

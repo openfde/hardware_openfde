@@ -282,6 +282,32 @@ cc_prebuilt_library_shared {
     vendor: false,
 }
 
+cc_prebuilt_library_shared {
+    name: "libxcb-xinput",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libxcb-xinput.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+        "libxcb",
+        "libxcb-util",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
 cc_library_shared {
     name: "hwcomposer.x11",
     relative_install_path: "hw",
@@ -303,6 +329,7 @@ cc_library_shared {
         "libX11-xcb",
         "libXrender",
         "libxcb",
+        "libxcb-xinput",
         "libxcb-imdkit",
         "libxcb-util",
         "libxcb-dri3",
