@@ -89,6 +89,8 @@ struct itimerval timer;
 #define GESTURE_SCALING_UP_STRIDE 480
 #define GESTURE_SCALING_DOWN_START_DISTANCE 180.0
 #define GESTURE_SCALING_UP_START_DISTANCE 10.0
+#define XI_FP1616_TO_DOUBLE(val) ((double)(val) / 65536.0)
+
 
 static double gesture_scaling_start_distance;
 static int gesture_scaling_stride;
@@ -1436,24 +1438,24 @@ void *event_loop_thread(void *arg) {
                     switch (ge->event_type) {
                         case XCB_INPUT_TOUCH_BEGIN: {
                             xcb_input_touch_begin_event_t *tb = (xcb_input_touch_begin_event_t *)ge;
-                            double x = (double)tb->event_x / 65536.0;
-                            double y = (double)tb->event_y / 65536.0;
+                            double x = XI_FP1616_TO_DOUBLE(tb->event_x);
+                            double y = XI_FP1616_TO_DOUBLE(tb->event_y);
                             ALOGD("Touch Begin: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", tb->detail, x, y, tb->deviceid);
                             touch_handle_down(display, tb->detail, (int)x, (int)y);
                             break;
                         }
                         case XCB_INPUT_TOUCH_UPDATE: {
                             xcb_input_touch_update_event_t *tu = (xcb_input_touch_update_event_t *)ge;
-                            double x = (double)tu->event_x / 65536.0;
-                            double y = (double)tu->event_y / 65536.0;
+                            double x = XI_FP1616_TO_DOUBLE(tu->event_x);
+                            double y = XI_FP1616_TO_DOUBLE(tu->event_y);
                             //ALOGD("Touch Update: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", tu->detail, x, y, tu->deviceid);
                             touch_handle_motion(display, tu->detail, (int)x, (int)y);
                             break;
                         }
                         case XCB_INPUT_TOUCH_END: {
                             xcb_input_touch_end_event_t *te = (xcb_input_touch_end_event_t *)ge;
-                            double x = (double)te->event_x / 65536.0;
-                            double y = (double)te->event_y / 65536.0;
+                            double x = XI_FP1616_TO_DOUBLE(te->event_x);
+                            double y = XI_FP1616_TO_DOUBLE(te->event_y);
                             ALOGD("Touch End: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", te->detail, x, y, te->deviceid);
                             touch_handle_up(display, te->detail);
                             break;
