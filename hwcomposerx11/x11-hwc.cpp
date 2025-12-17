@@ -832,17 +832,32 @@ x11_pointer_handle_axis(void *data,  uint32_t axis, int value)
     }
 }
 
+static bool
+is_x11_touch_begin(struct display *display)
+{
+    for (int i = 0; i < MAX_TOUCHPOINTS; i++) {
+        if (display->touch_id[i] != -1) {
+            return true;
+        }
+    }
+    return false;
+}
+
 
 void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
     ALOGI("on_button_press: botton=%u, position=(%d, %d)\n",
            xcb_button_event->detail, xcb_button_event->event_x, xcb_button_event->event_y);
+    struct display* display = (struct display*)data;
+    if(is_x11_touch_begin(display)){
+        ALOGI("on_button_press x11 touch started return");
+        return;
+    }
     if(xcb_button_event->detail == XCB_BUTTON_INDEX_4 || xcb_button_event->detail == XCB_BUTTON_INDEX_5
         || xcb_button_event->detail == 6 || xcb_button_event->detail == 7){
         ALOGE("on_button_press %d return", xcb_button_event->detail);
         reset_timer();
         return;
     }
-    struct display* display = (struct display*)data;
     ALOGI("display->ptrPrvX: %d, display->ptrPrvY: %d", display->ptrPrvX, display->ptrPrvY);
 
     pointer_cancel_axis_to_touch(display, false, true);
@@ -896,6 +911,10 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
 
 void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event) {
     struct display* display = (struct display*)data;
+    if(is_x11_touch_begin(display)){
+        ALOGI("on_button_release x11 touch started return");
+        return;
+    }
     if(xcb_button_event->detail == XCB_BUTTON_INDEX_4 || xcb_button_event->detail == XCB_BUTTON_INDEX_5){
         uint32_t axis = 0;
         int value = (xcb_button_event->detail == XCB_BUTTON_INDEX_4) ? -SCROLLING_STRIDE : SCROLLING_STRIDE;
