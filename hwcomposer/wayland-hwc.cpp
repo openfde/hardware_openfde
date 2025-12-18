@@ -79,6 +79,16 @@ using ::android::hardware::hidl_string;
 
 const int AXIS_TOUCH_SLOT_ID = 8;
 const int AXIS_TOUCH_TRACKING_ID = AXIS_TOUCH_SLOT_ID;
+struct display *mDisplay;
+int timer_active = 0;
+struct itimerval timer;
+#define SCROLL_END_TIMEOUT_MS 240
+#define GESTURE_SCALING_DOWN_STRIDE 30
+#define GESTURE_SCALING_UP_STRIDE 480
+#define GESTURE_SCALING_DOWN_START_DISTANCE 180.0
+#define GESTURE_SCALING_UP_START_DISTANCE 10.0
+static double gesture_scaling_start_distance;
+static int gesture_scaling_stride;
 
 struct buffer;
 static void handle_pinch_update(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t time, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t scale, wl_fixed_t rotation);
@@ -902,7 +912,7 @@ pointer_cancel_axis_to_two_finger_touch(struct display *display){
         return;
 
     display->axis_simulation_two_finger_started = false;
-    display->gesture_scale = 260;
+    display->gesture_scale = 160;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
        ALOGE("%s:%d error in touch clock_gettime: %s",
@@ -969,7 +979,6 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
         ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
         ADD_EVENT(EV_SYN, SYN_REPORT, 0);
     }
-
     res = write(display->input_fd[INPUT_TOUCH], &event, eventSize);
     if (res < sizeof(event)) {
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -979,6 +988,38 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
     return true;
 }
 
+void timer_handler(int sig) {
+    if (sig == SIGALRM) {
+        if(mDisplay){
+            if(mDisplay->axis_simulation_two_finger_started){
+                ALOGD("pointer axis stopped, called pointer_cancel_axis_to_two_finger_touch");
+                pointer_cancel_axis_to_two_finger_touch(mDisplay);
+            }else{
+                ALOGD("pointer axis stopped, called pointer_cancel_axis_to_touch");
+                pointer_cancel_axis_to_touch(mDisplay, true, true);
+            }
+        }
+        timer_active = 0;
+    }
+}
+
+void reset_timer() {
+    memset(&timer, 0, sizeof(timer));
+
+    timer.it_value.tv_sec = 0;
+    timer.it_value.tv_usec = SCROLL_END_TIMEOUT_MS * 1000;
+
+    setitimer(ITIMER_REAL, &timer, NULL);
+    timer_active = 1;
+}
+
+void init_timer() {
+    struct sigaction sa;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = timer_handler;
+    sigaction(SIGALRM, &sa, NULL);
+}
 
 static void
 pointer_handle_motion(void *data, struct wl_pointer *,
@@ -986,7 +1027,7 @@ pointer_handle_motion(void *data, struct wl_pointer *,
 {
     struct display* display = (struct display*)data;
     if(display->axis_simulation_two_finger_started){
-        pointer_cancel_axis_to_two_finger_touch(display);
+        return;
     }
     int x, y;
 
@@ -1046,7 +1087,7 @@ handle_relative_motion(void *data, struct zwp_relative_pointer_v1*,
 {
     struct display *display = (struct display *)data;
     if(display->axis_simulation_two_finger_started){
-        pointer_cancel_axis_to_two_finger_touch(display);
+        return;
     }
 
     static double acc_x = 0;
@@ -1194,6 +1235,7 @@ pointer_axis_to_touch(struct display *display, int move, bool verticalScroll)
     }
     ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
     ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+
     res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
     if (res < sizeof(event))
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -1242,12 +1284,23 @@ pointer_handle_axis(void *data, struct wl_pointer *,
     }
 
     if(property_get_bool("fde.click_as_touch", false)){
+        reset_timer();
         if(display->ctrl_key_pressed){
+            if(!display->axis_simulation_two_finger_started){
+                display->axis_simulation_two_finger_started = true;
+                if(touchMove > 0){
+                    gesture_scaling_start_distance = GESTURE_SCALING_UP_START_DISTANCE;
+                    gesture_scaling_stride = GESTURE_SCALING_UP_STRIDE;
+                }else{
+                    gesture_scaling_start_distance = GESTURE_SCALING_DOWN_START_DISTANCE;
+                    gesture_scaling_stride = GESTURE_SCALING_DOWN_STRIDE;
+                }
+            }
             if(touchMove > 0){
-                display->gesture_scale += 15;
+                display->gesture_scale += gesture_scaling_stride;
             }else{
-                display->gesture_scale -= 15;
-                if(display->gesture_scale < 15){
+                display->gesture_scale -= gesture_scaling_stride;
+                if(display->gesture_scale < gesture_scaling_stride){
                     display->gesture_scale = 5;
                 }
             }
@@ -1255,7 +1308,6 @@ pointer_handle_axis(void *data, struct wl_pointer *,
                 pointer_cancel_axis_to_touch(display, true, true);
             }
             handle_pinch_update(data, NULL,0,0,0,display->gesture_scale,0);
-            display->axis_simulation_two_finger_started = true;
         }else{
             if(display->axis_simulation_two_finger_started){
                 pointer_cancel_axis_to_two_finger_touch(display);
@@ -1621,10 +1673,10 @@ static void handle_pinch_update(void *data, struct zwp_pointer_gesture_pinch_v1 
     double iscale = wl_fixed_to_double(scale);
     double irotation = 90;
 
-    int x0 = x - (240.0 * iscale * cos(irotation));
-    int y0 = y - (240.0 * iscale * sin(irotation));
-    int x1 = x + (240.0 * iscale * cos(irotation));
-    int y1 = y + (240.0 * iscale * sin(irotation));
+    int x0 = x - (gesture_scaling_start_distance * iscale * cos(irotation));
+    int y0 = y - (gesture_scaling_start_distance * iscale * sin(irotation));
+    int x1 = x + (gesture_scaling_start_distance * iscale * cos(irotation));
+    int y1 = y + (gesture_scaling_start_distance * iscale * sin(irotation));
 
     ADD_EVENT(EV_ABS, ABS_MT_SLOT, 0);
     ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, 0);
@@ -2414,7 +2466,9 @@ create_display(const char *gralloc)
     display->task = IOpenfdeTask::getService();
     display->isTouchDown = false;
     display->lastAxisEventNanoSeconds = 0;
-    display->gesture_scale = 260;
+    display->gesture_scale = 160;
+    init_timer();
+    mDisplay = display;
     return display;
 }
 
