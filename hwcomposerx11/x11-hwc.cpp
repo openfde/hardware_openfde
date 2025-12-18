@@ -1017,8 +1017,7 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
         ADD_EVENT(EV_SYN, SYN_REPORT, 0);
         display->ptrPrvX = x;
         display->ptrPrvY = y;
-        bool near_bord = x <= 10 || y <= 10 || x >= display->width - 10 || y >= display->height - 10;
-        if(property_get_bool("fde.inject_as_touch", false) && !near_bord){
+        if(property_get_bool("fde.inject_as_touch", false)){
             return;
         }
 
