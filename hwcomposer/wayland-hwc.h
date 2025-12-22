@@ -129,6 +129,9 @@ struct display {
     int gtype;
     double scale;
 
+    bool four_finger_gesture_active;
+    bool four_finger_app_launcher_triggered;
+
     int input_fd[INPUT_TOTAL];
     int ptrPrvX;
     int ptrPrvY;
