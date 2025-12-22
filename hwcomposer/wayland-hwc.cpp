@@ -720,6 +720,7 @@ send_key_event(display *data, uint32_t key, wl_keyboard_key_state state)
     }
     ADD_EVENT(EV_KEY, key, state);
 
+    ALOGE("send_key_event write INPUT_KEYBOARD key: %d, state: %d", key, state);
     res = write(display->input_fd[INPUT_KEYBOARD], &event, sizeof(event));
     if (res < sizeof(event))
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -1604,33 +1605,51 @@ static const struct xdg_wm_base_listener xdg_wm_base_listener = {
 
 static void handle_swipe_begin(void *data, struct zwp_pointer_gesture_swipe_v1 *gesture, uint32_t serial, uint32_t time, struct wl_surface *surface, uint32_t fingers)
 {
-    (void) data;
     (void) gesture;
     (void) serial;
     (void) time;
     (void) surface;
-    (void) fingers;
     ALOGI("handle_swipe_begin");
+    struct display* display = (struct display*)data;
+    if (fingers == 4) {
+        display->four_finger_gesture_active = true;
+        display->four_finger_app_launcher_triggered = false;
+        ALOGI("four finger gesture start: %d fingers", fingers);
+    }
 }
 
 static void handle_swipe_update(void *data, struct zwp_pointer_gesture_swipe_v1 *gesture, uint32_t time, wl_fixed_t dx, wl_fixed_t dy)
 {
-    (void) data;
     (void) gesture;
     (void) time;
-    (void) dx;
-    (void) dy;
     ALOGI("handle_swipe_update");
+    struct display* display = (struct display*)data;
+    if (display->four_finger_gesture_active && !display->four_finger_app_launcher_triggered) {
+        double delta_x = wl_fixed_to_double(dx);
+        double delta_y = wl_fixed_to_double(dy);
+        double distance = sqrt(delta_x * delta_x + delta_y * delta_y);
+        if (distance > 5.0) {
+            display->four_finger_app_launcher_triggered = true;
+            ALOGD("four-finger gesture moves a distance of %f, triggering the application list.", distance);
+            send_key_event(display, KEY_LEFTMETA, WL_KEYBOARD_KEY_STATE_PRESSED);
+            send_key_event(display, KEY_LEFTMETA, WL_KEYBOARD_KEY_STATE_RELEASED);
+        }
+    }
 }
 
 static void handle_swipe_end(void *data, struct zwp_pointer_gesture_swipe_v1 *gesture, uint32_t serial, uint32_t time, int cancelled)
 {
-    (void) data;
     (void) gesture;
     (void) serial;
     (void) time;
     (void) cancelled;
     ALOGI("handle_swipe_end");
+    struct display* display = (struct display*)data;
+    if (display->four_finger_gesture_active) {
+        ALOGI("the four-finger gesture ends");
+        display->four_finger_gesture_active = false;
+        display->four_finger_app_launcher_triggered = false;
+    }
 }
 
 static void handle_pinch_begin(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t serial, uint32_t time, struct wl_surface *surface, uint32_t fingers)
