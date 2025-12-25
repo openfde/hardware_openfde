@@ -192,6 +192,10 @@ struct display {
     std::mutex internalCapsLockStateMutex;
     std::mutex internalNumLockStateMutex;
     bool multi_windows;
+
+    int primary_x = 0;      //primary display X offset
+    int primary_y = 0;      //primary display Y offset
+    bool is_fullscreen = true;  //Initially full screen (for toggle state tracking)
 };
 
 struct buffer {
@@ -325,3 +329,4 @@ int create_shm_buffer(struct buffer *buffer, int width, int height, int format, 
 bool isValidInteger(const std::string& str);
 bool isStartWithSpecialSymbols(const std::string& layer_name);
 bool isStartWithTidSymbols(const std::string& layer_name);
+int add_title(xcb_connection_t *conn, xcb_window_t main_win);
