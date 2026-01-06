@@ -64,6 +64,8 @@
 #include <xkbcommon/xkbcommon.h>
 #include <X11/XKBlib.h>
 #include <xcb/xinput.h>
+#include <xcb/randr.h>
+#include <xcb/xcb_icccm.h>
 
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
@@ -91,10 +93,17 @@ struct itimerval timer;
 #define GESTURE_SCALING_UP_START_DISTANCE 10.0
 #define XI_FP1616_TO_DOUBLE(val) ((double)(val) / 65536.0)
 
+#define XCB_KEY_F11 95
+#define XCB_KEY_LEFTCTRL 37
+#define XCB_KEY_RIGHTCTRL 105
 
 static double gesture_scaling_start_distance;
 static int gesture_scaling_stride;
 static uint8_t xi_opcode;
+
+#ifndef XCB_EVENT_RESPONSE_TYPE
+#define XCB_EVENT_RESPONSE_TYPE 0x80
+#endif
 
 static int find_argb_visual(struct display *display) ;
 void
@@ -355,7 +364,7 @@ static void pointer_handle_button_to_touch_down(struct display *display) {
     ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
     ADD_EVENT(EV_SYN, SYN_REPORT, 0);
     display->isTouchDown = true;
-    ALOGI("pointer_handle_button_to_touch_down write INPUT_TOUCH");
+    ALOGD("pointer_handle_button_to_touch_down write INPUT_TOUCH");
     res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
 
     if (res < sizeof(event))
@@ -566,9 +575,6 @@ void on_key_press(void *data, xcb_key_press_event_t *event) {
     if (key == KEY_POWER)
         return;
     struct display* display = (struct display*)data;
-    if (key == KEY_LEFTCTRL || key == KEY_RIGHTCTRL){
-        display->ctrl_key_pressed = 1;
-    }
     if(key == KEY_CAPSLOCK || key == KEY_NUMLOCK){
         return;
     }
@@ -581,9 +587,7 @@ void on_key_release(void *data, xcb_key_release_event_t *event) {
     if (key == KEY_POWER)
         return;
     struct display* display = (struct display*)data;
-    if (key == KEY_LEFTCTRL || key == KEY_RIGHTCTRL){
-        display->ctrl_key_pressed = 0;
-    }
+
     if(key == KEY_CAPSLOCK){
         XkbStateRec state;
         XkbGetState(display->x11display, XkbUseCoreKbd, &state);
@@ -988,8 +992,8 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
         return;
     }
 
-    x = event->root_x;
-    y = event->root_y;
+    x = event->event_x;
+    y = event->event_y;
 
     if (display->scale != 1) {
         x = int(x * display->scale);
@@ -1021,7 +1025,7 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
             return;
         }
 
-        ALOGI("on_motion_notify write INPUT_POINTER");
+        ALOGD("on_motion_notify write INPUT_POINTER");
         res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
         if (res < sizeof(event))
             ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -1222,6 +1226,64 @@ touch_handle_cancel(void *data)
         }
     }
 }
+
+static xcb_atom_t get_atom(xcb_connection_t *conn, const char *name) {
+    xcb_intern_atom_cookie_t cookie = xcb_intern_atom(conn, 0, strlen(name), name);
+    xcb_intern_atom_reply_t *reply = xcb_intern_atom_reply(conn, cookie, NULL);
+    if (!reply) {
+        ALOGE("Failed to get atom %s\n", name);
+        return 0;
+    }
+    xcb_atom_t atom = reply->atom;
+    free(reply);
+    return atom;
+}
+
+static void set_window_state(xcb_connection_t *conn, xcb_window_t window, xcb_window_t root,
+                             xcb_atom_t net_wm_state_atom, xcb_atom_t state_atom, int action) {
+    // action: 1 = add, 0 = remove
+    xcb_client_message_event_t event = {0};
+    event.response_type = XCB_EVENT_RESPONSE_TYPE | XCB_CLIENT_MESSAGE;
+    event.format = 32;
+    event.sequence = 0;
+    event.window = window;
+    event.type = net_wm_state_atom;
+    event.data.data32[0] = action;  // 1: add, 0: remove
+    event.data.data32[1] = state_atom;
+    event.data.data32[2] = 0;  // No second state
+    event.data.data32[3] = 1;  // Source: normal application
+    event.data.data32[4] = 0;  // Timestamp or something
+
+    xcb_send_event(conn, 0, root, XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                   (const char *)&event);
+    xcb_flush(conn);
+}
+
+static void toggle_fullscreen_windowed(xcb_connection_t *conn, xcb_window_t window, xcb_window_t root,
+                                      xcb_atom_t net_wm_state_atom, bool *is_fullscreen,
+                                      struct display *display) {
+    xcb_atom_t fullscreen_atom = get_atom(conn, "_NET_WM_STATE_FULLSCREEN");
+
+    if (*is_fullscreen) {
+        // from fullscreen to windowed
+        set_window_state(conn, window, root, net_wm_state_atom, fullscreen_atom, 0);  // exit fullscreen
+        add_title(conn, window);
+        // Key point: Offset the Y position downwards to ensure the title bar is visible (not covered by the top panel).
+        uint32_t pos_mask = XCB_CONFIG_WINDOW_Y;
+        uint32_t pos_values[] = { (uint32_t)(display->primary_y)};
+        xcb_configure_window(conn, window, pos_mask, pos_values);
+
+        ALOGD("Switch to windowed mode: The title bar is visible and can be dragged to the secondary screen.");
+        *is_fullscreen = false;
+    } else {
+        // from windowed to fullscreen
+        remove_title(conn, window);
+        set_window_state(conn, window, root, net_wm_state_atom, fullscreen_atom, 1);  // enter fullscreen
+        *is_fullscreen = true;
+    }
+    xcb_flush(conn);
+}
+
 
 void *event_loop_thread(void *arg) {
     ALOGE("input_loop_event start");
@@ -1435,6 +1497,21 @@ void *event_loop_thread(void *arg) {
                 break;
             case XCB_KEY_PRESS:
                 ALOGD("XCB_KEY_PRESS received");
+                if (((xcb_key_press_event_t *)event)->detail == XCB_KEY_LEFTCTRL || ((xcb_key_press_event_t *)event)->detail == XCB_KEY_RIGHTCTRL) {
+                    display->ctrl_key_pressed = true;
+                }
+                if (((xcb_key_press_event_t *)event)->detail == XCB_KEY_F11 && display->ctrl_key_pressed && !display->multi_windows) {
+                    xcb_key_press_event_t *xcb_key_event = (xcb_key_press_event_t *)event;
+                    //xcb_window_t focus_window = xcb_key_event->event;
+                    xcb_atom_t net_wm_state_atom = get_atom(display->xcbconnection, "_NET_WM_STATE");
+                    toggle_fullscreen_windowed(display->xcbconnection,
+                                               xcb_key_event->event,
+                                               xcb_key_event->root,
+                                               net_wm_state_atom,
+                                               &display->is_fullscreen,  //Use the state in the display
+                                               display);
+                    break;
+                }
                 if (dispatcher.key_press_cb) {
                     dispatcher.key_press_cb(arg, (xcb_key_press_event_t *)event);
                 }else{
@@ -1443,12 +1520,20 @@ void *event_loop_thread(void *arg) {
                 break;
             case XCB_KEY_RELEASE:
                 ALOGD("XCB_KEY_RELEASE received");
+                if (((xcb_key_press_event_t *)event)->detail == XCB_KEY_LEFTCTRL || ((xcb_key_press_event_t *)event)->detail == XCB_KEY_RIGHTCTRL) {
+                    display->ctrl_key_pressed = false;
+                }
                 if (dispatcher.key_release_cb) {
                     dispatcher.key_release_cb(arg, (xcb_key_release_event_t *)event);
                 }else{
                     ALOGE("error dispatcher.key_release_cb is null.");
                 }
                 break;
+            case XCB_CONFIGURE_NOTIFY: {
+                xcb_configure_notify_event_t *config_event = (xcb_configure_notify_event_t *)event;
+                ALOGD("Window size adjustment: Width = %d, Height = %d", config_event->width, config_event->height);
+                break;
+            }
             case XCB_GE_GENERIC:
                 xcb_ge_generic_event_t *ge = (xcb_ge_generic_event_t *)event;
 
@@ -1733,7 +1818,7 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
                     32,
                     window->xcbwindow,
                     display->xcbscreen->root,
-                    0, 0, display->width, display->height, 0,
+                    display->primary_x, display->primary_y, display->width, display->height, 0,
                     XCB_WINDOW_CLASS_INPUT_OUTPUT,
                     display->visualid,
                     value_mask, value_list);
@@ -1780,6 +1865,40 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
     window->xcbgc = xcb_generate_id(display->xcbconnection);
     xcb_create_gc(display->xcbconnection,window->xcbgc, window->xcbwindow, 0, NULL);
     remove_title(display->xcbconnection, window->xcbwindow);
+
+    // === Force size limit: min = max = primary display size ===
+    // First, obtain the WM_SIZE_HINTS atom (ICCCM standard type).
+    xcb_intern_atom_cookie_t wm_size_hints_cookie = xcb_intern_atom(display->xcbconnection, 0, strlen("WM_SIZE_HINTS"), "WM_SIZE_HINTS");
+    xcb_intern_atom_reply_t *wm_size_hints_reply = xcb_intern_atom_reply(display->xcbconnection, wm_size_hints_cookie, NULL);
+
+    xcb_atom_t wm_size_hints_atom = XCB_NONE;
+    if (wm_size_hints_reply) {
+        wm_size_hints_atom = wm_size_hints_reply->atom;
+        free(wm_size_hints_reply);
+    }
+    if (wm_size_hints_atom == XCB_NONE) {
+        ALOGE("Failed to get WM_SIZE_HINTS atom, size hints will not work");
+    }
+
+    xcb_size_hints_t size_hints;
+    memset(&size_hints, 0, sizeof(size_hints));
+
+    size_hints.flags = XCB_ICCCM_SIZE_HINT_P_MIN_SIZE | XCB_ICCCM_SIZE_HINT_P_MAX_SIZE;
+    size_hints.min_width = size_hints.max_width = display->width;
+    size_hints.min_height = size_hints.max_height = display->height;
+
+    if (wm_size_hints_atom != XCB_NONE) {
+        xcb_change_property(display->xcbconnection,
+                            XCB_PROP_MODE_REPLACE,
+                            window->xcbwindow,
+                            XCB_ATOM_WM_NORMAL_HINTS,  // predefined property
+                            wm_size_hints_atom,         // type: WM_SIZE_HINTS
+                            32,
+                            sizeof(size_hints) / 4,
+                            &size_hints);
+    }
+
+    xcb_flush(display->xcbconnection);
 
     xcb_dri3_open_cookie_t dri3_cookie = xcb_dri3_open(display->xcbconnection, window->xcbwindow, 0);
     xcb_dri3_open_reply_t *dri3_reply = xcb_dri3_open_reply(display->xcbconnection, dri3_cookie, NULL);
@@ -1903,6 +2022,72 @@ void enable_auto_repeat(Display *display) {
     XFlush(display);
 }
 
+static bool get_primary_info(struct display *display) {
+    xcb_connection_t *conn = display->xcbconnection;
+    xcb_window_t root = display->xcbscreen->root;
+
+    const xcb_query_extension_reply_t *randr_ext = xcb_get_extension_data(conn, &xcb_randr_id);
+    if (!randr_ext || !randr_ext->present) {
+        ALOGE("RandR extension not available, fallback to (0,0) offset");
+        display->primary_x = 0;
+        display->primary_y = 0;
+        return false;
+    }
+
+    xcb_randr_get_output_primary_cookie_t primary_cookie = xcb_randr_get_output_primary(conn, root);
+    xcb_randr_get_output_primary_reply_t *primary_reply =
+        xcb_randr_get_output_primary_reply(conn, primary_cookie, NULL);
+
+    if (!primary_reply || primary_reply->output == XCB_NONE) {
+        ALOGE("No primary output found, fallback to (0,0) offset");
+        display->primary_x = 0;
+        display->primary_y = 0;
+        free(primary_reply);
+        return false;
+    }
+
+    xcb_randr_get_output_info_cookie_t output_cookie =
+        xcb_randr_get_output_info(conn, primary_reply->output, XCB_CURRENT_TIME);
+    xcb_randr_get_output_info_reply_t *output_info =
+        xcb_randr_get_output_info_reply(conn, output_cookie, NULL);
+
+    bool primary_found = false;
+    if (output_info && output_info->connection == XCB_RANDR_CONNECTION_CONNECTED &&
+        output_info->crtc != XCB_NONE) {
+        xcb_randr_get_crtc_info_cookie_t crtc_cookie =
+            xcb_randr_get_crtc_info(conn, output_info->crtc, XCB_CURRENT_TIME);
+        xcb_randr_get_crtc_info_reply_t *crtc_info =
+            xcb_randr_get_crtc_info_reply(conn, crtc_cookie, NULL);
+
+        if (crtc_info && crtc_info->status == XCB_RANDR_SET_CONFIG_SUCCESS &&
+            crtc_info->width > 0 && crtc_info->height > 0) {  // additional check of effective resolution
+            display->full_width = crtc_info->width;
+            display->full_height = crtc_info->height;
+            display->primary_x = crtc_info->x;
+            display->primary_y = crtc_info->y;
+            primary_found = true;
+            ALOGI("Primary monitor success: %dx%d @ (%d,%d)",
+                  display->full_width, display->full_height, display->primary_x, display->primary_y);
+        } else {
+            ALOGE("CRTC info invalid or failed (status=%d, width=%d, height=%d), fallback to (0,0)",
+                  crtc_info ? crtc_info->status : -1,
+                  crtc_info ? crtc_info->width : 0,
+                  crtc_info ? crtc_info->height : 0);
+            display->primary_x = 0;
+            display->primary_y = 0;
+        }
+        free(crtc_info);
+    } else {
+        ALOGE("Primary output not connected or no CRTC, fallback to (0,0)");
+        display->primary_x = 0;
+        display->primary_y = 0;
+    }
+
+    free(primary_reply);
+    free(output_info);
+    return primary_found;
+}
+
 
 struct display *
 create_display(const char *gralloc)
@@ -1972,14 +2157,22 @@ create_display(const char *gralloc)
     display->isTouchDown = false;
     display->lastAxisEventNanoSeconds = 0;
     display->gesture_scale = 160;
-      // Get screen resolution and scale
+    // Get screen resolution and scale
     display->scale = 1;
-    display->full_width = display->xcbscreen->width_in_pixels;
-    display->full_height = display->xcbscreen->height_in_pixels;
-    ALOGE("pixels width %d height %d",display->xcbscreen->width_in_pixels, display->xcbscreen->height_in_pixels);
+    // use randr to get the primary display resolution (prioritize the primary display when using multiple display device).
+    if (!get_primary_info(display)) {
+        // fallback to root window（single display or randr not available）
+        display->full_width = display->xcbscreen->width_in_pixels;
+        display->full_height = display->xcbscreen->height_in_pixels;
+        display->primary_x = 0;
+        display->primary_y = 0;
+        ALOGI("fallback to root window size: %dx%d", display->full_width, display->full_height);
+    }
 
     display->width = display->full_width /display->scale;
     display->height = display->full_height /display->scale;
+    ALOGI("final display size: %dx%d (scale=%f), primary offset (%d,%d)",
+          display->width, display->height, display->scale, display->primary_x, display->primary_y);
     struct display *d = (struct display*)display;
     d->input_fd[INPUT_POINTER] = -1;
     d->ptrPrvX = 0;
@@ -2021,10 +2214,6 @@ create_display(const char *gralloc)
     return display;
 }
 
-
-
-
-
 void
 destroy_display(struct display *display)
 {
@@ -2062,6 +2251,44 @@ destroy_display(struct display *display)
 
     delete display;
 }
+
+int add_title(xcb_connection_t *conn, xcb_window_t main_win) {
+    xcb_intern_atom_cookie_t hints_cookie = xcb_intern_atom(conn, 0, strlen("_MOTIF_WM_HINTS"), "_MOTIF_WM_HINTS");
+    xcb_intern_atom_reply_t *hints_reply = xcb_intern_atom_reply(conn, hints_cookie, NULL);
+    if (hints_reply) {
+        struct {
+            uint32_t flags;
+            uint32_t functions;
+            uint32_t decorations;
+            int32_t input_mode;
+            uint32_t status;
+        } motif_hints = {2, 0, 1, 0, 0}; // flags=2, decorations=1（enable decoration）
+
+        xcb_change_property(conn, XCB_PROP_MODE_REPLACE, main_win,
+                           hints_reply->atom, hints_reply->atom, 32,
+                           sizeof(motif_hints) / 4, &motif_hints);
+        free(hints_reply);
+
+        // force the window manager to reapply properties
+        xcb_configure_notify_event_t event = {
+            .response_type = XCB_CONFIGURE_NOTIFY,
+            .event = main_win,
+            .window = main_win,
+            .above_sibling = XCB_NONE,
+            .x = 0,
+            .y = 0,
+            .width = 0,
+            .height = 0,
+            .border_width = 0,
+            .override_redirect = 0
+        };
+
+        xcb_send_event(conn, 0, main_win, XCB_EVENT_MASK_STRUCTURE_NOTIFY, (const char *)&event);
+        xcb_flush(conn);
+    }
+    return 0;
+}
+
 
 int remove_title(xcb_connection_t *conn, xcb_window_t main_win){
     xcb_intern_atom_cookie_t hints_cookie = xcb_intern_atom(conn, 0, strlen("_MOTIF_WM_HINTS"), "_MOTIF_WM_HINTS");
