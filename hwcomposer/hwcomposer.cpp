@@ -48,6 +48,7 @@
 #include "extension.h"
 #include "OpenfdeWindow.h"
 #include "egl-tools.h"
+#include "xdg-shell-client-protocol.h"
 
 using ::android::hardware::configureRpcThreadpool;
 using ::android::hardware::joinRpcThreadpool;
@@ -343,6 +344,7 @@ static void setup_viewport_destination(wp_viewport *viewport, hwc_rect_t frame, 
     wp_viewport_set_destination(viewport,
             fmax(1, ceil((frame.right - frame.left) / display->scale)),
             fmax(1, ceil((frame.bottom - frame.top) / display->scale)));
+    ALOGW("setup_viewport_destination display->scale: %f", display->scale);
 }
 
 static struct wl_surface *get_surface(struct openfde_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, struct window *window, bool multi)
@@ -352,9 +354,22 @@ static struct wl_surface *get_surface(struct openfde_hwc_composer_device_1 *pdev
         pdev->display->layers[window->surface] = {
             .x = layer->displayFrame.left,
             .y = layer->displayFrame.top };
-        if (!multi && pdev->display->scale != 1 && pdev->display->viewporter && !window->viewport) {
-            window->viewport = wp_viewporter_get_viewport(pdev->display->viewporter, window->surface);
+        if ((!multi && pdev->display->scale != 1 && pdev->display->viewporter && !window->viewport) || pdev->display->preferred_scale) {
+            ALOGW("get_surface multi: %d, pdev->display->scale: %f, ", multi, pdev->display->scale);
+            if(pdev->display->preferred_scale){
+                pdev->display->preferred_scale = false;
+            }
+            if(!window->viewport){
+                window->viewport = wp_viewporter_get_viewport(pdev->display->viewporter, window->surface);
+            }
             setup_viewport_destination(window->viewport, layer->displayFrame, pdev->display);
+            if(window->bg_viewport){
+                wp_viewport_set_destination(window->bg_viewport, pdev->display->full_width/pdev->display->scale, pdev->display->height/pdev->display->scale);
+                wl_surface_commit(window->bg_surface);
+            }
+            if(pdev->display->primary){
+                xdg_toplevel_set_fullscreen(window->xdg_toplevel, pdev->display->primary->wl_output);
+            }
         }
         return window->surface;
     }

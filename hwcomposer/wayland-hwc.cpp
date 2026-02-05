@@ -75,6 +75,8 @@
 #include "fractional-scale-v1-client-protocol.h"
 #include <pointer-gestures-unstable-v1-client-protocol.h>
 
+#include "xdg-output-unstable-v1-client-protocol.h"
+
 using ::android::hardware::hidl_string;
 
 const int AXIS_TOUCH_SLOT_ID = 8;
@@ -93,6 +95,77 @@ static int gesture_scaling_stride;
 struct buffer;
 static void handle_pinch_update(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t time, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t scale, wl_fixed_t rotation);
 static void handle_pinch_end(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t serial, uint32_t time, int cancelled);
+
+static void find_primary(struct display *d) {
+    d->primary = NULL;
+    for (int i = 0; i < d->num_outputs; i++) {
+        struct output *out = &d->outputs[i];
+        if (out->done && (out->logical_x == 0 || out->logical_y == 0)) {
+            d->primary = out;
+            ALOGW("find_primary success");
+            return;
+        }
+    }
+    if (d->num_outputs > 0) {
+        for (int i = 0; i < d->num_outputs; i++) {
+            struct output *out = &d->outputs[i];
+            if (out->done && out->pixel_width != 0 && out->pixel_width != 0 && out->scale != 0) {
+                d->primary = out;
+                ALOGW("find_primary use default %d", i);
+                return;
+            }
+        }
+    }
+}
+
+
+static void xdg_output_logical_position(void *data, struct zxdg_output_v1 *xdg_output,
+                                        int32_t x, int32_t y) {
+    ALOGW("xdg_output_logical_position logical_x: %d, logical_y: %d", x, y);
+    struct output *out = (struct output *)data;
+    out->logical_x = x;
+    out->logical_y = y;
+}
+
+static void xdg_output_logical_size(void *data, struct zxdg_output_v1 *xdg_output,
+                                    int32_t width, int32_t height) {
+    ALOGW("xdg_output_logical_size logical_width: %d, logical_height: %d", width, height);
+    struct output *out = (struct output *)data;
+    out->logical_width = width;
+    out->logical_height = height;
+}
+
+static void xdg_output_done(void *data, struct zxdg_output_v1 *xdg_output) {
+    ALOGW("xdg_output_done");
+    (void)xdg_output;
+    struct output *out = (struct output *)data;
+    out->done = 1;
+}
+
+static void xdg_output_name(void *data, struct zxdg_output_v1 *xdg_output,
+                            const char *name) {
+    ALOGW("xdg_output_name");
+    struct output *out = (struct output *)data;
+        if (name) out->name = strdup(name);
+
+}
+
+static void xdg_output_description(void *data, struct zxdg_output_v1 *xdg_output,
+                                   const char *description) {
+    ALOGW("xdg_output_description");
+    struct output *out = (struct output *)data;
+    if (description) out->description = strdup(description);
+}
+
+
+static const struct zxdg_output_v1_listener xdg_output_listener = {
+    .logical_position = xdg_output_logical_position,
+    .logical_size     = xdg_output_logical_size,
+    .done             = xdg_output_done,
+    .name             = xdg_output_name,
+    .description      = xdg_output_description
+};
+
 
 void
 destroy_buffer(struct buffer* buf) {
@@ -396,6 +469,7 @@ xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *,
                               int32_t width, int32_t height,
                               struct wl_array *)
 {
+    ALOGW("xdg_toplevel_handle_configure: width: %d, height: %d",width, height);
     struct window *window = (struct window *)data;
     struct display *display = window->display;
 
@@ -480,6 +554,10 @@ void
 destroy_window(struct window *window, bool keep)
 {
     if (window->isActive) {
+        if (window->fractional_scale) {
+            wp_fractional_scale_v1_destroy(window->fractional_scale);
+            window->fractional_scale = NULL;
+        }
         if (window->callback)
             wl_callback_destroy(window->callback);
 
@@ -519,6 +597,7 @@ destroy_window(struct window *window, bool keep)
 
 static void fractional_scale_handle_preferred_scale(void *data, struct wp_fractional_scale_v1 *,
             uint32_t scale_times_120) {
+    ALOGW("fractional_scale_handle_preferred_scale scale_times_120: %d", scale_times_120);
     struct display *display = (struct display *)data;
     if (!display->viewporter) {
         // We should always have the viewporter if we have the fractional scale manager
@@ -526,6 +605,9 @@ static void fractional_scale_handle_preferred_scale(void *data, struct wp_fracti
         return;
     }
     display->scale = scale_times_120 / 120.0;
+    ALOGW("fractional_scale_handle_preferred_scale display->scale: %f", display->scale);
+    display->preferred_scale = true;
+
 }
 
 static const struct wp_fractional_scale_v1_listener fractional_scale_listener = {
@@ -572,6 +654,13 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
                                       { xdg_toplevel_set_title(window->xdg_toplevel, value.c_str()); });
         else
             xdg_toplevel_set_title(window->xdg_toplevel, appID.c_str());
+        if(!display->multi_windows){
+            if(display->primary){
+                xdg_toplevel_set_fullscreen(window->xdg_toplevel, display->primary->wl_output);
+            }else{
+                xdg_toplevel_set_fullscreen(window->xdg_toplevel, NULL);
+            }
+        }
 
         if (appID != "Openfde")
             appID = "openfde." + appID;
@@ -600,11 +689,10 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
 
     if (calibrating && display->fractional_scale_manager) {
         // We only support one global scale
-        wp_fractional_scale_v1* fs = wp_fractional_scale_manager_v1_get_fractional_scale(
+        window->fractional_scale = wp_fractional_scale_manager_v1_get_fractional_scale(
                 display->fractional_scale_manager, window->surface);
-        wp_fractional_scale_v1_add_listener(fs, &fractional_scale_listener, display);
+        wp_fractional_scale_v1_add_listener(window->fractional_scale, &fractional_scale_listener, display);
         wl_display_roundtrip(display->display);
-        wp_fractional_scale_v1_destroy(fs);
     }
     finished_computing_scale(display);
 
@@ -1840,9 +1928,9 @@ seat_handle_capabilities(void *data, struct wl_seat *seat, uint32_t wl_caps)
         wl_touch_set_user_data(d->touch, d);
         wl_touch_add_listener(d->touch, &touch_listener, d);
     } else if (!(caps & WL_SEAT_CAPABILITY_TOUCH) && d->touch) {
-        remove(INPUT_PIPE_NAME[INPUT_TOUCH]);
-        wl_touch_destroy(d->touch);
-        d->touch = NULL;
+        //remove(INPUT_PIPE_NAME[INPUT_TOUCH]);
+        //wl_touch_destroy(d->touch);
+        //d->touch = NULL;
     }
 }
 
@@ -1897,40 +1985,64 @@ static const struct zwp_linux_dmabuf_v1_listener dmabuf_listener = {
 
 static void
 output_handle_mode(void *data, struct wl_output *,
-                   uint32_t, int32_t width, int32_t height,
+                   uint32_t flags, int32_t width, int32_t height,
                    int32_t refresh)
 {
-    struct display *d = (struct display *)data;
+    ALOGW("output_handle_mode width: %d, height: %d, refresh: %d", width, height, refresh);
+    struct output *out = (struct output *)data;
+    if (flags & WL_OUTPUT_MODE_CURRENT) {
+        out->pixel_width  = width;
+        out->pixel_height = height;
+        out->refresh = refresh;
+    }
+
+    /*struct display *d = (struct display *)data;
     d->refresh = std::max(d->refresh, refresh);
 
     // Fallback size
     // We can't do anything meaningful if there's more than one display, just pick one at random
     // Hopefully these won't need to be used
     d->full_width = width;
-    d->full_height = height;
+    d->full_height = height;*/
 }
 
 static void
-output_handle_geometry(void *, struct wl_output *,
-               int32_t, int32_t,
-               int32_t, int32_t,
-               int32_t,
-               const char *, const char *,
-               int32_t)
+output_handle_geometry(void *data, struct wl_output *,
+                int32_t x,
+                int32_t y,
+                int32_t physical_width,
+                int32_t physical_height,
+                int32_t subpixel,
+                const char *make,
+                const char *model,
+                int32_t transform)
 {
+    ALOGW("Physical output: %s %s at %d,%d (phys: %dx%d mm)\n",
+           make, model, x, y, physical_width, physical_height);
+    struct output *out = (struct output *)data;
+    out->phys_width_mm  = physical_width;
+    out->phys_height_mm = physical_height;
 }
 
 static void
-output_handle_done(void *, struct wl_output *)
+output_handle_done(void *data, struct wl_output *)
 {
+    ALOGW("output_handle_done");
+
+    struct output *out = (struct output *)data;
+    out->done = 1;
+
 }
 
 static void
 output_handle_scale(void *data, struct wl_output *,
             int32_t scale)
 {
-    struct display *d = (struct display*)data;
-    d->scale = std::max((int)d->scale, scale);
+    ALOGW("output_handle_scale scale: %d", scale);
+    struct output *out = (struct output *)data;
+    out->scale = scale;
+    /*struct display *d = (struct display*)data;
+    d->scale = std::max((int)d->scale, scale);*/
 }
 
 static const struct wl_output_listener output_listener = {
@@ -2362,12 +2474,28 @@ registry_handle_global(void *data, struct wl_registry *registry,
     } else if (strcmp(interface, "wl_shm") == 0) {
 		d->shm = (struct wl_shm *)wl_registry_bind(registry, id,
                 &wl_shm_interface, 1);
-    } else if (strcmp(interface, "wl_output") == 0) {
-        d->output = (struct wl_output*)wl_registry_bind(registry, id,
-                &wl_output_interface, std::min(version, 3U));
-        wl_output_add_listener(d->output, &output_listener, d);
-        wl_display_roundtrip(d->display);
-    } else if (strcmp(interface, "wp_presentation") == 0) {
+    } else if (strcmp(interface, "wl_output") == 0  && d->num_outputs < MAX_OUTPUTS) {
+        ALOGE("wl_output version: %d",version);
+        struct output *out = &d->outputs[d->num_outputs++];
+        out->wl_output = (struct wl_output*)wl_registry_bind(registry, id, &wl_output_interface, std::min(version, 3U));
+        wl_output_add_listener(out->wl_output, &output_listener, out);
+
+        if (d->xdg_output_manager) {
+            out->xdg_output = zxdg_output_manager_v1_get_xdg_output(d->xdg_output_manager, out->wl_output);
+            zxdg_output_v1_add_listener(out->xdg_output, &xdg_output_listener, out);
+        }
+    } else if (strcmp(interface, "zxdg_output_manager_v1") == 0) {
+        ALOGE("zxdg_output_manager_v1 version: %d", version);
+        d->xdg_output_manager = (struct zxdg_output_manager_v1 *)wl_registry_bind(registry, id, &zxdg_output_manager_v1_interface, std::min(version, 3U));
+
+        for (int i = 0; i < d->num_outputs; i++) {
+            struct output *out = &d->outputs[i];
+            if (out->wl_output && !out->xdg_output) {
+                out->xdg_output = zxdg_output_manager_v1_get_xdg_output(d->xdg_output_manager, out->wl_output);
+                zxdg_output_v1_add_listener(out->xdg_output, &xdg_output_listener, out);
+            }
+        }
+    }else if (strcmp(interface, "wp_presentation") == 0) {
         bool no_presentation = property_get_bool("persist.openfde.no_presentation", false);
         if (!no_presentation) {
             d->presentation = (struct wp_presentation*)wl_registry_bind(registry, id,
@@ -2465,6 +2593,7 @@ create_display(const char *gralloc)
     display->refresh = 0;
     display->isMaximized = true;
     display->display = wl_display_connect(NULL);
+    display->multi_windows = property_get_bool("persist.openfde.multi_windows", false);
     ALOGI("WAYLAND_DISPLAY: %s", getenv("WAYLAND_DISPLAY"));
     ALOGI("XDG_RUNTIME_DIR: %s", getenv("XDG_RUNTIME_DIR"));
     if (!display->display) {
@@ -2481,6 +2610,46 @@ create_display(const char *gralloc)
     wl_registry_add_listener(display->registry,
                  &registry_listener, display);
     wl_display_roundtrip(display->display);
+    wl_display_roundtrip(display->display);
+
+    find_primary(display);
+
+    if (display->primary) {
+        ALOGW("Detected primary screen (logical position 0,0):\n");
+        ALOGW("  Current pixel resolution (physical pixels): %d × %d\n", display->primary->pixel_width, display->primary->pixel_height);
+        display->full_width = display->primary->pixel_width;
+        display->full_height = display->primary->pixel_height;
+        ALOGW("  Logical resolution (scaled): %d × %d\n", display->primary->logical_width, display->primary->logical_height);
+	    double scale = ((double)display->primary->pixel_width) / display->primary->logical_width;
+        ALOGW("  scaling factor: %d\n", display->primary->scale);
+        ALOGW("  Floating-point scaling factor: %f\n", scale);
+        ALOGW("  Physical dimensions (mm): %d mm × %d mm\n", display->primary->phys_width_mm, display->primary->phys_height_mm);
+        if (display->primary->phys_width_mm > 0 && display->primary->pixel_width > 0) {
+            double dpi_x = (double)display->primary->pixel_width / (display->primary->phys_width_mm / 25.4);
+            ALOGW("  Estimate horizontal DPI (based on physical pixels): %.1f\n", dpi_x);
+        }
+        if (display->primary->name)        ALOGW("  name: %s", display->primary->name);
+        if (display->primary->description) ALOGW("  description: %s", display->primary->description);
+    } else {
+        ALOGE("Output not found for logical (0,0)");
+        if (display->num_outputs > 0) {
+            ALOGW("Use the first output as the fallback:");
+            ALOGW("  Current pixel resolution: %d × %d", display->outputs[0].pixel_width, display->outputs[0].pixel_height);
+            ALOGW("  Logical resolution: %d × %d", display->outputs[0].logical_width, display->outputs[0].logical_height);
+            ALOGW("  scaling factor: %d", display->outputs[0].scale);
+            display->full_width = display->outputs[0].pixel_width;
+            display->full_height = display->outputs[0].pixel_height;
+        }
+    }
+    if(display->fractional_scale_manager || display->scale == 0){
+        display->scale = 1.0;
+    }
+    if(display->full_width == 0){
+        display->full_width = 1920;
+    }
+    if(display->full_height == 0){
+        display->full_height = 1080;
+    }
 
     display->task = IOpenfdeTask::getService();
     display->isTouchDown = false;
