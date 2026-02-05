@@ -56,6 +56,9 @@
 
 #include <functional>
 
+#define MAX_OUTPUTS 16
+
+
 using ::android::sp;
 using ::vendor::openfde::task::V1_0::IOpenfdeTask;
 
@@ -98,6 +101,23 @@ struct handleExt {
 };
 
 struct window;
+
+struct output {
+    struct wl_output *wl_output;
+    struct zxdg_output_v1 *xdg_output;
+    int32_t logical_x, logical_y;
+    int32_t logical_width, logical_height;
+    int32_t scale;
+    char *name;
+    char *description;
+    int32_t phys_width_mm;   // Physical width (mm)
+    int32_t phys_height_mm;  // Physical height (mm)
+    int32_t pixel_width;     // pixel width (physical pixel resolution) of the current mode.
+    int32_t pixel_height;    // Pixel height (physical pixel resolution) of the current mode.
+    int done;
+    int32_t refresh;
+};
+
 
 struct display {
     struct wl_display *display;
@@ -184,6 +204,14 @@ struct display {
     bool ctrl_key_pressed;
     wl_fixed_t gesture_scale;
     bool axis_simulation_two_finger_started;
+
+    bool multi_windows;
+    bool preferred_scale;
+    struct zxdg_output_manager_v1 *xdg_output_manager;
+    struct zxdg_output_v1 *xdg_output;
+    struct output outputs[MAX_OUTPUTS];
+    int num_outputs;
+    struct output *primary;
 };
 
 struct buffer {
@@ -225,6 +253,7 @@ struct window {
     std::string appID;
     std::string taskID;
     bool isActive;
+    struct wp_fractional_scale_v1 *fractional_scale;
 };
 
 typedef struct
