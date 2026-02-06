@@ -107,6 +107,10 @@ static bool update_cursor_surface(openfde_hwc_composer_device_1* pdev, hwc_layer
     }
 
     fb_layer->compositionType = HWC_OVERLAY; // Not participating in SurfaceFlinger GPU compositing hide internal cursor
+    std::scoped_lock lock(pdev->display->cursorMutex);
+    if(!pdev->display->pointer){
+        return false;
+    }
 
     /*
      * To update the wayland cursor, the fde.mouse_icon_addr system property was introduced.
@@ -199,7 +203,10 @@ static int hwc_prepare(hwc_composer_device_1_t* dev,
         foundCursorLayer |= update_cursor_surface(pdev, &contents->hwLayers[i], i);
     }
     if(!foundCursorLayer && pdev->display->mouse_icon_addr != -1){
-        wl_pointer_set_cursor(pdev->display->pointer, pdev->display->serial, NULL, 0, 0);
+        std::scoped_lock lock(pdev->display->cursorMutex);
+        if(pdev->display->pointer){
+            wl_pointer_set_cursor(pdev->display->pointer, pdev->display->serial, NULL, 0, 0);
+        }
         pdev->display->mouse_icon_addr = -1;
         ALOGI("wayland cursor hidden");
     }
