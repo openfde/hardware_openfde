@@ -1902,8 +1902,11 @@ seat_handle_capabilities(void *data, struct wl_seat *seat, uint32_t wl_caps)
         chown(INPUT_PIPE_NAME[INPUT_TOUCH], 1000, 1000);
     } else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && d->pointer) {
         remove(INPUT_PIPE_NAME[INPUT_POINTER]);
-        wl_pointer_destroy(d->pointer);
-        d->pointer = NULL;
+        {
+            std::scoped_lock lock(d->cursorMutex);
+            wl_pointer_destroy(d->pointer);
+            d->pointer = NULL;
+        }
     }
 
     if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !d->keyboard) {
