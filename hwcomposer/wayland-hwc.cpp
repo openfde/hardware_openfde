@@ -604,7 +604,7 @@ static void fractional_scale_handle_preferred_scale(void *data, struct wp_fracti
         // but for debugging purpuses we may decide to disable one
         return;
     }
-    double scale = scale_times_120 / 120.0;
+    double scale = scale_times_120 / SCALING_FACTOR_DENOMINATOR;
     if(display->scale != scale){
         display->scale = scale;
         ALOGW("fractional_scale_handle_preferred_scale display->scale: %f", display->scale);

@@ -57,7 +57,7 @@
 #include <functional>
 
 #define MAX_OUTPUTS 16
-
+#define SCALING_FACTOR_DENOMINATOR 120.0
 
 using ::android::sp;
 using ::vendor::openfde::task::V1_0::IOpenfdeTask;
