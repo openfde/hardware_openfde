@@ -103,6 +103,7 @@ struct handleExt {
 struct window;
 
 struct output {
+    uint32_t registry_id;
     struct wl_output *wl_output;
     struct zxdg_output_v1 *xdg_output;
     int32_t logical_x, logical_y;
@@ -347,3 +348,5 @@ struct window *
 create_window(struct display *display, bool with_dummy, std::string appID, std::string taskID, hwc_color_t color);
 void
 choose_width_height(struct display* display, int32_t hint_width, int32_t hint_height);
+
+void find_primary(struct display *d);
