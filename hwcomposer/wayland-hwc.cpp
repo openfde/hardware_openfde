@@ -96,11 +96,11 @@ struct buffer;
 static void handle_pinch_update(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t time, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t scale, wl_fixed_t rotation);
 static void handle_pinch_end(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t serial, uint32_t time, int cancelled);
 
-static void find_primary(struct display *d) {
+void find_primary(struct display *d) {
     d->primary = NULL;
     for (int i = 0; i < d->num_outputs; i++) {
         struct output *out = &d->outputs[i];
-        if (out->done && (out->logical_x == 0 || out->logical_y == 0)) {
+        if (out->done && (out->logical_x == 0 && out->logical_y == 0)) {
             d->primary = out;
             ALOGW("find_primary success");
             return;
@@ -604,10 +604,12 @@ static void fractional_scale_handle_preferred_scale(void *data, struct wp_fracti
         // but for debugging purpuses we may decide to disable one
         return;
     }
-    display->scale = scale_times_120 / 120.0;
-    ALOGW("fractional_scale_handle_preferred_scale display->scale: %f", display->scale);
-    display->preferred_scale = true;
-
+    double scale = scale_times_120 / 120.0;
+    if(display->scale != scale){
+        display->scale = scale;
+        ALOGW("fractional_scale_handle_preferred_scale display->scale: %f", display->scale);
+        display->preferred_scale = true;
+    }
 }
 
 static const struct wp_fractional_scale_v1_listener fractional_scale_listener = {
@@ -745,6 +747,7 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
         window->bg_viewport = wp_viewporter_get_viewport(display->viewporter, surface);
         wp_viewport_set_source(window->bg_viewport, wl_fixed_from_int(0), wl_fixed_from_int(0), wl_fixed_from_int(1), wl_fixed_from_int(1));
         wp_viewport_set_destination(window->bg_viewport, display->width, display->height);
+        ALOGE("create_window bg_viewport width: %d, height: %d", display->width,display->height);
     }
 
     if (display->wm_base)
@@ -2480,6 +2483,7 @@ registry_handle_global(void *data, struct wl_registry *registry,
     } else if (strcmp(interface, "wl_output") == 0  && d->num_outputs < MAX_OUTPUTS) {
         ALOGE("wl_output version: %d",version);
         struct output *out = &d->outputs[d->num_outputs++];
+        out->registry_id = id;
         out->wl_output = (struct wl_output*)wl_registry_bind(registry, id, &wl_output_interface, std::min(version, 3U));
         wl_output_add_listener(out->wl_output, &output_listener, out);
 
@@ -2544,8 +2548,43 @@ registry_handle_global(void *data, struct wl_registry *registry,
 }
 
 static void
-registry_handle_global_remove(void *, struct wl_registry *, uint32_t)
+registry_handle_global_remove(void *data, struct wl_registry *, uint32_t id)
 {
+    ALOGW("registry_handle_global_remove");
+    struct display *d = (struct display *)data;
+
+    for (int i = 0; i < d->num_outputs; i++) {
+        struct output *out = &d->outputs[i];
+
+        if (out->registry_id == id) {
+            ALOGW("Output removed: id=%u  (logical %dx%d)", id,
+                  out->logical_width, out->logical_height);
+
+            if (out->xdg_output) {
+                zxdg_output_v1_destroy(out->xdg_output);
+                out->xdg_output = NULL;
+            }
+
+            if (out->wl_output) {
+                wl_output_release(out->wl_output);
+                out->wl_output = NULL;
+            }
+
+            for (int j = i; j < d->num_outputs - 1; j++) {
+                d->outputs[j] = d->outputs[j + 1];
+            }
+            d->num_outputs--;
+
+            if (d->primary == out || d->primary == NULL) {
+                d->primary = NULL;
+                find_primary(d);
+            }
+
+            return;
+        }
+    }
+
+    ALOGW("Unknown global removed: id=%u", id);
 }
 
 static const struct wl_registry_listener registry_listener = {
@@ -2616,6 +2655,9 @@ create_display(const char *gralloc)
     wl_display_roundtrip(display->display);
 
     find_primary(display);
+    if(display->scale == 0){
+        display->scale = 1.0;
+    }
 
     if (display->primary) {
         ALOGW("Detected primary screen (logical position 0,0):\n");
@@ -2624,6 +2666,7 @@ create_display(const char *gralloc)
         display->full_height = display->primary->pixel_height;
         ALOGW("  Logical resolution (scaled): %d × %d\n", display->primary->logical_width, display->primary->logical_height);
 	    double scale = ((double)display->primary->pixel_width) / display->primary->logical_width;
+        display->scale = scale;
         ALOGW("  scaling factor: %d\n", display->primary->scale);
         ALOGW("  Floating-point scaling factor: %f\n", scale);
         ALOGW("  Physical dimensions (mm): %d mm × %d mm\n", display->primary->phys_width_mm, display->primary->phys_height_mm);
@@ -2644,9 +2687,7 @@ create_display(const char *gralloc)
             display->full_height = display->outputs[0].pixel_height;
         }
     }
-    if(display->fractional_scale_manager || display->scale == 0){
-        display->scale = 1.0;
-    }
+
     if(display->full_width == 0){
         display->full_width = 1920;
     }
