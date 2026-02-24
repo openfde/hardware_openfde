@@ -104,6 +104,34 @@ static void erase_cursor_layer_buffer(waydroid_hwc_composer_device_1* pdev, buff
     }
 }
 
+Cursor create_empty_cursor(Display *display, Window root) {
+    // Create a 1x1 empty pixmap (transparent)
+    Pixmap empty_pixmap = XCreatePixmap(display, root, 1, 1, 1);
+
+    // Create an empty mask (for transparency)
+    Pixmap mask_pixmap = XCreatePixmap(display, root, 1, 1, 1);
+
+    // Create a graphics context
+    XGCValues xgc;
+    GC gc = XCreateGC(display, empty_pixmap, 0, &xgc);
+
+    // Clear both pixmaps (fill them with "0", meaning transparency)
+    XSetForeground(display, gc, 0);
+    XFillRectangle(display, empty_pixmap, gc, 0, 0, 1, 1);
+    XFillRectangle(display, mask_pixmap, gc, 0, 0, 1, 1);
+
+    // Create an empty cursor with the transparent pixmap and mask
+    XColor black;
+    black.red = black.green = black.blue = 0;
+    Cursor cursor = XCreatePixmapCursor(display, empty_pixmap, mask_pixmap, &black, &black, 0, 0);
+
+    // Free resources
+    XFreeGC(display, gc);
+    XFreePixmap(display, empty_pixmap);
+    XFreePixmap(display, mask_pixmap);
+
+    return cursor;
+}
 
 static void x11_set_custom_cursor(waydroid_hwc_composer_device_1* pdev, Picture xpicture, int hot_x, int hot_y) {
     ALOGD("x11_set_custom_cursor hot_x: %d, hot_y: %d", hot_x, hot_y);
@@ -113,7 +141,14 @@ static void x11_set_custom_cursor(waydroid_hwc_composer_device_1* pdev, Picture 
        return;
 
     if(!xpicture){
-         ALOGE("error xpicture is null");
+        ALOGE("error xpicture is null");
+        Cursor empty_cursor = create_empty_cursor(pdev->display->x11display, pdev->display->xcbscreen->root);
+        std::scoped_lock lock(pdev->display->windowsMutex);
+        for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
+            if (it->second){
+                XDefineCursor(display->x11display, it->second->xcbwindow, empty_cursor);
+            }
+        }
         return;
     }
 
@@ -281,7 +316,7 @@ static int hwc_prepare(hwc_composer_device_1_t* dev,
         foundCursorLayer |= update_cursor_surface(pdev, fb_layer, i);
     }
     if(!foundCursorLayer && pdev->display->mouse_icon_addr != -1){
-        // wl_pointer_set_cursor(pdev->display->pointer, pdev->display->serial, NULL, 0, 0);
+        x11_set_custom_cursor(pdev, 0, 0, 0);
         pdev->display->mouse_icon_addr = -1;
         ALOGI("x11 cursor hidden");
     }
