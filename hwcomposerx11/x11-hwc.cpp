@@ -101,6 +101,11 @@ static double gesture_scaling_start_distance;
 static int gesture_scaling_stride;
 static uint8_t xi_opcode;
 
+static double relx = 0;
+static double rely = 0;
+static double prev_relx = 0;
+static double prev_rely = 0;
+
 #ifndef XCB_EVENT_RESPONSE_TYPE
 #define XCB_EVENT_RESPONSE_TYPE 0x80
 #endif
@@ -1016,9 +1021,38 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
 
         ADD_EVENT(EV_ABS, ABS_X, x);
         ADD_EVENT(EV_ABS, ABS_Y, y);
-        ADD_EVENT(EV_REL, REL_X, x - display->ptrPrvX);
-        ADD_EVENT(EV_REL, REL_Y, y - display->ptrPrvY);
+        if(x - display->ptrPrvX != 0){
+            relx = x - display->ptrPrvX;
+        }else if(x > 0 && display->full_width - x > 1){
+            relx = 0;
+        }else{
+            if(abs(prev_relx) > 3){
+                relx = prev_relx;
+            }else{
+                relx = prev_relx > 0 ? 3 : -3;
+            }
+        }
+        if(y - display->ptrPrvY != 0){
+            rely = y - display->ptrPrvY;
+        }else if(y > 0 && display->full_height - y > 1){
+            rely = 0;
+        }else{
+            if(abs(prev_rely) > 3){
+                rely = prev_rely;
+            }else{
+                rely = prev_rely > 0 ? 3 : -3;
+            }
+        }
+        ADD_EVENT(EV_REL, REL_X, relx);
+        ADD_EVENT(EV_REL, REL_Y, rely);
         ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+
+        if(relx != 0){
+            prev_relx = relx;
+        }
+        if(rely != 0){
+            prev_rely = rely;
+        }
         display->ptrPrvX = x;
         display->ptrPrvY = y;
         if(property_get_bool("fde.inject_as_touch", false)){
@@ -2066,7 +2100,7 @@ static bool get_primary_info(struct display *display) {
             display->primary_x = crtc_info->x;
             display->primary_y = crtc_info->y;
             primary_found = true;
-            ALOGI("Primary monitor success: %dx%d @ (%d,%d)",
+            ALOGW("Primary monitor success: %dx%d @ (%d,%d)",
                   display->full_width, display->full_height, display->primary_x, display->primary_y);
         } else {
             ALOGE("CRTC info invalid or failed (status=%d, width=%d, height=%d), fallback to (0,0)",
