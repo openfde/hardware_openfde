@@ -853,7 +853,7 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
         return;
     }
     if(xcb_button_event->detail == XCB_BUTTON_INDEX_4 || xcb_button_event->detail == XCB_BUTTON_INDEX_5
-        || xcb_button_event->detail == 6 || xcb_button_event->detail == 7){
+        || xcb_button_event->detail == 6 || xcb_button_event->detail == 7 || xcb_button_event->detail == 2){
         ALOGE("on_button_press %d return", xcb_button_event->detail);
         reset_timer();
         return;
@@ -898,6 +898,9 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
                 break;
             case XCB_BUTTON_INDEX_3:
                 button = BTN_RIGHT;
+                break;
+            case XCB_BUTTON_INDEX_2:
+                button = BTN_MIDDLE;
                 break;
         }
         if(button != 0){
