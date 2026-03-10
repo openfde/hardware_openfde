@@ -853,7 +853,7 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
         return;
     }
     if(xcb_button_event->detail == XCB_BUTTON_INDEX_4 || xcb_button_event->detail == XCB_BUTTON_INDEX_5
-        || xcb_button_event->detail == 6 || xcb_button_event->detail == 7 || xcb_button_event->detail == 2){
+        || xcb_button_event->detail == 6 || xcb_button_event->detail == 7 ){
         ALOGE("on_button_press %d return", xcb_button_event->detail);
         reset_timer();
         return;
@@ -866,7 +866,10 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
     }
 
     // Left button convert to touch event, right button reserved mouse event
-    if (((xcb_button_event->detail == 1 && property_get_bool("fde.click_as_touch", false)) || display->isTouchDown) && !display->isMouseLeftDown) {
+    if ( xcb_button_event->detail ！= 2 &&
+            ((xcb_button_event->detail == 1 && property_get_bool("fde.click_as_touch", false)) || display->isTouchDown)
+            && !display->isMouseLeftDown
+    ) {
         struct timespec rt;
         if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
             ALOGE("%s:%d error in touch clock_gettime: %s",
@@ -966,6 +969,9 @@ void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event)
                 break;
             case XCB_BUTTON_INDEX_3:
                 button = BTN_RIGHT;
+                break;
+            case XCB_BUTTON_INDEX_2:
+                button = BTN_MIDDLE;
                 break;
         }
         if(button != 0){
