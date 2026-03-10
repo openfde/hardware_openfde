@@ -1128,6 +1128,7 @@ pointer_handle_button(void *data, struct wl_pointer *,
         }
         ADD_EVENT(EV_KEY, button, state);
         ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+        ALOGE("pointer_handle_button button:%d state:%d", button, state);
         res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
     }
 }
