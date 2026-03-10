@@ -870,6 +870,7 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
             ((xcb_button_event->detail == 1 && property_get_bool("fde.click_as_touch", false)) || display->isTouchDown)
             && !display->isMouseLeftDown
     ) {
+        ALOGE("Left button");
         struct timespec rt;
         if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
             ALOGE("%s:%d error in touch clock_gettime: %s",
@@ -878,12 +879,15 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
       // convert pointer event to touch event
         pointer_handle_button_to_touch_down(display);
     } else {
+        ALOGE("other button");
         struct input_event event[2];
         struct timespec rt;
         unsigned int res, n = 0;
 
-        if (ensure_pipe(display, INPUT_POINTER))
+        if (ensure_pipe(display, INPUT_POINTER)){
+            ALOGE("ensure_pipe fail");
             return;
+        }
 
         if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
             ALOGE("%s:%d error in touch clock_gettime: %s",
