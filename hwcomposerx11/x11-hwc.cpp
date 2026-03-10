@@ -866,7 +866,7 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
     }
 
     // Left button convert to touch event, right button reserved mouse event
-    if ( xcb_button_event->detail ！= 2 &&
+    if ( xcb_button_event->detail != 2 &&
             ((xcb_button_event->detail == 1 && property_get_bool("fde.click_as_touch", false)) || display->isTouchDown)
             && !display->isMouseLeftDown
     ) {
