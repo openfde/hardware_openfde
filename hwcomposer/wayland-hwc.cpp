@@ -470,11 +470,11 @@ xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *,
                               struct wl_array *)
 {
     ALOGW("xdg_toplevel_handle_configure: width: %d, height: %d",width, height);
-    struct window *window = (struct window *)data;
+    /*struct window *window = (struct window *)data;
     struct display *display = window->display;
 
     if (width == 0 || height == 0) {
-		/* Compositor is deferring to us */
+		// Compositor is deferring to us
 		return;
 	}
 
@@ -482,7 +482,7 @@ xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *,
         choose_width_height(display, width, height);
         if (!display->isMaximized)
             xdg_toplevel_unset_maximized(window->xdg_toplevel);
-    }
+    }*/
 }
 
 static void
@@ -526,6 +526,7 @@ shell_surface_ping(void *, struct wl_shell_surface *shell_surface, uint32_t seri
 void
 shell_surface_configure(void *data, struct wl_shell_surface *, uint32_t, int32_t width, int32_t height)
 {
+    ALOGW("shell_surface_configure: width: %d, height: %d",width, height);
     struct window *window = (struct window *)data;
     struct display *display = window->display;
 
