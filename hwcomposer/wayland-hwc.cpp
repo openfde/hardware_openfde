@@ -2670,6 +2670,9 @@ create_display(const char *gralloc)
         display->scale = scale;
         ALOGW("  scaling factor: %d\n", display->primary->scale);
         ALOGW("  Floating-point scaling factor: %f\n", scale);
+        if(display->scale == 1 && display->primary->scale > 1){
+            display->scale = display->primary->scale;
+        }
         ALOGW("  Physical dimensions (mm): %d mm × %d mm\n", display->primary->phys_width_mm, display->primary->phys_height_mm);
         if (display->primary->phys_width_mm > 0 && display->primary->pixel_width > 0) {
             double dpi_x = (double)display->primary->pixel_width / (display->primary->phys_width_mm / 25.4);
