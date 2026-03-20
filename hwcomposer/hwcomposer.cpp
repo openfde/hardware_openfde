@@ -123,7 +123,7 @@ static bool update_cursor_surface(openfde_hwc_composer_device_1* pdev, hwc_layer
         pdev->display->additional_refresh_cursor_times = 0;
         erase_cursor_layer_buffer(pdev, fb_layer->handle);
     }else{
-        if(pdev->display->additional_refresh_cursor_times > 3){      //Refresh the wayland cursor three additional times
+        if(pdev->display->additional_refresh_cursor_times > 60){      //Refresh the wayland cursor three additional times
             return true;
         }else{
             erase_cursor_layer_buffer(pdev, fb_layer->handle);
