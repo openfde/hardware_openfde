@@ -340,7 +340,9 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 
 	handle->prime_fd = gbm_bo_get_fd(bo);
 	handle->stride = gbm_bo_get_stride(bo);
-	if (handle->format == HAL_PIXEL_FORMAT_RGB_565 && flag_is_mesa_env) {
+	if ((handle->usage & GRALLOC_USAGE_PRIVATE_0)
+			&& handle->format == HAL_PIXEL_FORMAT_RGB_565
+			&& flag_is_mesa_env) {
 		handle->stride = handle->width * gralloc_gbm_get_bpp(handle->format);
 	}
 
