@@ -1444,6 +1444,9 @@ void *event_loop_thread(void *arg) {
                         }
                     }
                 }
+                if(display->ctrl_key_pressed){
+                    display->ctrl_key_pressed = false;
+                }
                 for (size_t i = 0; i < display->keysDown.size(); i++) {
                     if (display->keysDown[i] == X11_KEYBOARD_KEY_STATE_PRESSED) {
                         send_key_event(display, i, X11_KEYBOARD_KEY_STATE_RELEASED);
