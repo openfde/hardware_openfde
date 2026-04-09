@@ -261,7 +261,7 @@ static struct gbm_bo *gbm_import(struct gbm_device *gbm,
 	if (handle->format == HAL_PIXEL_FORMAT_YV12 || handle->format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
 		data.width /= 2;
 		data.height += handle->height / 2;
-	} else if (handle->format == HAL_PIXEL_FORMAT_RGB_565 && flag_is_mesa_env) {
+	} else if (handle->format == HAL_PIXEL_FORMAT_RGB_565 && (handle->usage & GRALLOC_USAGE_PRIVATE_0)) {
 		data.width = GRALLOC_ALIGN(data.width, 256);
 	}
 	if (handle->format == HAL_PIXEL_FORMAT_BLOB) {
@@ -313,7 +313,7 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 		if (format == GBM_FORMAT_RGB565) {
 			handle->covert_format = 1;
 		}
-	} else if (handle->format == HAL_PIXEL_FORMAT_RGB_565 && flag_is_mesa_env) {
+	} else if (handle->format == HAL_PIXEL_FORMAT_RGB_565 && (handle->usage & GRALLOC_USAGE_PRIVATE_0))  {
 		width = GRALLOC_ALIGN(width, 256);
 	}
 
@@ -341,8 +341,7 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 	handle->prime_fd = gbm_bo_get_fd(bo);
 	handle->stride = gbm_bo_get_stride(bo);
 	if ((handle->usage & GRALLOC_USAGE_PRIVATE_0)
-			&& handle->format == HAL_PIXEL_FORMAT_RGB_565
-			&& flag_is_mesa_env) {
+		&& handle->format == HAL_PIXEL_FORMAT_RGB_565 ) {
 		handle->stride = handle->width * gralloc_gbm_get_bpp(handle->format);
 	}
 
