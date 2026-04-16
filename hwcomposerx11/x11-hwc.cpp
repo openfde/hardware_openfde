@@ -282,7 +282,7 @@ destroy_window(struct window *window, bool keep)
         for (auto it = window->display->x11_windows->begin(); it != window->display->x11_windows->end(); it++) {
             if (it->second->xcbwindow == window->xcbwindow){
                 if (it->first != "Toast" && it->first.find("Application Not Responding:") ==  std::string::npos && !isStartWithSpecialSymbols(it->first)) {
-                    ALOGI("destroy window window->xcbwindow: %u Task %s XAutoRepeatOn", window->xcbwindow, it->first.c_str());
+                    ALOGV("destroy window window->xcbwindow: %u Task %s XAutoRepeatOn", window->xcbwindow, it->first.c_str());
                     enable_auto_repeat(window->display->x11display);
                 }
             }
@@ -369,7 +369,7 @@ static void pointer_handle_button_to_touch_down(struct display *display) {
     ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
     ADD_EVENT(EV_SYN, SYN_REPORT, 0);
     display->isTouchDown = true;
-    ALOGD("pointer_handle_button_to_touch_down write INPUT_TOUCH");
+    ALOGV("pointer_handle_button_to_touch_down write INPUT_TOUCH");
     res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
 
     if (res < sizeof(event))
@@ -393,7 +393,7 @@ static void pointer_handle_button_to_touch_up(struct display *display) {
     ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
     ADD_EVENT(EV_SYN, SYN_REPORT, 0);
     display->isTouchDown = false;
-    ALOGI("pointer_handle_button_to_touch_up write INPUT_TOUCH");
+    ALOGV("pointer_handle_button_to_touch_up write INPUT_TOUCH");
     res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
 
     if (res < sizeof(event))
@@ -454,7 +454,7 @@ pointer_cancel_axis_to_two_finger_touch(struct display *display){
     ADD_EVENT(EV_ABS, ABS_MT_SLOT, 1);
     ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
     ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-    ALOGI("pointer_cancel_axis_to_two_finger_touch write INPUT_TOUCH");
+    ALOGV("pointer_cancel_axis_to_two_finger_touch write INPUT_TOUCH");
     res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
     if (res < sizeof(event))
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -509,7 +509,7 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
         ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
         ADD_EVENT(EV_SYN, SYN_REPORT, 0);
     }
-    ALOGI("pointer_cancel_axis_to_touch write INPUT_TOUCH");
+    ALOGV("pointer_cancel_axis_to_touch write INPUT_TOUCH");
     res = write(display->input_fd[INPUT_TOUCH], &event, eventSize);
     if (res < sizeof(event)) {
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -521,7 +521,7 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
 
 void timer_handler(int sig) {
     if (sig == SIGALRM) {
-        ALOGD("pointer axis stopped.");
+        ALOGV("pointer axis stopped.");
         if(mDisplay){
             if(mDisplay->axis_simulation_two_finger_started){
                 pointer_cancel_axis_to_two_finger_touch(mDisplay);
@@ -577,7 +577,7 @@ void register_button_release_callback(ButtonReleaseCallback cb) { dispatcher.but
 void register_motion_notify_callback(MotionNotifyCallback cb) { dispatcher.motion_notify_cb = cb; }
 
 void on_key_press(void *data, xcb_key_press_event_t *event) {
-    ALOGI("x11 keyboard press: keycode=%u\n", event->detail);
+    ALOGV("x11 keyboard press: keycode=%u\n", event->detail);
     uint32_t key = event->detail - 8;
     if (key == KEY_POWER)
         return;
@@ -589,7 +589,7 @@ void on_key_press(void *data, xcb_key_press_event_t *event) {
 }
 
 void on_key_release(void *data, xcb_key_release_event_t *event) {
-    ALOGI("x11 keyboard release: keycode=%u\n", event->detail);
+    ALOGV("x11 keyboard release: keycode=%u\n", event->detail);
     uint32_t key = event->detail - 8;
     if (key == KEY_POWER)
         return;
@@ -600,14 +600,14 @@ void on_key_release(void *data, xcb_key_release_event_t *event) {
         XkbGetState(display->x11display, XkbUseCoreKbd, &state);
         bool externalCapsLockState = state.locked_mods & LockMask;
         if (externalCapsLockState) {
-            ALOGD("on_key_release External Caps Lock is ON");
+            ALOGV("on_key_release External Caps Lock is ON");
         }else{
-            ALOGD("on_key_release External Caps Lock is OFF");
+            ALOGV("on_key_release External Caps Lock is OFF");
         }
         std::scoped_lock caps_lock(display->internalCapsLockStateMutex);
         if(display->internalCapsLockState != externalCapsLockState){
             display->internalCapsLockState = externalCapsLockState;
-            ALOGD("on_key_release update display->internalCapsLockState: %d", display->internalCapsLockState);
+            ALOGV("on_key_release update display->internalCapsLockState: %d", display->internalCapsLockState);
             send_key_event(display, KEY_CAPSLOCK, X11_KEYBOARD_KEY_STATE_PRESSED);
             send_key_event(display, KEY_CAPSLOCK, X11_KEYBOARD_KEY_STATE_RELEASED);
         }
@@ -618,14 +618,14 @@ void on_key_release(void *data, xcb_key_release_event_t *event) {
         XkbGetState(display->x11display, XkbUseCoreKbd, &state);
         bool externalNumLockState = state.locked_mods & Mod2Mask;
         if (externalNumLockState) {
-            ALOGD("on_key_release External Num Lock is ON");
+            ALOGV("on_key_release External Num Lock is ON");
         }else{
-            ALOGD("on_key_release External Num Lock is OFF");
+            ALOGV("on_key_release External Num Lock is OFF");
         }
         std::scoped_lock num_lock(display->internalNumLockStateMutex);
         if(display->internalNumLockState != externalNumLockState){
             display->internalNumLockState = externalNumLockState;
-            ALOGD("on_key_release update display->internalNumLockState: %d", display->internalNumLockState);
+            ALOGV("on_key_release update display->internalNumLockState: %d", display->internalNumLockState);
             send_key_event(display, KEY_NUMLOCK, X11_KEYBOARD_KEY_STATE_PRESSED);
             send_key_event(display, KEY_NUMLOCK, X11_KEYBOARD_KEY_STATE_RELEASED);
         }
@@ -680,7 +680,7 @@ static void handle_pinch_update(void *data, uint32_t time, wl_fixed_t dx, wl_fix
     ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
     ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
-    ALOGI("on_button_release write INPUT_TOUCH");
+    ALOGV("on_button_release write INPUT_TOUCH");
     res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
 
     if (res < sizeof(event))
@@ -752,7 +752,7 @@ pointer_axis_to_touch(struct display *display, int move, bool verticalScroll)
     }
     ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
     ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-    ALOGI("pointer_axis_to_touch write INPUT_TOUCH");
+    ALOGV("pointer_axis_to_touch write INPUT_TOUCH");
     res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
     if (res < sizeof(event))
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -856,11 +856,11 @@ is_x11_touch_begin(struct display *display)
 
 
 void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
-    ALOGI("on_button_press: botton=%u, position=(%d, %d)\n",
+    ALOGV("on_button_press: botton=%u, position=(%d, %d)\n",
            xcb_button_event->detail, xcb_button_event->event_x, xcb_button_event->event_y);
     struct display* display = (struct display*)data;
     if(is_x11_touch_begin(display)){
-        ALOGI("on_button_press x11 touch started return");
+        ALOGV("on_button_press x11 touch started return");
         return;
     }
     if(xcb_button_event->detail == XCB_BUTTON_INDEX_4 || xcb_button_event->detail == XCB_BUTTON_INDEX_5
@@ -869,7 +869,7 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
         reset_timer();
         return;
     }
-    ALOGI("display->ptrPrvX: %d, display->ptrPrvY: %d", display->ptrPrvX, display->ptrPrvY);
+    ALOGV("display->ptrPrvX: %d, display->ptrPrvY: %d", display->ptrPrvX, display->ptrPrvY);
     if(xcb_button_event->detail == XCB_BUTTON_INDEX_1){
         property_set("fde.axis_converting_touch", "false");
     }
@@ -932,7 +932,7 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
 void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event) {
     struct display* display = (struct display*)data;
     if(is_x11_touch_begin(display)){
-        ALOGI("on_button_release x11 touch started return");
+        ALOGV("on_button_release x11 touch started return");
         return;
     }
     if(xcb_button_event->detail == XCB_BUTTON_INDEX_4 || xcb_button_event->detail == XCB_BUTTON_INDEX_5){
@@ -998,10 +998,10 @@ void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event)
 
 void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
     struct display* display = (struct display*)data;
-    //ALOGI("display->ptrPrvX: %d, display->ptrPrvY: %d", display->ptrPrvX, display->ptrPrvY);
-    //ALOGI("x11 mouse move: position=(%d, %d)\n",
+    //ALOGV("display->ptrPrvX: %d, display->ptrPrvY: %d", display->ptrPrvX, display->ptrPrvY);
+    //ALOGV("x11 mouse move: position=(%d, %d)\n",
      //      event->event_x, event->event_y);
-    //ALOGI("鼠标移动: 窗口坐标 (%d, %d) -> 屏幕坐标 (%d, %d)\n", event->event_x, event->event_y, event->root_x, event->root_y);
+    //ALOGV("鼠标移动: 窗口坐标 (%d, %d) -> 屏幕坐标 (%d, %d)\n", event->event_x, event->event_y, event->root_x, event->root_y);
     if(display->axis_simulation_two_finger_started){
         return;
     }
@@ -1073,7 +1073,7 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
             return;
         }
 
-        ALOGD("on_motion_notify write INPUT_POINTER");
+        ALOGV("on_motion_notify write INPUT_POINTER");
         res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
         if (res < sizeof(event))
             ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -1093,7 +1093,7 @@ bool isValidInteger(const std::string& str) {
 }
 
 void set_ic_values_callback(xcb_xim_t *im, xcb_xic_t ic, void *user_data) {
-    ALOGD("set ic %d done\n", ic);
+    ALOGV("set ic %d done\n", ic);
     (void) im;
     (void) ic;
     (void) user_data;
@@ -1170,7 +1170,7 @@ touch_handle_down(void *data,
     ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
     ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
-    ALOGI("touch_handle_down write INPUT_TOUCH id: %d", get_touch_id(display, id));
+    ALOGV("touch_handle_down write INPUT_TOUCH id: %d", get_touch_id(display, id));
     res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
     if (res < sizeof(event))
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -1321,7 +1321,7 @@ static void toggle_fullscreen_windowed(xcb_connection_t *conn, xcb_window_t wind
         uint32_t pos_values[] = { (uint32_t)(display->primary_y)};
         xcb_configure_window(conn, window, pos_mask, pos_values);
 
-        ALOGD("Switch to windowed mode: The title bar is visible and can be dragged to the secondary screen.");
+        ALOGV("Switch to windowed mode: The title bar is visible and can be dragged to the secondary screen.");
         *is_fullscreen = false;
     } else {
         // from windowed to fullscreen
@@ -1349,7 +1349,7 @@ void *event_loop_thread(void *arg) {
             continue;
         }
         uint8_t event_type = event->response_type & ~0x80;
-        ALOGD("Processing event: type=%d", event_type);
+        ALOGV("Processing event: type=%d", event_type);
         if(display->multi_windows){
             if(display->im){
                 if (!xcb_xim_filter_event(display->im, event)) {
@@ -1361,7 +1361,7 @@ void *event_loop_thread(void *arg) {
                         continue;
                     }
                 }else{
-                    ALOGI("event has been consumed by input method. ");
+                    ALOGV("event has been consumed by input method. ");
                     free(event);
                     continue;
                 }
@@ -1378,9 +1378,9 @@ void *event_loop_thread(void *arg) {
                 {
                     std::scoped_lock lock(display->windowsMutex);
                     for (auto it = display->x11_windows->begin(); it != display->x11_windows->end(); it++) {
-                        ALOGI("Task : %s", it->first.c_str());
+                        ALOGV("Task : %s", it->first.c_str());
                         if (it->second->xcbwindow == focused_win){
-                            ALOGI("Task %s focus_in", it->first.c_str());
+                            ALOGV("Task %s focus_in", it->first.c_str());
                             if (display->task != nullptr) {
                                 if (it->first != "Openfde" && it->first != "none" && it->first != "0") {
                                     if(isValidInteger(it->first)){
@@ -1389,7 +1389,7 @@ void *event_loop_thread(void *arg) {
                                 }
                             }
                             if (it->first != "Toast" && it->first.find("Application Not Responding:") ==  std::string::npos && !isStartWithSpecialSymbols(it->first)) {
-                                ALOGI("XCB_FOCUS_IN focus_win: %u task %s XAutoRepeatOff", focused_win, it->first.c_str());
+                                ALOGV("XCB_FOCUS_IN focus_win: %u task %s XAutoRepeatOff", focused_win, it->first.c_str());
                                 disable_auto_repeat(display->x11display);
                             }
                         }
@@ -1397,21 +1397,21 @@ void *event_loop_thread(void *arg) {
                 }
                 if(taskId != -1){
                     display->task->setFocusedTask(taskId);
-                    ALOGI("display->task->setFocusedTask: %d", taskId);
+                    ALOGV("display->task->setFocusedTask: %d", taskId);
                 }
                 XkbStateRec state;
                 XkbGetState(display->x11display, XkbUseCoreKbd, &state);
                 bool externalCapsLockState = state.locked_mods & LockMask;
                 if (externalCapsLockState) {
-                    ALOGD("XCB_FOCUS_IN External Caps Lock is ON");
+                    ALOGV("XCB_FOCUS_IN External Caps Lock is ON");
                 }else{
-                    ALOGD("XCB_FOCUS_IN External Caps Lock is OFF");
+                    ALOGV("XCB_FOCUS_IN External Caps Lock is OFF");
                 }
                 {
                     std::scoped_lock caps_lock(display->internalCapsLockStateMutex);
                     if(display->internalCapsLockState != externalCapsLockState){
                         display->internalCapsLockState = externalCapsLockState;
-                        ALOGD("XCB_FOCUS_IN update display->internalCapsLockState: %d", display->internalCapsLockState);
+                        ALOGV("XCB_FOCUS_IN update display->internalCapsLockState: %d", display->internalCapsLockState);
                         send_key_event(display, KEY_CAPSLOCK, X11_KEYBOARD_KEY_STATE_PRESSED);
                         send_key_event(display, KEY_CAPSLOCK, X11_KEYBOARD_KEY_STATE_RELEASED);
                     }
@@ -1419,15 +1419,15 @@ void *event_loop_thread(void *arg) {
 
                 bool externalNumLockState = state.locked_mods & Mod2Mask;
                 if (externalNumLockState) {
-                    ALOGD("XCB_FOCUS_IN External Num Lock is ON");
+                    ALOGV("XCB_FOCUS_IN External Num Lock is ON");
                 }else{
-                    ALOGD("XCB_FOCUS_IN External Num Lock is OFF");
+                    ALOGV("XCB_FOCUS_IN External Num Lock is OFF");
                 }
                 {
                     std::scoped_lock num_lock(display->internalNumLockStateMutex);
                     if(display->internalNumLockState != externalNumLockState){
                         display->internalNumLockState = externalNumLockState;
-                        ALOGD("XCB_FOCUS_IN update display->internalNumLockState: %d", display->internalNumLockState);
+                        ALOGV("XCB_FOCUS_IN update display->internalNumLockState: %d", display->internalNumLockState);
                         send_key_event(display, KEY_NUMLOCK, X11_KEYBOARD_KEY_STATE_PRESSED);
                         send_key_event(display, KEY_NUMLOCK, X11_KEYBOARD_KEY_STATE_RELEASED);
                     }
@@ -1441,9 +1441,9 @@ void *event_loop_thread(void *arg) {
                     std::scoped_lock lock(display->windowsMutex);
                     for (auto it = display->x11_windows->begin(); it != display->x11_windows->end(); it++) {
                         if (it->second->xcbwindow == focus_out_win){
-                            ALOGI("Task : %s focus_out", it->first.c_str());
+                            ALOGV("Task : %s focus_out", it->first.c_str());
                             if (it->first != "Toast" && it->first.find("Application Not Responding:") ==  std::string::npos && !isStartWithSpecialSymbols(it->first)) {
-                                ALOGI("XCB_FOCUS_OUT focus_out_win: %u task %s XAutoRepeatOn", focus_out_win, it->first.c_str());
+                                ALOGV("XCB_FOCUS_OUT focus_out_win: %u task %s XAutoRepeatOn", focus_out_win, it->first.c_str());
                                 enable_auto_repeat(display->x11display);
                             }
                         }
@@ -1461,20 +1461,20 @@ void *event_loop_thread(void *arg) {
             }
             case XCB_CLIENT_MESSAGE: {
                 xcb_client_message_event_t *cm = (xcb_client_message_event_t *)event;
-                ALOGI("cm->type: %d, cm->data.data32[0]: %d", cm->type, cm->data.data32[0]);
+                ALOGV("cm->type: %d, cm->data.data32[0]: %d", cm->type, cm->data.data32[0]);
                 xcb_window_t focused_win = cm ->window;
                 int taskId = -1;
                 {
                     std::scoped_lock lock(display->windowsMutex);
                     for (auto it = display->x11_windows->begin(); it != display->x11_windows->end(); it++) {
-                        ALOGI("Task : %s", it->first.c_str());
+                        ALOGV("Task : %s", it->first.c_str());
                         if (it->second->xcbwindow == focused_win){
-                            ALOGI("it->second->wm_protocols: %d, it->second->wm_delete_window: %d",
+                            ALOGV("it->second->wm_protocols: %d, it->second->wm_delete_window: %d",
                                 it->second->wm_protocols, it->second->wm_delete_window);
                             if (cm->type == it->second->wm_protocols && cm->data.data32[0] == it->second->wm_delete_window) {
                                 if (display->task != nullptr) {
                                     if (it->first != "Openfde" && it->first != "none" && it->first != "0") {
-                                        ALOGI("remove task %s", it->first.c_str());
+                                        ALOGV("remove task %s", it->first.c_str());
                                         if(isValidInteger(it->first)){
                                             property_set(("fde_running_task_" + it->first).c_str(), "false");
                                             taskId = stoi(it->first);
@@ -1483,7 +1483,7 @@ void *event_loop_thread(void *arg) {
                                         ALOGE("Received XCB_CLIENT_MESSAGE, ignoring\n");
                                     }
                                     if (it->first != "Toast" && it->first.find("Application Not Responding:") ==  std::string::npos && !isStartWithSpecialSymbols(it->first)) {
-                                        ALOGI("XCB_CLIENT_MESSAGE delete window: %u task %s XAutoRepeatOn", focused_win, it->first.c_str());
+                                        ALOGV("XCB_CLIENT_MESSAGE delete window: %u task %s XAutoRepeatOn", focused_win, it->first.c_str());
                                         enable_auto_repeat(display->x11display);
                                     }
                                 }
@@ -1494,7 +1494,7 @@ void *event_loop_thread(void *arg) {
                 }
                 if(taskId != -1){
                     display->task->removeTask(taskId);
-                    ALOGI("display->task->removeTask: %d", taskId);
+                    ALOGV("display->task->removeTask: %d", taskId);
                 }
                 break;
             }
@@ -1506,9 +1506,9 @@ void *event_loop_thread(void *arg) {
                     {
                         std::scoped_lock lock(display->windowsMutex);
                         for (auto it = display->x11_windows->begin(); it != display->x11_windows->end(); it++) {
-                            ALOGI("XCB_BUTTON_PRESS Task : %s", it->first.c_str());
+                            ALOGV("XCB_BUTTON_PRESS Task : %s", it->first.c_str());
                             if (it->second->xcbwindow == focus_window){
-                                ALOGI("XCB_BUTTON_PRESS Task %s gained focus", it->first.c_str());
+                                ALOGV("XCB_BUTTON_PRESS Task %s gained focus", it->first.c_str());
                                 if (display->task != nullptr) {
                                     if (it->first != "Openfde" && it->first != "none" && it->first != "0") {
                                         if(isValidInteger(it->first)){
@@ -1529,14 +1529,14 @@ void *event_loop_thread(void *arg) {
                         xcb_button_press_event_t *xcb_button_event = (xcb_button_press_event_t *)event;
                         if(display->im){
                             xcb_point_t spot = {xcb_button_event->root_x, xcb_button_event->root_y};
-                            ALOGI("on button press update_spot_location x: %d, y: %d", spot.x, spot.y);
+                            ALOGV("on button press update_spot_location x: %d, y: %d", spot.x, spot.y);
                             update_spot_location(display->im, display->ic, spot);
                         }
                     }
                     break;
                 }
             case XCB_BUTTON_RELEASE:
-                ALOGD("XCB_BUTTON_RELEASE received");
+                ALOGV("XCB_BUTTON_RELEASE received");
                 if (dispatcher.button_release_cb) {
                     dispatcher.button_release_cb(arg, (xcb_button_release_event_t *)event);
                 }
@@ -1547,7 +1547,7 @@ void *event_loop_thread(void *arg) {
                 }
                 break;
             case XCB_KEY_PRESS:
-                ALOGD("XCB_KEY_PRESS received");
+                ALOGV("XCB_KEY_PRESS received");
                 if (((xcb_key_press_event_t *)event)->detail == XCB_KEY_LEFTCTRL || ((xcb_key_press_event_t *)event)->detail == XCB_KEY_RIGHTCTRL) {
                     display->ctrl_key_pressed = true;
                 }
@@ -1570,7 +1570,7 @@ void *event_loop_thread(void *arg) {
                 }
                 break;
             case XCB_KEY_RELEASE:
-                ALOGD("XCB_KEY_RELEASE received");
+                ALOGV("XCB_KEY_RELEASE received");
                 if (((xcb_key_press_event_t *)event)->detail == XCB_KEY_LEFTCTRL || ((xcb_key_press_event_t *)event)->detail == XCB_KEY_RIGHTCTRL) {
                     display->ctrl_key_pressed = false;
                 }
@@ -1582,7 +1582,7 @@ void *event_loop_thread(void *arg) {
                 break;
             case XCB_CONFIGURE_NOTIFY: {
                 xcb_configure_notify_event_t *config_event = (xcb_configure_notify_event_t *)event;
-                ALOGD("Window size adjustment: Width = %d, Height = %d", config_event->width, config_event->height);
+                ALOGV("Window size adjustment: Width = %d, Height = %d", config_event->width, config_event->height);
                 break;
             }
             case XCB_GE_GENERIC:
@@ -1594,7 +1594,7 @@ void *event_loop_thread(void *arg) {
                             xcb_input_touch_begin_event_t *tb = (xcb_input_touch_begin_event_t *)ge;
                             double x = XI_FP1616_TO_DOUBLE(tb->event_x);
                             double y = XI_FP1616_TO_DOUBLE(tb->event_y);
-                            ALOGD("Touch Begin: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", tb->detail, x, y, tb->deviceid);
+                            ALOGV("Touch Begin: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", tb->detail, x, y, tb->deviceid);
                             touch_handle_down(display, tb->detail, (int)x, (int)y);
                             break;
                         }
@@ -1602,7 +1602,7 @@ void *event_loop_thread(void *arg) {
                             xcb_input_touch_update_event_t *tu = (xcb_input_touch_update_event_t *)ge;
                             double x = XI_FP1616_TO_DOUBLE(tu->event_x);
                             double y = XI_FP1616_TO_DOUBLE(tu->event_y);
-                            //ALOGD("Touch Update: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", tu->detail, x, y, tu->deviceid);
+                            //ALOGV("Touch Update: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", tu->detail, x, y, tu->deviceid);
                             touch_handle_motion(display, tu->detail, (int)x, (int)y);
                             break;
                         }
@@ -1610,7 +1610,7 @@ void *event_loop_thread(void *arg) {
                             xcb_input_touch_end_event_t *te = (xcb_input_touch_end_event_t *)ge;
                             double x = XI_FP1616_TO_DOUBLE(te->event_x);
                             double y = XI_FP1616_TO_DOUBLE(te->event_y);
-                            ALOGD("Touch End: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", te->detail, x, y, te->deviceid);
+                            ALOGV("Touch End: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", te->detail, x, y, te->deviceid);
                             touch_handle_up(display, te->detail);
                             break;
                         }
@@ -2015,7 +2015,7 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
     set_window_class(display->xcbconnection, window->xcbwindow, window->appID, window->appID);
 
     xcb_map_window(display->xcbconnection, window->xcbwindow);
-    ALOGI("xcreate xcb window %s color %d, width %d height %d",appID_title.c_str(),color.a, display->width,display->height);
+    ALOGV("xcreate xcb window %s color %d, width %d height %d",appID_title.c_str(),color.a, display->width,display->height);
 
     /* Check the XInput extension and get the opcode. */
     const xcb_query_extension_reply_t *ext_reply =
@@ -2062,13 +2062,13 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
 }
 
 void disable_auto_repeat(Display *display) {
-    ALOGD("disable keyboard auto_repeat_mode");
+    ALOGV("disable keyboard auto_repeat_mode");
     XAutoRepeatOff(display);
     XFlush(display);
 }
 
 void enable_auto_repeat(Display *display) {
-    ALOGD("enable keyboard auto_repeat_mode");
+    ALOGV("enable keyboard auto_repeat_mode");
     XAutoRepeatOn(display);
     XFlush(display);
 }
@@ -2153,7 +2153,7 @@ create_display(const char *gralloc)
     display->isMaximized = true;
 
     display->x11display = NULL;
-    ALOGI("x11 display env %s", getenv("DISPLAY"));
+    ALOGV("x11 display env %s", getenv("DISPLAY"));
     const char* display_env = getenv("DISPLAY");
     std::string display_path = "unix:/tmpx11/X0";
     if (display_env && strlen(display_env) > 0) {
@@ -2174,7 +2174,7 @@ create_display(const char *gralloc)
         delete display;
         return NULL;
     }
-    ALOGD("XMODIFIERS: %s", getenv("XMODIFIERS"));
+    ALOGV("XMODIFIERS: %s", getenv("XMODIFIERS"));
     XSetEventQueueOwner(display->x11display, XCBOwnsEventQueue);
     display->xcbscreen = xcb_setup_roots_iterator(xcb_get_setup(display->xcbconnection)).data;
     display->screen_default_nbr = XDefaultScreen(display->x11display);
@@ -2217,12 +2217,12 @@ create_display(const char *gralloc)
         display->full_height = display->xcbscreen->height_in_pixels;
         display->primary_x = 0;
         display->primary_y = 0;
-        ALOGI("fallback to root window size: %dx%d", display->full_width, display->full_height);
+        ALOGV("fallback to root window size: %dx%d", display->full_width, display->full_height);
     }
 
     display->width = display->full_width /display->scale;
     display->height = display->full_height /display->scale;
-    ALOGI("final display size: %dx%d (scale=%f), primary offset (%d,%d)",
+    ALOGV("final display size: %dx%d (scale=%f), primary offset (%d,%d)",
           display->width, display->height, display->scale, display->primary_x, display->primary_y);
     struct display *d = (struct display*)display;
     d->input_fd[INPUT_POINTER] = -1;

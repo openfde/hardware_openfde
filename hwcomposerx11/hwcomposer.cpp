@@ -134,7 +134,7 @@ Cursor create_empty_cursor(Display *display, Window root) {
 }
 
 static void x11_set_custom_cursor(waydroid_hwc_composer_device_1* pdev, Picture xpicture, int hot_x, int hot_y) {
-    ALOGD("x11_set_custom_cursor hot_x: %d, hot_y: %d", hot_x, hot_y);
+    ALOGV("x11_set_custom_cursor hot_x: %d, hot_y: %d", hot_x, hot_y);
     struct display *display = pdev->display;
 
     if(!display)
