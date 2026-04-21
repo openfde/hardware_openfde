@@ -145,8 +145,12 @@ static uint32_t get_gbm_format(int format)
 		}
 		break;
 	case HAL_PIXEL_FORMAT_YCbCr_420_888:
-		/* YV12 is planar, but must be a single buffer so ask for GR88 */
-		fmt = GBM_FORMAT_GR88;
+		if (flag_is_proxy_env) {
+			fmt = GBM_FORMAT_RGB565;
+		} else {
+			/* YV12 is planar, but must be a single buffer so ask for GR88 */
+			fmt = GBM_FORMAT_GR88;
+		}
 		break;
 	case HAL_PIXEL_FORMAT_RGBA_FP16:
 		fmt = GBM_FORMAT_ABGR16161616F;
@@ -155,7 +159,11 @@ static uint32_t get_gbm_format(int format)
 		fmt = GBM_FORMAT_ABGR2101010;
 		break;
 	case HAL_PIXEL_FORMAT_BLOB:
-		fmt = GBM_FORMAT_R8;
+		if (flag_is_proxy_env) {
+			fmt = GBM_FORMAT_RGB565;
+		} else {
+			fmt = GBM_FORMAT_R8;
+		}
 		break;
 	case HAL_PIXEL_FORMAT_YCbCr_422_SP:
 	case HAL_PIXEL_FORMAT_YCrCb_420_SP:
@@ -338,8 +346,8 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 		width = size.first;
 		height = size.second;
 	}
-	ALOGV("create BO, size=%dx%d, fmt=%d, usage=%x",
-	      handle->width, handle->height, handle->format, usage);
+	// ALOGD("pngcui - create BO, size=%dx%d, fmt=%d, usage=%x",
+	//       handle->width, handle->height, handle->format, usage);
 	std::vector<uint64_t> modifiers = get_supported_modifiers(gbm, format);
 	if (modifiers.size() > 0) {
 		bo = gbm_bo_create_with_modifiers2(gbm, width, height, format, modifiers.data(), modifiers.size(), usage);
@@ -359,9 +367,9 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 	if ((handle->usage & GRALLOC_USAGE_PRIVATE_0)
 			&& handle->format == HAL_PIXEL_FORMAT_RGB_565
 			&& (flag_is_mesa_env)) {
-		ALOGD("pngcui - create BO, size=%dx%d, fmt=%d, usage=%x, stride:%d->%d",
-			handle->width, handle->height, handle->format, usage, handle->stride,
-			(handle->width * gralloc_gbm_get_bpp(handle->format)));
+		// ALOGD("pngcui - create BO, size=%dx%d, fmt=%d, usage=%x, stride:%d->%d",
+		// 	handle->width, handle->height, handle->format, usage, handle->stride,
+		// 	(handle->width * gralloc_gbm_get_bpp(handle->format)));
 		handle->stride = handle->width * gralloc_gbm_get_bpp(handle->format);
 	}
 	#ifdef GBM_BO_IMPORT_FD_MODIFIER
