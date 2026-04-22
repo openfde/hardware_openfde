@@ -53,6 +53,7 @@
 int flag_is_mesa_env = 0;
 int flag_is_proxy_env = 0;
 #define GRALLOC_ALIGN(value, base) (((value) + ((base)-1)) & ~((base)-1))
+int align_x = 256;
 
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 
@@ -272,11 +273,7 @@ static struct gbm_bo *gbm_import(struct gbm_device *gbm,
 		data.height += handle->height / 2;
 	}
 	if (handle->usage & GRALLOC_USAGE_PRIVATE_0 && handle->format == HAL_PIXEL_FORMAT_RGB_565) {
-		if (flag_is_mesa_env) {
-			data.width = GRALLOC_ALIGN(data.width, 256);
-		} else if (flag_is_proxy_env) {
-			data.width = GRALLOC_ALIGN(data.width, 32);
-		}
+		data.width = GRALLOC_ALIGN(data.width, align_x);
 	}
 	if (handle->format == HAL_PIXEL_FORMAT_BLOB) {
 		std::pair<int, int> size = find_closest_size(data.width);
@@ -334,11 +331,7 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 		}
 	}
 	if (handle->usage & GRALLOC_USAGE_PRIVATE_0 && handle->format == HAL_PIXEL_FORMAT_RGB_565) {
-		if (flag_is_mesa_env) {
-			width = GRALLOC_ALIGN(width, 256);
-		} else if (flag_is_proxy_env) {
-			width = GRALLOC_ALIGN(width, 32);
-		}
+		width = GRALLOC_ALIGN(width, align_x);
 	}
 	
 	if (handle->format == HAL_PIXEL_FORMAT_BLOB) {
@@ -462,7 +455,13 @@ struct gbm_device *gbm_dev_create(void)
 	property_get("ro.hardware.egl", egl_type, "none");
 	if (strcmp(egl_type, "mesa") == 0) {
 		flag_is_mesa_env = 1;
-	} else if (strcmp(egl_type, "proxy") == 0) {
+		align_x = 256;
+	} else if (strcmp(egl_type, "FTG340") == 0) {
+		align_x = 32;
+	}
+
+	property_get("ro.hardware.graphics.egl", egl_type, "none");
+	if (strcmp(egl_type, "proxy") == 0) {
 		flag_is_proxy_env = 1;
 	}
 
