@@ -371,19 +371,23 @@ static struct wl_surface *get_surface(struct openfde_hwc_composer_device_1 *pdev
             }
             setup_viewport_destination(window->viewport, layer->displayFrame, pdev->display);
 
-            pdev->display->width = pdev->display->full_width/pdev->display->scale;
-            pdev->display->height = pdev->display->full_height/pdev->display->scale;
+            pdev->display->width = (int)(pdev->display->full_width/pdev->display->scale);
+            pdev->display->height = (int)(pdev->display->full_height/pdev->display->scale);
 
             if(window->bg_viewport){
                 wl_surface_attach(window->bg_surface, window->bg_buffer, 0, 0);
                 wl_surface_damage_buffer(window->bg_surface, 0, 0, 1, 1);
                 wp_viewport_set_destination(window->bg_viewport, pdev->display->width, pdev->display->height);
-                ALOGW("get_surface window bg_viewport width: %f, height: %f", pdev->display->width, pdev->display->height);
+                ALOGW("get_surface window bg_viewport width: %d, height: %d", pdev->display->width, pdev->display->height);
                 wl_surface_commit(window->bg_surface);
             }
             find_primary(pdev->display);
-            if(pdev->display->primary){
+            if(pdev->display->num_outputs > 0 && pdev->display->primary){
                 xdg_toplevel_set_fullscreen(window->xdg_toplevel, pdev->display->primary->wl_output);
+                ALOGW("xdg_toplevel_set_fullscreen output registry_id: %u", pdev->display->primary->registry_id);
+            }else{
+                xdg_toplevel_set_fullscreen(window->xdg_toplevel, NULL);
+                ALOGW("xdg_toplevel_set_fullscreen NULL");
             }
         }
         return window->surface;

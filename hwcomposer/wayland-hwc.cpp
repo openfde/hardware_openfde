@@ -2561,7 +2561,7 @@ registry_handle_global_remove(void *data, struct wl_registry *, uint32_t id)
             ALOGW("Output removed: id=%u  (logical %dx%d)", id,
                   out->logical_width, out->logical_height);
 
-            if (out->xdg_output) {
+            /*if (out->xdg_output) {
                 zxdg_output_v1_destroy(out->xdg_output);
                 out->xdg_output = NULL;
             }
@@ -2569,7 +2569,7 @@ registry_handle_global_remove(void *data, struct wl_registry *, uint32_t id)
             if (out->wl_output) {
                 wl_output_release(out->wl_output);
                 out->wl_output = NULL;
-            }
+            }*/
 
             for (int j = i; j < d->num_outputs - 1; j++) {
                 d->outputs[j] = d->outputs[j + 1];
@@ -2673,6 +2673,7 @@ create_display(const char *gralloc)
         if(display->scale == 1 && display->primary->scale > 1){
             display->scale = display->primary->scale;
         }
+        ALOGW("  display->scale: %f", display->scale);
         ALOGW("  Physical dimensions (mm): %d mm × %d mm\n", display->primary->phys_width_mm, display->primary->phys_height_mm);
         if (display->primary->phys_width_mm > 0 && display->primary->pixel_width > 0) {
             double dpi_x = (double)display->primary->pixel_width / (display->primary->phys_width_mm / 25.4);
@@ -2698,6 +2699,8 @@ create_display(const char *gralloc)
     if(display->full_height == 0){
         display->full_height = 1080;
     }
+
+    ALOGW("display->full_width: %d, display->full_height: %d", display->full_width, display->full_height);
 
     display->task = IOpenfdeTask::getService();
     display->isTouchDown = false;
