@@ -534,6 +534,8 @@ void timer_handler(int sig) {
 }
 
 void reset_timer() {
+    property_set("fde.axis_converting_touch", "true");
+
     memset(&timer, 0, sizeof(timer));
 
     timer.it_value.tv_sec = 0;
@@ -868,6 +870,9 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
         return;
     }
     ALOGI("display->ptrPrvX: %d, display->ptrPrvY: %d", display->ptrPrvX, display->ptrPrvY);
+    if(xcb_button_event->detail == XCB_BUTTON_INDEX_1){
+        property_set("fde.axis_converting_touch", "false");
+    }
 
     pointer_cancel_axis_to_touch(display, false, true);
     if(display->axis_simulation_two_finger_started){
