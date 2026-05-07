@@ -84,9 +84,12 @@ const int AXIS_TOUCH_SLOT_ID = 8;
 const int AXIS_TOUCH_TRACKING_ID = AXIS_TOUCH_SLOT_ID;
 const int SCROLLING_STRIDE = 2560;
 struct display *mDisplay;
+int mTouchMove;
+bool mVerticalScroll = true;
 int timer_active = 0;
 struct itimerval timer;
-#define SCROLL_END_TIMEOUT_MS 240
+int scroll_speed = 0;
+#define SCROLL_END_TIMEOUT_MS 150
 #define GESTURE_SCALING_DOWN_STRIDE 22
 #define GESTURE_SCALING_UP_STRIDE 720
 #define GESTURE_SCALING_DOWN_START_DISTANCE 340.0
@@ -111,6 +114,8 @@ static double prev_rely = 0;
 #endif
 
 static int find_argb_visual(struct display *display) ;
+static void pointer_axis_to_touch(struct display *display, int move, bool verticalScroll);
+
 void
 destroy_buffer(struct display * display ,struct buffer* buf) {
     if (buf->xcbpixmap) {
@@ -526,10 +531,14 @@ void timer_handler(int sig) {
             if(mDisplay->axis_simulation_two_finger_started){
                 pointer_cancel_axis_to_two_finger_touch(mDisplay);
             }else{
+                if(scroll_speed < 2){
+                    pointer_axis_to_touch(mDisplay, mTouchMove, mVerticalScroll);
+                }
                 pointer_cancel_axis_to_touch(mDisplay, true, true);
             }
         }
         timer_active = 0;
+        scroll_speed = 0;
     }
 }
 
@@ -543,6 +552,9 @@ void reset_timer() {
 
     setitimer(ITIMER_REAL, &timer, NULL);
     timer_active = 1;
+    if(scroll_speed < 3){
+        scroll_speed += 1;
+    }
 }
 
 void init_timer() {
@@ -706,9 +718,9 @@ pointer_axis_to_touch(struct display *display, int move, bool verticalScroll)
 
     int64_t nanoSeconds = rt.tv_sec * 1000 * 1000 * 1000 + rt.tv_nsec;
     if(verticalScroll){
-        display->axisY += move;
+        display->axisY += move*scroll_speed;
     }else{
-        display->axisX += move;
+        display->axisX += move*scroll_speed;
     }
 
     // if ((nanoSeconds - display->lastAxisEventNanoSeconds) < 20 * 1000 * 1000) {
@@ -826,6 +838,8 @@ x11_pointer_handle_axis(void *data,  uint32_t axis, int value)
                 pointer_cancel_axis_to_two_finger_touch(display);
             }
             pointer_axis_to_touch(display, touchMove, axis == WL_POINTER_AXIS_VERTICAL_SCROLL);
+            mTouchMove = touchMove;
+            mVerticalScroll = (axis == WL_POINTER_AXIS_VERTICAL_SCROLL);
         }
     }else{
         if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
