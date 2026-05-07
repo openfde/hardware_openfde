@@ -82,9 +82,12 @@ using ::android::hardware::hidl_string;
 const int AXIS_TOUCH_SLOT_ID = 8;
 const int AXIS_TOUCH_TRACKING_ID = AXIS_TOUCH_SLOT_ID;
 struct display *mDisplay;
+int mTouchMove;
+bool mVerticalScroll = true;
 int timer_active = 0;
 struct itimerval timer;
-#define SCROLL_END_TIMEOUT_MS 240
+int scroll_speed = 0;
+#define SCROLL_END_TIMEOUT_MS 150
 #define GESTURE_SCALING_DOWN_STRIDE 30
 #define GESTURE_SCALING_UP_STRIDE 480
 #define GESTURE_SCALING_DOWN_START_DISTANCE 180.0
@@ -95,6 +98,7 @@ static int gesture_scaling_stride;
 struct buffer;
 static void handle_pinch_update(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t time, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t scale, wl_fixed_t rotation);
 static void handle_pinch_end(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t serial, uint32_t time, int cancelled);
+static void pointer_axis_to_touch(struct display *display, int move, bool verticalScroll);
 
 void find_primary(struct display *d) {
     d->primary = NULL;
@@ -1089,14 +1093,20 @@ void timer_handler(int sig) {
                 pointer_cancel_axis_to_two_finger_touch(mDisplay);
             }else{
                 ALOGD("pointer axis stopped, called pointer_cancel_axis_to_touch");
+                if(scroll_speed < 2){
+                    pointer_axis_to_touch(mDisplay, mTouchMove, mVerticalScroll);
+                }
                 pointer_cancel_axis_to_touch(mDisplay, true, true);
             }
         }
         timer_active = 0;
+        scroll_speed = 0;
     }
 }
 
 void reset_timer() {
+    property_set("fde.axis_converting_touch", "true");
+
     memset(&timer, 0, sizeof(timer));
 
     timer.it_value.tv_sec = 0;
@@ -1104,6 +1114,9 @@ void reset_timer() {
 
     setitimer(ITIMER_REAL, &timer, NULL);
     timer_active = 1;
+    if(scroll_speed < 3){
+        scroll_speed += 1;
+    }
 }
 
 void init_timer() {
@@ -1230,6 +1243,10 @@ pointer_handle_button(void *data, struct wl_pointer *,
         pointer_cancel_axis_to_two_finger_touch(display);
     }
 
+    if(button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED){
+        property_set("fde.axis_converting_touch", "false");
+    }
+
     // Left button convert to touch event, right button reserved mouse event
     if(((button == BTN_LEFT && property_get_bool("fde.click_as_touch", false)) || display->isTouchDown) && !display->isMouseLeftDown) {
         // convert pointer event to touch event
@@ -1283,9 +1300,9 @@ pointer_axis_to_touch(struct display *display, int move, bool verticalScroll)
 
     int64_t nanoSeconds = rt.tv_sec * 1000 * 1000 * 1000 + rt.tv_nsec;
     if(verticalScroll){
-        display->axisY += move;
+        display->axisY += move*scroll_speed;
     }else{
-        display->axisX += move;
+        display->axisX += move*scroll_speed;
     }
 
     // if ((nanoSeconds - display->lastAxisEventNanoSeconds) < 20 * 1000 * 1000) {
@@ -1406,6 +1423,8 @@ pointer_handle_axis(void *data, struct wl_pointer *,
                 pointer_cancel_axis_to_two_finger_touch(display);
             }
             pointer_axis_to_touch(display, touchMove, axis == WL_POINTER_AXIS_VERTICAL_SCROLL);
+            mTouchMove = touchMove;
+            mVerticalScroll = (axis == WL_POINTER_AXIS_VERTICAL_SCROLL);
         }
     }else{
         if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
