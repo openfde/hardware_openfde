@@ -107,7 +107,6 @@ static bool update_cursor_surface(openfde_hwc_composer_device_1* pdev, hwc_layer
     }
 
     fb_layer->compositionType = HWC_OVERLAY; // Not participating in SurfaceFlinger GPU compositing hide internal cursor
-    std::scoped_lock lock(pdev->display->cursorMutex);
     if(!pdev->display->pointer){
         return false;
     }
@@ -181,6 +180,7 @@ static int hwc_prepare(hwc_composer_device_1_t* dev,
     }
 
     bool foundCursorLayer = false;
+    std::scoped_lock lock(pdev->display->cursorMutex);
     for (size_t i = 0; i < contents->numHwLayers; i++) {
         if (contents->hwLayers[i].compositionType == HWC_FRAMEBUFFER_TARGET)
             continue;
@@ -203,7 +203,6 @@ static int hwc_prepare(hwc_composer_device_1_t* dev,
         foundCursorLayer |= update_cursor_surface(pdev, &contents->hwLayers[i], i);
     }
     if(!foundCursorLayer && pdev->display->mouse_icon_addr != -1){
-        std::scoped_lock lock(pdev->display->cursorMutex);
         if(pdev->display->pointer){
             wl_pointer_set_cursor(pdev->display->pointer, pdev->display->serial, NULL, 0, 0);
         }
