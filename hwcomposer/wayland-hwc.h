@@ -149,6 +149,7 @@ struct display {
     struct zwp_pointer_gesture_pinch_v1 *pointer_gestures_pinch;
     int gtype;
     double scale;
+    double locally_calculated_scale;
 
     bool four_finger_gesture_active;
     bool four_finger_app_launcher_triggered;

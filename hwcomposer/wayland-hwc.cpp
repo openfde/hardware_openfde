@@ -612,6 +612,7 @@ static void fractional_scale_handle_preferred_scale(void *data, struct wp_fracti
     double scale = scale_times_120 / SCALING_FACTOR_DENOMINATOR;
     if(display->scale != scale){
         display->scale = scale;
+        display->locally_calculated_scale = scale;
         ALOGW("fractional_scale_handle_preferred_scale display->scale: %f", display->scale);
         display->preferred_scale = true;
     }
@@ -2686,7 +2687,9 @@ create_display(const char *gralloc)
         display->full_height = display->primary->pixel_height;
         ALOGW("  Logical resolution (scaled): %d × %d\n", display->primary->logical_width, display->primary->logical_height);
 	    double scale = ((double)display->primary->pixel_width) / display->primary->logical_width;
+        scale = round(scale * 100.0) / 100.0;
         display->scale = scale;
+        display->locally_calculated_scale = scale;
         ALOGW("  scaling factor: %d\n", display->primary->scale);
         ALOGW("  Floating-point scaling factor: %f\n", scale);
         if(display->scale == 1 && display->primary->scale > 1){
