@@ -140,7 +140,8 @@ static bool update_cursor_surface(openfde_hwc_composer_device_1* pdev, hwc_layer
         wl_surface_damage_buffer(pdev->display->cursor_surface, 0, 0, buf->width, buf->height);
     else
         wl_surface_damage(pdev->display->cursor_surface, 0, 0, buf->width, buf->height);
-    if ((pdev->display->gtype == GRALLOC_FTG340 || !pdev->display->viewporter) && pdev->display->scale > 1) {
+    //locally_calculated_scale add for mutter env
+    if ((!pdev->display->viewporter && pdev->display->scale > 1) || pdev->display->scale > pdev->display->locally_calculated_scale) {
         // With no viewporter the scale is guaranteed to be integer
         wl_surface_set_buffer_scale(pdev->display->cursor_surface, (int)pdev->display->scale);
     } else if (pdev->display->viewporter && pdev->display->scale != 1) {
