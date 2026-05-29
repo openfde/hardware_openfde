@@ -50,9 +50,6 @@
 #include <vector>
 #include <cmath>
 
-int flag_is_mesa_env = 0;
-#define GRALLOC_ALIGN(value, base) (((value) + ((base)-1)) & ~((base)-1))
-
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 
 #define unlikely(x) __builtin_expect(!!(x), 0)
@@ -136,13 +133,6 @@ static uint32_t get_gbm_format(int format)
 			fmt = GBM_FORMAT_ARGB8888;
 		break;
 	case HAL_PIXEL_FORMAT_YV12:
-		if (flag_is_mesa_env) {
-			fmt = GBM_FORMAT_RGB565;
-		} else {
-			/* YV12 is planar, but must be a single buffer so ask for GR88 */
-			fmt = GBM_FORMAT_GR88;
-		}
-		break;
 	case HAL_PIXEL_FORMAT_YCbCr_420_888:
 		/* YV12 is planar, but must be a single buffer so ask for GR88 */
 		fmt = GBM_FORMAT_GR88;
@@ -261,8 +251,6 @@ static struct gbm_bo *gbm_import(struct gbm_device *gbm,
 	if (handle->format == HAL_PIXEL_FORMAT_YV12 || handle->format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
 		data.width /= 2;
 		data.height += handle->height / 2;
-	} else if (handle->format == HAL_PIXEL_FORMAT_RGB_565 && (handle->usage & GRALLOC_USAGE_PRIVATE_0)) {
-		data.width = GRALLOC_ALIGN(data.width, 256);
 	}
 	if (handle->format == HAL_PIXEL_FORMAT_BLOB) {
 		std::pair<int, int> size = find_closest_size(data.width);
@@ -293,7 +281,6 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 	int usage = get_pipe_bind(handle->usage);
 	int width, height;
 
-	handle->covert_format = 0;
 	width = handle->width;
 	height = handle->height;
 	if (usage & GBM_BO_USE_CURSOR) {
@@ -310,11 +297,6 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 	if (handle->format == HAL_PIXEL_FORMAT_YV12 || handle->format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
 		width /= 2;
 		height += handle->height / 2;
-		if (format == GBM_FORMAT_RGB565) {
-			handle->covert_format = 1;
-		}
-	} else if (handle->format == HAL_PIXEL_FORMAT_RGB_565 && (handle->usage & GRALLOC_USAGE_PRIVATE_0))  {
-		width = GRALLOC_ALIGN(width, 256);
 	}
 
 	if (handle->format == HAL_PIXEL_FORMAT_BLOB) {
@@ -340,11 +322,6 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 
 	handle->prime_fd = gbm_bo_get_fd(bo);
 	handle->stride = gbm_bo_get_stride(bo);
-	if ((handle->usage & GRALLOC_USAGE_PRIVATE_0)
-		&& handle->format == HAL_PIXEL_FORMAT_RGB_565 ) {
-		handle->stride = handle->width * gralloc_gbm_get_bpp(handle->format);
-	}
-
 	#ifdef GBM_BO_IMPORT_FD_MODIFIER
 	handle->modifier = gbm_bo_get_modifier(bo);
 	#endif
@@ -429,12 +406,6 @@ struct gbm_device *gbm_dev_create(void)
 	if (!gbm) {
 		ALOGE("failed to create gbm device");
 		close(fd);
-	}
-
-	char egl_type[PROPERTY_VALUE_MAX];
-	property_get("ro.hardware.egl", egl_type, "none");
-	if (strcmp(egl_type, "mesa") == 0) {
-		flag_is_mesa_env = 1;
 	}
 
 	return gbm;
@@ -588,6 +559,8 @@ int gralloc_gbm_bo_unlock(buffer_handle_t handle)
 	return 0;
 }
 
+#define GRALLOC_ALIGN(value, base) (((value) + ((base)-1)) & ~((base)-1))
+
 int gralloc_gbm_bo_lock_ycbcr(buffer_handle_t handle,
 		int usage, int x, int y, int w, int h,
 		struct android_ycbcr *ycbcr)
@@ -639,14 +612,5 @@ int gralloc_gbm_bo_lock_ycbcr(buffer_handle_t handle,
 		return -EINVAL;
 	}
 
-	return 0;
-}
-
-int gralloc_gbm_need_covert_format(buffer_handle_t _handle)
-{
-	struct gralloc_handle_t *handle = gralloc_handle(_handle);
-	if (flag_is_mesa_env) {
-		return handle->covert_format;
-	}
 	return 0;
 }

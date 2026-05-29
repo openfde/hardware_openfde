@@ -47,7 +47,6 @@ int gralloc_gbm_bo_lock(buffer_handle_t handle, int usage, int x, int y, int w, 
 int gralloc_gbm_bo_unlock(buffer_handle_t handle);
 int gralloc_gbm_bo_lock_ycbcr(buffer_handle_t handle, int usage,
 		int x, int y, int w, int h, struct android_ycbcr *ycbcr);
-int gralloc_gbm_need_covert_format(buffer_handle_t _handle);
 
 struct gbm_device *gbm_dev_create(void);
 void gbm_dev_destroy(struct gbm_device *gbm);
