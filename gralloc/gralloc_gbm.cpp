@@ -50,6 +50,9 @@
 #include <vector>
 #include <cmath>
 
+int flag_is_mesa_env = 0;
+#define GRALLOC_ALIGN(value, base) (((value) + ((base)-1)) & ~((base)-1))
+
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 
 #define unlikely(x) __builtin_expect(!!(x), 0)
@@ -133,6 +136,13 @@ static uint32_t get_gbm_format(int format)
 			fmt = GBM_FORMAT_ARGB8888;
 		break;
 	case HAL_PIXEL_FORMAT_YV12:
+		if (flag_is_mesa_env) {
+			fmt = GBM_FORMAT_RGB565;
+		} else {
+			/* YV12 is planar, but must be a single buffer so ask for GR88 */
+			fmt = GBM_FORMAT_GR88;
+		}
+		break;
 	case HAL_PIXEL_FORMAT_YCbCr_420_888:
 		/* YV12 is planar, but must be a single buffer so ask for GR88 */
 		fmt = GBM_FORMAT_GR88;
@@ -249,7 +259,11 @@ static struct gbm_bo *gbm_import(struct gbm_device *gbm,
 	data.format = format;
 	/* Adjust the width and height for a GBM GR88 buffer */
 	if (handle->format == HAL_PIXEL_FORMAT_YV12 || handle->format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
-		data.width /= 2;
+		if (flag_is_mesa_env) {
+			data.width = GRALLOC_ALIGN(data.width/2, 256);
+		} else {
+			data.width /= 2;
+		}
 		data.height += handle->height / 2;
 	}
 	if (handle->format == HAL_PIXEL_FORMAT_BLOB) {
@@ -281,6 +295,7 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 	int usage = get_pipe_bind(handle->usage);
 	int width, height;
 
+	handle->convert_format = 0;
 	width = handle->width;
 	height = handle->height;
 	if (usage & GBM_BO_USE_CURSOR) {
@@ -295,8 +310,15 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 	 * 16bpp. Then increase the height by 1.5 for the U and V planes.
 	 */
 	if (handle->format == HAL_PIXEL_FORMAT_YV12 || handle->format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
-		width /= 2;
+		if (flag_is_mesa_env) {
+			width = GRALLOC_ALIGN(width/2, 256);
+		} else {
+			width /= 2;
+		}
 		height += handle->height / 2;
+		if (format == GBM_FORMAT_RGB565) {
+			handle->convert_format = 1;
+		}
 	}
 
 	if (handle->format == HAL_PIXEL_FORMAT_BLOB) {
@@ -406,6 +428,12 @@ struct gbm_device *gbm_dev_create(void)
 	if (!gbm) {
 		ALOGE("failed to create gbm device");
 		close(fd);
+	}
+
+	char egl_type[PROPERTY_VALUE_MAX];
+	property_get("ro.hardware.egl", egl_type, "none");
+	if (strcmp(egl_type, "mesa") == 0) {
+		flag_is_mesa_env = 1;
 	}
 
 	return gbm;
@@ -559,8 +587,6 @@ int gralloc_gbm_bo_unlock(buffer_handle_t handle)
 	return 0;
 }
 
-#define GRALLOC_ALIGN(value, base) (((value) + ((base)-1)) & ~((base)-1))
-
 int gralloc_gbm_bo_lock_ycbcr(buffer_handle_t handle,
 		int usage, int x, int y, int w, int h,
 		struct android_ycbcr *ycbcr)
@@ -612,5 +638,14 @@ int gralloc_gbm_bo_lock_ycbcr(buffer_handle_t handle,
 		return -EINVAL;
 	}
 
+	return 0;
+}
+
+int gralloc_gbm_need_convert_format(buffer_handle_t _handle)
+{
+	struct gralloc_handle_t *handle = gralloc_handle(_handle);
+	if (flag_is_mesa_env) {
+		return handle->convert_format;
+	}
 	return 0;
 }
