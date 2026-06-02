@@ -1592,7 +1592,7 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     }else{
         pdev->display->x11_windows = &pdev->windows;
     }
-    ALOGE("wayland display %p", pdev->display);
+    ALOGE("x11 display %p", pdev->display);
     pdev->display->mouse_icon_addr = -1;
 
     pthread_mutex_init(&pdev->vsync_lock, NULL);
