@@ -211,7 +211,7 @@ int ConvertHalFormatToDrm(struct display *display, uint32_t hal_format) {
             return -EINVAL;
     }
     if (!isFormatSupported(display, fmt)) {
-        ALOGE("Current wayland display doesn't support hal format %u", hal_format);
+        ALOGE("Current x11 display doesn't support hal format %u", hal_format);
         return -EINVAL;
     }
     return fmt;
@@ -1346,7 +1346,6 @@ static void toggle_fullscreen_windowed(xcb_connection_t *conn, xcb_window_t wind
     xcb_flush(conn);
 }
 
-
 void *event_loop_thread(void *arg) {
     ALOGE("input_loop_event start");
     struct display* display = (struct display*)arg;
@@ -2087,71 +2086,145 @@ void enable_auto_repeat(Display *display) {
     XFlush(display);
 }
 
-static bool get_primary_info(struct display *display) {
+static bool get_primary_info(struct display *display)
+{
     xcb_connection_t *conn = display->xcbconnection;
     xcb_window_t root = display->xcbscreen->root;
 
+    // Default value (fallback)
+    display->primary_x = 0;
+    display->primary_y = 0;
+    display->full_width = display->xcbscreen->width_in_pixels;
+    display->full_height = display->xcbscreen->height_in_pixels;
+
     const xcb_query_extension_reply_t *randr_ext = xcb_get_extension_data(conn, &xcb_randr_id);
     if (!randr_ext || !randr_ext->present) {
-        ALOGE("RandR extension not available, fallback to (0,0) offset");
-        display->primary_x = 0;
-        display->primary_y = 0;
+        ALOGE("RandR extension not available");
         return false;
     }
 
-    xcb_randr_get_output_primary_cookie_t primary_cookie = xcb_randr_get_output_primary(conn, root);
-    xcb_randr_get_output_primary_reply_t *primary_reply =
-        xcb_randr_get_output_primary_reply(conn, primary_cookie, NULL);
+    xcb_randr_get_screen_resources_current_reply_t *res_reply = NULL;
+    xcb_randr_get_output_primary_reply_t *primary_reply = NULL;
+    xcb_randr_get_output_info_reply_t *output_info = NULL;
+    xcb_randr_get_crtc_info_reply_t *crtc_info = NULL;
 
-    if (!primary_reply || primary_reply->output == XCB_NONE) {
-        ALOGE("No primary output found, fallback to (0,0) offset");
-        display->primary_x = 0;
-        display->primary_y = 0;
-        free(primary_reply);
-        return false;
+    bool success = false;
+
+    // Get the total size of virtual desktops and the number of CRTCs.
+    int total_width = 0;
+    int total_height = 0;
+    int ncrtc = 0;
+
+    {
+        xcb_randr_get_screen_resources_current_cookie_t res_cookie =
+            xcb_randr_get_screen_resources_current(conn, root);
+
+        res_reply = xcb_randr_get_screen_resources_current_reply(conn, res_cookie, NULL);
+        if (!res_reply) {
+            ALOGE("Failed to get screen resources");
+            goto cleanup;
+        }
+
+        xcb_randr_crtc_t *crtcs = xcb_randr_get_screen_resources_current_crtcs(res_reply);
+        ncrtc = xcb_randr_get_screen_resources_current_crtcs_length(res_reply);
+
+        for (int i = 0; i < ncrtc; i++) {
+            xcb_randr_get_crtc_info_cookie_t c_cookie =
+                xcb_randr_get_crtc_info(conn, crtcs[i], XCB_CURRENT_TIME);
+            xcb_randr_get_crtc_info_reply_t *c_info =
+                xcb_randr_get_crtc_info_reply(conn, c_cookie, NULL);
+
+            if (c_info && c_info->width > 0 && c_info->height > 0) {
+                int right = c_info->x + c_info->width;
+                int bottom = c_info->y + c_info->height;
+                if (right > total_width) total_width = right;
+                if (bottom > total_height) total_height = bottom;
+            }
+            free(c_info);
+        }
+
+        ALOGI("Virtual desktop total size: %dx%d, CRTC count: %d",
+              total_width, total_height, ncrtc);
     }
 
-    xcb_randr_get_output_info_cookie_t output_cookie =
-        xcb_randr_get_output_info(conn, primary_reply->output, XCB_CURRENT_TIME);
-    xcb_randr_get_output_info_reply_t *output_info =
-        xcb_randr_get_output_info_reply(conn, output_cookie, NULL);
+    // Get Primary Output
+    {
+        xcb_randr_get_output_primary_cookie_t primary_cookie =
+            xcb_randr_get_output_primary(conn, root);
+        primary_reply = xcb_randr_get_output_primary_reply(conn, primary_cookie, NULL);
 
-    bool primary_found = false;
-    if (output_info && output_info->connection == XCB_RANDR_CONNECTION_CONNECTED &&
-        output_info->crtc != XCB_NONE) {
+        if (!primary_reply || primary_reply->output == XCB_NONE) {
+            ALOGE("No primary output found");
+            goto cleanup;
+        }
+    }
+
+    // Get Primary CRTC Information
+    {
+        xcb_randr_get_output_info_cookie_t output_cookie =
+            xcb_randr_get_output_info(conn, primary_reply->output, XCB_CURRENT_TIME);
+        output_info = xcb_randr_get_output_info_reply(conn, output_cookie, NULL);
+
+        if (!output_info || output_info->crtc == XCB_NONE) {
+            ALOGE("Primary output has no active CRTC");
+            goto cleanup;
+        }
+
         xcb_randr_get_crtc_info_cookie_t crtc_cookie =
             xcb_randr_get_crtc_info(conn, output_info->crtc, XCB_CURRENT_TIME);
-        xcb_randr_get_crtc_info_reply_t *crtc_info =
-            xcb_randr_get_crtc_info_reply(conn, crtc_cookie, NULL);
+        crtc_info = xcb_randr_get_crtc_info_reply(conn, crtc_cookie, NULL);
 
         if (crtc_info && crtc_info->status == XCB_RANDR_SET_CONFIG_SUCCESS &&
-            crtc_info->width > 0 && crtc_info->height > 0) {  // additional check of effective resolution
-            display->full_width = crtc_info->width;
-            display->full_height = crtc_info->height;
-            display->primary_x = crtc_info->x;
-            display->primary_y = crtc_info->y;
-            primary_found = true;
-            ALOGW("Primary monitor success: %dx%d @ (%d,%d)",
-                  display->full_width, display->full_height, display->primary_x, display->primary_y);
-        } else {
-            ALOGE("CRTC info invalid or failed (status=%d, width=%d, height=%d), fallback to (0,0)",
-                  crtc_info ? crtc_info->status : -1,
-                  crtc_info ? crtc_info->width : 0,
-                  crtc_info ? crtc_info->height : 0);
-            display->primary_x = 0;
-            display->primary_y = 0;
+            crtc_info->width > 0 && crtc_info->height > 0) {
+
+            bool suspicious = false;
+
+            if (ncrtc > 1) {
+                // Multi-screen mode: If the primary CRTC is close to the entire virtual desktop size, it is suspicious.
+                if (crtc_info->width >= total_width - 64 &&
+                    crtc_info->height >= total_height - 64) {
+                    ALOGW("Multi-monitor: CRTC size (%dx%d) ≈ virtual desktop (%dx%d), suspicious!",
+                          crtc_info->width, crtc_info->height, total_width, total_height);
+                    suspicious = true;
+                }
+            } else {
+                // Single-screen mode: Only protects the maximum resolution.
+                if (crtc_info->width > 7680 || crtc_info->height > 4320) {
+                    ALOGW("Single monitor: CRTC size (%dx%d) exceeds reasonable limit",
+                          crtc_info->width, crtc_info->height);
+                    suspicious = true;
+                }
+            }
+
+            if (!suspicious) {
+                display->full_width = crtc_info->width;
+                display->full_height = crtc_info->height;
+                display->primary_x = crtc_info->x;
+                display->primary_y = crtc_info->y;
+
+                ALOGI("Primary monitor success: %dx%d @ (%d,%d) | Total: %dx%d | CRTCs: %d",
+                      display->full_width, display->full_height,
+                      display->primary_x, display->primary_y,
+                      total_width, total_height, ncrtc);
+
+                success = true;
+            }
         }
-        free(crtc_info);
-    } else {
-        ALOGE("Primary output not connected or no CRTC, fallback to (0,0)");
-        display->primary_x = 0;
-        display->primary_y = 0;
     }
 
+cleanup:
+    free(res_reply);
     free(primary_reply);
     free(output_info);
-    return primary_found;
+    free(crtc_info);
+
+    if (!success) {
+        ALOGE("Failed to get reliable primary monitor info, using fallback values");
+    }
+
+    return success;
 }
+
 
 
 struct display *
