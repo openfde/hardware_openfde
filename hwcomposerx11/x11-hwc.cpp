@@ -407,7 +407,7 @@ static void pointer_handle_button_to_touch_up(struct display *display) {
     // When fde.click_as_touch is enabled, mouse cursor position was not
     // updated during the touch sequence. Restore it so Android knows
     // where the cursor actually is after the touch ends.
-    {
+    if (property_get_bool("fde.pointer_after_up", false)) {
         struct input_event ptr_evt[5];
         unsigned int pn = 0;
 
