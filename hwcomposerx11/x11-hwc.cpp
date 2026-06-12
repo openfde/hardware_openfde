@@ -976,7 +976,7 @@ void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event)
     if(((xcb_button_event->detail == 1 && property_get_bool("fde.click_as_touch", false)) || display->isTouchDown) && !display->isMouseLeftDown) {
         // convert pointer event to touch event
         pointer_handle_button_to_touch_up(display);
-//    }else{
+    }else{
         struct input_event event[2];
         struct timespec rt;
         unsigned int res, n = 0;
