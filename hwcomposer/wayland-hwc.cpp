@@ -968,6 +968,56 @@ static void pointer_handle_button_to_touch_up(struct display *display) {
 
     if (res < sizeof(event))
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
+
+    // When fde.click_as_touch is enabled, mouse cursor position was not
+    // updated during the touch sequence. Restore it so Android knows
+    // where the cursor actually is after the touch ends.
+    {
+        struct input_event ptr_evt[5];
+        unsigned int pn = 0;
+
+        if (ensure_pipe(display, INPUT_POINTER) == 0) {
+            ptr_evt[pn].time.tv_sec = rt.tv_sec;
+            ptr_evt[pn].time.tv_usec = rt.tv_nsec / 1000;
+            ptr_evt[pn].type = EV_ABS;
+            ptr_evt[pn].code = ABS_X;
+            ptr_evt[pn].value = display->ptrPrvX;
+            pn++;
+
+            ptr_evt[pn].time.tv_sec = rt.tv_sec;
+            ptr_evt[pn].time.tv_usec = rt.tv_nsec / 1000;
+            ptr_evt[pn].type = EV_ABS;
+            ptr_evt[pn].code = ABS_Y;
+            ptr_evt[pn].value = display->ptrPrvY;
+            pn++;
+
+            ptr_evt[pn].time.tv_sec = rt.tv_sec;
+            ptr_evt[pn].time.tv_usec = rt.tv_nsec / 1000;
+            ptr_evt[pn].type = EV_REL;
+            ptr_evt[pn].code = REL_X;
+            ptr_evt[pn].value = 0;
+            pn++;
+
+            ptr_evt[pn].time.tv_sec = rt.tv_sec;
+            ptr_evt[pn].time.tv_usec = rt.tv_nsec / 1000;
+            ptr_evt[pn].type = EV_REL;
+            ptr_evt[pn].code = REL_Y;
+            ptr_evt[pn].value = 0;
+            pn++;
+
+            ptr_evt[pn].time.tv_sec = rt.tv_sec;
+            ptr_evt[pn].time.tv_usec = rt.tv_nsec / 1000;
+            ptr_evt[pn].type = EV_SYN;
+            ptr_evt[pn].code = SYN_REPORT;
+            ptr_evt[pn].value = 0;
+            pn++;
+
+            unsigned int wres = write(display->input_fd[INPUT_POINTER],
+                                      ptr_evt, sizeof(ptr_evt));
+            if (wres < sizeof(ptr_evt))
+                ALOGE("Failed to restore pointer position: %s", strerror(errno));
+        }
+    }
 }
 
 static void
