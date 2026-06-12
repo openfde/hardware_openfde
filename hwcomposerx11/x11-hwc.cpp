@@ -374,7 +374,7 @@ static void pointer_handle_button_to_touch_down(struct display *display) {
     ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
     ADD_EVENT(EV_SYN, SYN_REPORT, 0);
     display->isTouchDown = true;
-    ALOGD("pointer_handle_button_to_touch_down write INPUT_TOUCH");
+    ALOGE("pointer_handle_button_to_touch_down write INPUT_TOUCH");
     res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
 
     if (res < sizeof(event))
@@ -526,7 +526,7 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
 
 void timer_handler(int sig) {
     if (sig == SIGALRM) {
-        ALOGD("pointer axis stopped.");
+        ALOGE("pointer axis stopped.");
         if(mDisplay){
             if(mDisplay->axis_simulation_two_finger_started){
                 pointer_cancel_axis_to_two_finger_touch(mDisplay);
@@ -612,14 +612,14 @@ void on_key_release(void *data, xcb_key_release_event_t *event) {
         XkbGetState(display->x11display, XkbUseCoreKbd, &state);
         bool externalCapsLockState = state.locked_mods & LockMask;
         if (externalCapsLockState) {
-            ALOGD("on_key_release External Caps Lock is ON");
+            ALOGE("on_key_release External Caps Lock is ON");
         }else{
-            ALOGD("on_key_release External Caps Lock is OFF");
+            ALOGE("on_key_release External Caps Lock is OFF");
         }
         std::scoped_lock caps_lock(display->internalCapsLockStateMutex);
         if(display->internalCapsLockState != externalCapsLockState){
             display->internalCapsLockState = externalCapsLockState;
-            ALOGD("on_key_release update display->internalCapsLockState: %d", display->internalCapsLockState);
+            ALOGE("on_key_release update display->internalCapsLockState: %d", display->internalCapsLockState);
             send_key_event(display, KEY_CAPSLOCK, X11_KEYBOARD_KEY_STATE_PRESSED);
             send_key_event(display, KEY_CAPSLOCK, X11_KEYBOARD_KEY_STATE_RELEASED);
         }
@@ -630,14 +630,14 @@ void on_key_release(void *data, xcb_key_release_event_t *event) {
         XkbGetState(display->x11display, XkbUseCoreKbd, &state);
         bool externalNumLockState = state.locked_mods & Mod2Mask;
         if (externalNumLockState) {
-            ALOGD("on_key_release External Num Lock is ON");
+            ALOGE("on_key_release External Num Lock is ON");
         }else{
-            ALOGD("on_key_release External Num Lock is OFF");
+            ALOGE("on_key_release External Num Lock is OFF");
         }
         std::scoped_lock num_lock(display->internalNumLockStateMutex);
         if(display->internalNumLockState != externalNumLockState){
             display->internalNumLockState = externalNumLockState;
-            ALOGD("on_key_release update display->internalNumLockState: %d", display->internalNumLockState);
+            ALOGE("on_key_release update display->internalNumLockState: %d", display->internalNumLockState);
             send_key_event(display, KEY_NUMLOCK, X11_KEYBOARD_KEY_STATE_PRESSED);
             send_key_event(display, KEY_NUMLOCK, X11_KEYBOARD_KEY_STATE_RELEASED);
         }
@@ -898,47 +898,52 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
             ((xcb_button_event->detail == 1 && property_get_bool("fde.click_as_touch", false)) || display->isTouchDown)
             && !display->isMouseLeftDown
     ) {
-        struct timespec rt;
-        if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-            ALOGE("%s:%d error in touch clock_gettime: %s",
-                   __FILE__, __LINE__, strerror(errno));
+        {
+            struct timespec rt;
+            if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
+                ALOGE("%s:%d error in touch clock_gettime: %s",
+                      __FILE__, __LINE__, strerror(errno));
+            }
         }
       // convert pointer event to touch event
         pointer_handle_button_to_touch_down(display);
-    } else {
-        struct input_event event[2];
-        struct timespec rt;
-        unsigned int res, n = 0;
+//    } else {
 
-        if (ensure_pipe(display, INPUT_POINTER))
-            return;
+        {
+            struct input_event event[2];
+            struct timespec rt;
+            unsigned int res, n = 0;
 
-        if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-            ALOGE("%s:%d error in touch clock_gettime: %s",
-                   __FILE__, __LINE__, strerror(errno));
-        }
-        if(xcb_button_event->detail == 1){
-            display->isMouseLeftDown = true;
-            ALOGE("on_button_press isMouseLeftDown set true");
-        }
+            if (ensure_pipe(display, INPUT_POINTER))
+                return;
 
-        uint32_t button = 0;
-        switch(xcb_button_event->detail){
-            case XCB_BUTTON_INDEX_1:
-                button = BTN_LEFT;
-                break;
-            case XCB_BUTTON_INDEX_3:
-                button = BTN_RIGHT;
-                break;
-            case XCB_BUTTON_INDEX_2:
-                button = BTN_MIDDLE;
-                break;
-        }
-        if(button != 0){
-            ADD_EVENT(EV_KEY, button, 1);
-            ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-            ALOGE("on_button_press write INPUT_POINTER");
-            res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
+            if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
+                ALOGE("%s:%d error in touch clock_gettime: %s",
+                      __FILE__, __LINE__, strerror(errno));
+            }
+            if (xcb_button_event->detail == 1) {
+                display->isMouseLeftDown = true;
+                ALOGE("on_button_press isMouseLeftDown set true");
+            }
+
+            uint32_t button = 0;
+            switch (xcb_button_event->detail) {
+                case XCB_BUTTON_INDEX_1:
+                    button = BTN_LEFT;
+                    break;
+                case XCB_BUTTON_INDEX_3:
+                    button = BTN_RIGHT;
+                    break;
+                case XCB_BUTTON_INDEX_2:
+                    button = BTN_MIDDLE;
+                    break;
+            }
+            if (button != 0) {
+                ADD_EVENT(EV_KEY, button, 1);
+                ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+                ALOGE("on_button_press write INPUT_POINTER");
+                res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
+            }
         }
     }
 }
@@ -971,7 +976,7 @@ void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event)
     if(((xcb_button_event->detail == 1 && property_get_bool("fde.click_as_touch", false)) || display->isTouchDown) && !display->isMouseLeftDown) {
         // convert pointer event to touch event
         pointer_handle_button_to_touch_up(display);
-    }else{
+//    }else{
         struct input_event event[2];
         struct timespec rt;
         unsigned int res, n = 0;
@@ -1087,7 +1092,7 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
             return;
         }
 
-        ALOGD("on_motion_notify write INPUT_POINTER");
+        ALOGE("on_motion_notify write INPUT_POINTER");
         res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
         if (res < sizeof(event))
             ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -1107,7 +1112,7 @@ bool isValidInteger(const std::string& str) {
 }
 
 void set_ic_values_callback(xcb_xim_t *im, xcb_xic_t ic, void *user_data) {
-    ALOGD("set ic %d done\n", ic);
+    ALOGE("set ic %d done\n", ic);
     (void) im;
     (void) ic;
     (void) user_data;
@@ -1335,7 +1340,7 @@ static void toggle_fullscreen_windowed(xcb_connection_t *conn, xcb_window_t wind
         uint32_t pos_values[] = { (uint32_t)(display->primary_y)};
         xcb_configure_window(conn, window, pos_mask, pos_values);
 
-        ALOGD("Switch to windowed mode: The title bar is visible and can be dragged to the secondary screen.");
+        ALOGE("Switch to windowed mode: The title bar is visible and can be dragged to the secondary screen.");
         *is_fullscreen = false;
     } else {
         // from windowed to fullscreen
@@ -1362,7 +1367,7 @@ void *event_loop_thread(void *arg) {
             continue;
         }
         uint8_t event_type = event->response_type & ~0x80;
-        ALOGD("Processing event: type=%d", event_type);
+        ALOGE("Processing event: type=%d", event_type);
         if(display->multi_windows){
             if(display->im){
                 if (!xcb_xim_filter_event(display->im, event)) {
@@ -1416,15 +1421,15 @@ void *event_loop_thread(void *arg) {
                 XkbGetState(display->x11display, XkbUseCoreKbd, &state);
                 bool externalCapsLockState = state.locked_mods & LockMask;
                 if (externalCapsLockState) {
-                    ALOGD("XCB_FOCUS_IN External Caps Lock is ON");
+                    ALOGE("XCB_FOCUS_IN External Caps Lock is ON");
                 }else{
-                    ALOGD("XCB_FOCUS_IN External Caps Lock is OFF");
+                    ALOGE("XCB_FOCUS_IN External Caps Lock is OFF");
                 }
                 {
                     std::scoped_lock caps_lock(display->internalCapsLockStateMutex);
                     if(display->internalCapsLockState != externalCapsLockState){
                         display->internalCapsLockState = externalCapsLockState;
-                        ALOGD("XCB_FOCUS_IN update display->internalCapsLockState: %d", display->internalCapsLockState);
+                        ALOGE("XCB_FOCUS_IN update display->internalCapsLockState: %d", display->internalCapsLockState);
                         send_key_event(display, KEY_CAPSLOCK, X11_KEYBOARD_KEY_STATE_PRESSED);
                         send_key_event(display, KEY_CAPSLOCK, X11_KEYBOARD_KEY_STATE_RELEASED);
                     }
@@ -1432,15 +1437,15 @@ void *event_loop_thread(void *arg) {
 
                 bool externalNumLockState = state.locked_mods & Mod2Mask;
                 if (externalNumLockState) {
-                    ALOGD("XCB_FOCUS_IN External Num Lock is ON");
+                    ALOGE("XCB_FOCUS_IN External Num Lock is ON");
                 }else{
-                    ALOGD("XCB_FOCUS_IN External Num Lock is OFF");
+                    ALOGE("XCB_FOCUS_IN External Num Lock is OFF");
                 }
                 {
                     std::scoped_lock num_lock(display->internalNumLockStateMutex);
                     if(display->internalNumLockState != externalNumLockState){
                         display->internalNumLockState = externalNumLockState;
-                        ALOGD("XCB_FOCUS_IN update display->internalNumLockState: %d", display->internalNumLockState);
+                        ALOGE("XCB_FOCUS_IN update display->internalNumLockState: %d", display->internalNumLockState);
                         send_key_event(display, KEY_NUMLOCK, X11_KEYBOARD_KEY_STATE_PRESSED);
                         send_key_event(display, KEY_NUMLOCK, X11_KEYBOARD_KEY_STATE_RELEASED);
                     }
@@ -1549,7 +1554,7 @@ void *event_loop_thread(void *arg) {
                     break;
                 }
             case XCB_BUTTON_RELEASE:
-                ALOGD("XCB_BUTTON_RELEASE received");
+                ALOGE("XCB_BUTTON_RELEASE received");
                 if (dispatcher.button_release_cb) {
                     dispatcher.button_release_cb(arg, (xcb_button_release_event_t *)event);
                 }
@@ -1560,7 +1565,7 @@ void *event_loop_thread(void *arg) {
                 }
                 break;
             case XCB_KEY_PRESS:
-                ALOGD("XCB_KEY_PRESS received");
+                ALOGE("XCB_KEY_PRESS received");
                 if (((xcb_key_press_event_t *)event)->detail == XCB_KEY_LEFTCTRL || ((xcb_key_press_event_t *)event)->detail == XCB_KEY_RIGHTCTRL) {
                     display->ctrl_key_pressed = true;
                 }
@@ -1583,7 +1588,7 @@ void *event_loop_thread(void *arg) {
                 }
                 break;
             case XCB_KEY_RELEASE:
-                ALOGD("XCB_KEY_RELEASE received");
+                ALOGE("XCB_KEY_RELEASE received");
                 if (((xcb_key_press_event_t *)event)->detail == XCB_KEY_LEFTCTRL || ((xcb_key_press_event_t *)event)->detail == XCB_KEY_RIGHTCTRL) {
                     display->ctrl_key_pressed = false;
                 }
@@ -1595,7 +1600,7 @@ void *event_loop_thread(void *arg) {
                 break;
             case XCB_CONFIGURE_NOTIFY: {
                 xcb_configure_notify_event_t *config_event = (xcb_configure_notify_event_t *)event;
-                ALOGD("Window size adjustment: Width = %d, Height = %d", config_event->width, config_event->height);
+                ALOGE("Window size adjustment: Width = %d, Height = %d", config_event->width, config_event->height);
                 break;
             }
             case XCB_GE_GENERIC:
@@ -1607,7 +1612,7 @@ void *event_loop_thread(void *arg) {
                             xcb_input_touch_begin_event_t *tb = (xcb_input_touch_begin_event_t *)ge;
                             double x = XI_FP1616_TO_DOUBLE(tb->event_x);
                             double y = XI_FP1616_TO_DOUBLE(tb->event_y);
-                            ALOGD("Touch Begin: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", tb->detail, x, y, tb->deviceid);
+                            ALOGE("Touch Begin: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", tb->detail, x, y, tb->deviceid);
                             touch_handle_down(display, tb->detail, (int)x, (int)y);
                             break;
                         }
@@ -1615,7 +1620,7 @@ void *event_loop_thread(void *arg) {
                             xcb_input_touch_update_event_t *tu = (xcb_input_touch_update_event_t *)ge;
                             double x = XI_FP1616_TO_DOUBLE(tu->event_x);
                             double y = XI_FP1616_TO_DOUBLE(tu->event_y);
-                            //ALOGD("Touch Update: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", tu->detail, x, y, tu->deviceid);
+                            //ALOGE("Touch Update: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", tu->detail, x, y, tu->deviceid);
                             touch_handle_motion(display, tu->detail, (int)x, (int)y);
                             break;
                         }
@@ -1623,7 +1628,7 @@ void *event_loop_thread(void *arg) {
                             xcb_input_touch_end_event_t *te = (xcb_input_touch_end_event_t *)ge;
                             double x = XI_FP1616_TO_DOUBLE(te->event_x);
                             double y = XI_FP1616_TO_DOUBLE(te->event_y);
-                            ALOGD("Touch End: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", te->detail, x, y, te->deviceid);
+                            ALOGE("Touch End: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", te->detail, x, y, te->deviceid);
                             touch_handle_up(display, te->detail);
                             break;
                         }
@@ -2075,13 +2080,13 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
 }
 
 void disable_auto_repeat(Display *display) {
-    ALOGD("disable keyboard auto_repeat_mode");
+    ALOGE("disable keyboard auto_repeat_mode");
     XAutoRepeatOff(display);
     XFlush(display);
 }
 
 void enable_auto_repeat(Display *display) {
-    ALOGD("enable keyboard auto_repeat_mode");
+    ALOGE("enable keyboard auto_repeat_mode");
     XAutoRepeatOn(display);
     XFlush(display);
 }
@@ -2261,7 +2266,7 @@ create_display(const char *gralloc)
         delete display;
         return NULL;
     }
-    ALOGD("XMODIFIERS: %s", getenv("XMODIFIERS"));
+    ALOGE("XMODIFIERS: %s", getenv("XMODIFIERS"));
     XSetEventQueueOwner(display->x11display, XCBOwnsEventQueue);
     display->xcbscreen = xcb_setup_roots_iterator(xcb_get_setup(display->xcbconnection)).data;
     display->screen_default_nbr = XDefaultScreen(display->x11display);

@@ -857,7 +857,7 @@ keyboard_handle_enter(void *data, struct wl_keyboard *,
                       struct wl_array *)
 {
     struct display *display = (struct display *)data;
-    ALOGD("keyboard_handle_enter");
+    ALOGE("keyboard_handle_enter");
 
     std::scoped_lock lock(display->windowsMutex);
     if (display->windows.find(surface) == display->windows.end())
@@ -882,7 +882,7 @@ keyboard_handle_leave(void *data, struct wl_keyboard *,
             send_key_event(display, i, WL_KEYBOARD_KEY_STATE_RELEASED);
         }
     }
-    ALOGD("keyboard_handle_leave");
+    ALOGE("keyboard_handle_leave");
     display->ctrl_key_pressed = 0;
 }
 
@@ -1090,10 +1090,10 @@ void timer_handler(int sig) {
     if (sig == SIGALRM) {
         if(mDisplay){
             if(mDisplay->axis_simulation_two_finger_started){
-                ALOGD("pointer axis stopped, called pointer_cancel_axis_to_two_finger_touch");
+                ALOGE("pointer axis stopped, called pointer_cancel_axis_to_two_finger_touch");
                 pointer_cancel_axis_to_two_finger_touch(mDisplay);
             }else{
-                ALOGD("pointer axis stopped, called pointer_cancel_axis_to_touch");
+                ALOGE("pointer axis stopped, called pointer_cancel_axis_to_touch");
                 if(scroll_speed < 2){
                     pointer_axis_to_touch(mDisplay, mTouchMove, mVerticalScroll);
                 }
@@ -1251,36 +1251,40 @@ pointer_handle_button(void *data, struct wl_pointer *,
     // Left button convert to touch event, right button reserved mouse event
     if(((button == BTN_LEFT && property_get_bool("fde.click_as_touch", false)) || display->isTouchDown) && !display->isMouseLeftDown) {
         // convert pointer event to touch event
-        if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
-            pointer_handle_button_to_touch_down(display);
-        } else {
-            pointer_handle_button_to_touch_up(display);
-        }
-    }else{
-        struct input_event event[2];
-        struct timespec rt;
-        unsigned int res, n = 0;
-
-        if (ensure_pipe(display, INPUT_POINTER))
-            return;
-
-        if (!display->pointer_surface)
-            return;
-
-        if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-            ALOGE("%s:%d error in touch clock_gettime: %s",
-                   __FILE__, __LINE__, strerror(errno));
-        }
-        if(button == BTN_LEFT){
+        {
             if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
-                display->isMouseLeftDown = true;
+                pointer_handle_button_to_touch_down(display);
             } else {
-                display->isMouseLeftDown = false;
+                pointer_handle_button_to_touch_up(display);
             }
         }
-        ADD_EVENT(EV_KEY, button, state);
-        ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-        res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
+//    }else{
+        {
+            struct input_event event[2];
+            struct timespec rt;
+            unsigned int res, n = 0;
+
+            if (ensure_pipe(display, INPUT_POINTER))
+                return;
+
+            if (!display->pointer_surface)
+                return;
+
+            if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
+                ALOGE("%s:%d error in touch clock_gettime: %s",
+                      __FILE__, __LINE__, strerror(errno));
+            }
+            if (button == BTN_LEFT) {
+                if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+                    display->isMouseLeftDown = true;
+                } else {
+                    display->isMouseLeftDown = false;
+                }
+            }
+            ADD_EVENT(EV_KEY, button, state);
+            ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+            res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
+        }
     }
 }
 
@@ -1742,7 +1746,7 @@ static void handle_swipe_update(void *data, struct zwp_pointer_gesture_swipe_v1 
         double distance = sqrt(delta_x * delta_x + delta_y * delta_y);
         if (distance > 5.0) {
             display->four_finger_app_launcher_triggered = true;
-            ALOGD("four-finger gesture moves a distance of %f, triggering the application list.", distance);
+            ALOGE("four-finger gesture moves a distance of %f, triggering the application list.", distance);
             send_key_event(display, KEY_LEFTMETA, WL_KEYBOARD_KEY_STATE_PRESSED);
             send_key_event(display, KEY_LEFTMETA, WL_KEYBOARD_KEY_STATE_RELEASED);
         }
