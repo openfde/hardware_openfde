@@ -907,7 +907,7 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
         }
       // convert pointer event to touch event
         pointer_handle_button_to_touch_down(display);
-//    } else {
+    } else {
 
         {
             struct input_event event[2];

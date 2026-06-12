@@ -1258,7 +1258,7 @@ pointer_handle_button(void *data, struct wl_pointer *,
                 pointer_handle_button_to_touch_up(display);
             }
         }
-//    }else{
+    }else{
         {
             struct input_event event[2];
             struct timespec rt;
