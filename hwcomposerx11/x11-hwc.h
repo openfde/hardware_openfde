@@ -29,6 +29,7 @@
 #pragma once
 
 #include <cutils/native_handle.h>
+#include <utils/Timers.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -196,6 +197,12 @@ struct display {
     int primary_x = 0;      //primary display X offset
     int primary_y = 0;      //primary display Y offset
     bool is_fullscreen = true;  //Initially full screen (for toggle state tracking)
+
+    // New addition: For mouse batch processing and frequency reduction
+    nsecs_t last_mouse_send_time;      // Last sent time
+    int accumulated_relx;              // Cumulative relative X-movement
+    int accumulated_rely;              // Cumulative relative Y-movement
+    bool pending_move;                 // Are there any pending mobile calls
 };
 
 struct buffer {

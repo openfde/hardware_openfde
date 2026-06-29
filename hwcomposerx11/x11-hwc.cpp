@@ -1033,24 +1033,55 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
         y = int(y * display->scale);
     }
 
+    struct timespec rt;
+    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
+        ALOGE("%s:%d error in touch clock_gettime: %s",
+            __FILE__, __LINE__, strerror(errno));
+        return;
+    }
+
+    nsecs_t now = rt.tv_sec * 1000000000LL + rt.tv_nsec;
+
+    //downclocking and batch processing logic
+    const nsecs_t MIN_INTERVAL = 16 * 1000000LL;
+
+    //Cumulative movement
+    int dx = x - display->ptrPrvX;
+    int dy = y - display->ptrPrvY;
+
+    display->accumulated_relx += dx;
+    display->accumulated_rely += dy;
+    display->pending_move = true;
+
+    // If the time has not yet arrived, the data will be accumulated but not sent.
+    if (now - display->last_mouse_send_time < MIN_INTERVAL) {
+        display->ptrPrvX = x;
+        display->ptrPrvY = y;
+        return;
+    }
+
     if (display->isTouchDown) {
         display->ptrPrvX = x;
         display->ptrPrvY = y;
         pointer_handle_button_to_touch_down(display);
-    } else if (pointer_cancel_axis_to_touch(display, false, false)) {
-        struct input_event event[5];
-        struct timespec rt;
-        unsigned int res, n = 0;
+        // Reset Accumulation
+        display->accumulated_relx = 0;
+        display->accumulated_rely = 0;
+        display->pending_move = false;
+        display->last_mouse_send_time = now;
+        return;
+    }
 
-        if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-            ALOGE("%s:%d error in touch clock_gettime: %s",
-                __FILE__, __LINE__, strerror(errno));
-        }
+    if (display->pending_move && pointer_cancel_axis_to_touch(display, false, false)) {
+        struct input_event event[5];
+
+        unsigned int res, n = 0;
 
         ADD_EVENT(EV_ABS, ABS_X, x);
         ADD_EVENT(EV_ABS, ABS_Y, y);
-        if(x - display->ptrPrvX != 0){
-            relx = x - display->ptrPrvX;
+
+        if(display->accumulated_relx != 0){
+            relx = display->accumulated_relx;
         }else if(x > 0 && display->full_width - x > 1){
             relx = 0;
         }else{
@@ -1060,8 +1091,8 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
                 relx = prev_relx > 0 ? 3 : -3;
             }
         }
-        if(y - display->ptrPrvY != 0){
-            rely = y - display->ptrPrvY;
+        if(display->accumulated_rely != 0){
+            rely = display->accumulated_rely;
         }else if(y > 0 && display->full_height - y > 1){
             rely = 0;
         }else{
@@ -1091,6 +1122,12 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
         res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
         if (res < sizeof(event))
             ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
+
+        // Reset Accumulation
+        display->accumulated_relx = 0;
+        display->accumulated_rely = 0;
+        display->pending_move = false;
+        display->last_mouse_send_time = now;
 
     }
 }
@@ -2340,6 +2377,10 @@ create_display(const char *gralloc)
 
     display->argb_format = XRenderFindStandardFormat(display->x11display, PictStandardARGB32);
 
+    display->last_mouse_send_time = 0;
+    display->accumulated_relx = 0;
+    display->accumulated_rely = 0;
+    display->pending_move = false;
 
     pthread_t event_thread;
     if (pthread_create(&event_thread, NULL, event_loop_thread, display) != 0) {
