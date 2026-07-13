@@ -203,6 +203,16 @@ struct display {
     int accumulated_relx;              // Cumulative relative X-movement
     int accumulated_rely;              // Cumulative relative Y-movement
     bool pending_move;                 // Are there any pending mobile calls
+    int   touch_x[MAX_TOUCHPOINTS];
+    int   touch_y[MAX_TOUCHPOINTS];
+    bool  touch_changed[MAX_TOUCHPOINTS];
+    nsecs_t last_touch_frame_time;
+
+    int next_tracking_id;
+    int active_touch_count;
+    bool need_send_touch_btn_down;
+    bool need_send_touch_btn_up;
+    long touch_tracking_id[MAX_TOUCHPOINTS];
 };
 
 struct buffer {
