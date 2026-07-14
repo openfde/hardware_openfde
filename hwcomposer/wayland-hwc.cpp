@@ -1483,10 +1483,68 @@ static const struct wl_pointer_listener pointer_listener = {
     pointer_handle_axis_discrete,
 };
 
+static void send_multi_touch_frame(struct display *display)
+{
+    if (ensure_pipe(display, INPUT_TOUCH)) return;
+
+    struct input_event event[128];
+    struct timespec rt;
+    unsigned int n = 0;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
+        ALOGE("%s:%d clock_gettime error", __FILE__, __LINE__);
+        return;
+    }
+
+    int active = 0;
+    for (int i = 0; i < MAX_TOUCHPOINTS; i++) {
+        if (display->touch_id[i] != -1) active++;
+    }
+    ALOGD("send_multi_touch_frame: active=%d", active);
+
+    if(display->need_send_touch_btn_down){
+        ADD_EVENT(EV_KEY, BTN_TOUCH, 1);
+        display->need_send_touch_btn_down = false;
+    }
+
+    for (int i = 0; i < MAX_TOUCHPOINTS; i++) {
+        if (display->touch_changed[i] || display->touch_id[i] != -1) {
+            if(display->touch_id[i] == -1 && display->touch_tracking_id[i] == -1) continue;
+            ADD_EVENT(EV_ABS, ABS_MT_SLOT, i);
+            if (display->touch_id[i] == -1) {
+                ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
+                display->touch_tracking_id[i] = -1;
+            } else {
+                ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, display->touch_tracking_id[i]);
+                ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, display->touch_x[i]);
+                ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, display->touch_y[i]);
+                ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 80);
+            }
+        }
+    }
+
+    if(display->need_send_touch_btn_up){
+        ADD_EVENT(EV_KEY, BTN_TOUCH, 0);
+        display->need_send_touch_btn_up = false;
+    }
+
+    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    size_t bytes = n * sizeof(struct input_event);
+    ALOGD("send_multi_touch_frame write INPUT_TOUCH");
+    write(display->input_fd[INPUT_TOUCH], event, bytes);
+}
 static int
-get_touch_id(struct display *display, int id)
+get_touch_id(struct display *display, uint32_t id)
 {
     int i = 0;
+    int active = 0;
+    for (i = 0; i < MAX_TOUCHPOINTS; i++) {
+        if (display->touch_id[i] != -1) active++;
+    }
+    if (active > MAX_TOUCHPOINTS) {
+        ALOGW("Touch point limit reached (%d), ignore new touch id=%d", MAX_TOUCHPOINTS, id);
+        return -1;
+    }
     for (i = 0; i < MAX_TOUCHPOINTS; i++) {
         if (display->touch_id[i] == id)
             return i;
@@ -1494,6 +1552,16 @@ get_touch_id(struct display *display, int id)
     for (i = 0; i < MAX_TOUCHPOINTS; i++) {
         if (display->touch_id[i] == -1) {
             display->touch_id[i] = id;
+            display->next_tracking_id = (display->next_tracking_id + 1) % 0x7FFFFFFF;
+            if (display->next_tracking_id == 0)
+                display->next_tracking_id = 1;
+            display->touch_tracking_id[i] = display->next_tracking_id;
+            display->active_touch_count++;
+
+            // first finger send BTN_TOUCH DOWN
+            if (display->active_touch_count == 1) {
+                display->need_send_touch_btn_down = true;
+            }
             return i;
         }
     }
@@ -1501,16 +1569,25 @@ get_touch_id(struct display *display, int id)
 }
 
 static int
-flush_touch_id(struct display *display, int id)
+flush_touch_id(struct display *display, uint32_t id)
 {
     for (int i = 0; i < MAX_TOUCHPOINTS; i++) {
         if (display->touch_id[i] == id) {
             display->touch_id[i] = -1;
+            display->touch_changed[i] = true;
+            display->active_touch_count = std::max(0, display->active_touch_count - 1);
+            // last finger send BTN_TOUCH UP
+            if (display->active_touch_count == 0) {
+                ALOGD("flush_touch_id id: %d, display->active_touch_count: %d", id, display->active_touch_count);
+                display->need_send_touch_btn_up = true;
+            }
+            send_multi_touch_frame(display);
             return i;
         }
     }
     return -1;
 }
+
 
 static void
 touch_handle_down(void *data, struct wl_touch *,
@@ -1541,43 +1618,26 @@ touch_handle_down(void *data, struct wl_touch *,
     x += display->layers[surface].x;
     y += display->layers[surface].y;
 
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, get_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, get_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y);
-    ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-
-    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-    if (res < sizeof(event))
-        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
+    int slot = get_touch_id(display, id);
+    if (slot < 0) return;
+    display->touch_x[slot] = x;
+    display->touch_y[slot] = y;
+    display->touch_changed[slot] = true;
+    ALOGI("touch_handle_down slot=%d id=%d x=%d y=%d", slot, id, x, y);
+    send_multi_touch_frame(display);
 }
 
 static void
 touch_handle_up(void *data, struct wl_touch *,
         uint32_t, uint32_t, int32_t id)
 {
+
     struct display* display = (struct display*)data;
-    struct input_event event[3];
-    struct timespec rt;
-    unsigned int res, n = 0;
-
-    if (ensure_pipe(display, INPUT_TOUCH))
-        return;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-       ALOGE("%s:%d error in touch clock_gettime: %s",
-            __FILE__, __LINE__, strerror(errno));
-    }
     display->touch_surfaces[id] = NULL;
+    int slot = flush_touch_id(display, id);
+    if (slot < 0) return;
 
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, flush_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-
-    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-    if (res < sizeof(event))
-        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
+    ALOGI("touch_handle_up slot=%d id=%d", slot, id);
 }
 
 static void
@@ -1592,6 +1652,8 @@ touch_handle_motion(void *data, struct wl_touch *,
 
     if (ensure_pipe(display, INPUT_TOUCH))
         return;
+    int slot = get_touch_id(display, id);
+    if (slot < 0) return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
        ALOGE("%s:%d error in touch clock_gettime: %s",
@@ -1606,16 +1668,25 @@ touch_handle_motion(void *data, struct wl_touch *,
     x += display->layers[display->touch_surfaces[id]].x;
     y += display->layers[display->touch_surfaces[id]].y;
 
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, get_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, get_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y);
-    ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    nsecs_t now = rt.tv_sec * 1000000000LL + rt.tv_nsec;
 
-    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-    if (res < sizeof(event))
-        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
+    const nsecs_t MIN_INTERVAL = 8 * 1000000LL;
+
+    if (now - display->last_touch_frame_time < MIN_INTERVAL) {
+        display->touch_x[slot] = x;
+        display->touch_y[slot] = y;
+        display->touch_changed[slot] = true;
+        return;
+    }
+
+    display->touch_x[slot] = x;
+    display->touch_y[slot] = y;
+    display->touch_changed[slot] = true;
+
+    display->last_touch_frame_time = now;
+
+    ALOGD("touch_handle_motion slot=%d id=%d x=%d y=%d", slot, id, x, y);
+    send_multi_touch_frame(display);
 }
 
 static void

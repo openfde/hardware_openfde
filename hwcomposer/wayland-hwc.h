@@ -29,6 +29,7 @@
 #pragma once
 
 #include <cutils/native_handle.h>
+#include <utils/Timers.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -214,6 +215,17 @@ struct display {
     struct output outputs[MAX_OUTPUTS];
     int num_outputs;
     struct output *primary;
+
+    int   touch_x[MAX_TOUCHPOINTS];
+    int   touch_y[MAX_TOUCHPOINTS];
+    bool  touch_changed[MAX_TOUCHPOINTS];
+    nsecs_t last_touch_frame_time;
+
+    int next_tracking_id;
+    int active_touch_count;
+    bool need_send_touch_btn_down;
+    bool need_send_touch_btn_up;
+    long touch_tracking_id[MAX_TOUCHPOINTS];
 };
 
 struct buffer {
