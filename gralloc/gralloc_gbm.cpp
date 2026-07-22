@@ -310,15 +310,15 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 	 * 16bpp. Then increase the height by 1.5 for the U and V planes.
 	 */
 	if (handle->format == HAL_PIXEL_FORMAT_YV12 || handle->format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
-		if (flag_is_mesa_env) {
+		if (flag_is_mesa_env && (width != GRALLOC_ALIGN(width, 512))) {
 			width = GRALLOC_ALIGN(width/2, 256);
+			if (format == GBM_FORMAT_RGB565) {
+				handle->convert_format = 1;
+			}
 		} else {
 			width /= 2;
 		}
 		height += handle->height / 2;
-		if (format == GBM_FORMAT_RGB565) {
-			handle->convert_format = 1;
-		}
 	}
 
 	if (handle->format == HAL_PIXEL_FORMAT_BLOB) {
