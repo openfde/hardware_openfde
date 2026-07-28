@@ -170,6 +170,7 @@ struct display {
     int full_width;
     int full_height;
     int refresh;
+    uint32_t active_config;
     uint32_t *formats;
     int formats_count;
     std::map<uint32_t, std::vector<uint64_t>> modifiers;
@@ -305,6 +306,21 @@ struct window {
     std::string appID;
     std::string taskID;
     bool isActive;
+};
+
+struct ScreenConfig {
+    int Width;
+    int Height;
+    int Density;
+};
+
+const int ConfigCount = 3;
+const int defaultConfigIndex = 0;
+//fill the original screenConfigs array in the function of create_display
+static ScreenConfig screenConfigs[ConfigCount] = {
+    {0,0,0}, // the default config
+    {1920, 1080, 160}, // Config 0: Full HD
+    {2560, 1440, 256} // Config 1: 2K
 };
 
 void

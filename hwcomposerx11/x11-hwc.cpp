@@ -2315,6 +2315,33 @@ cleanup:
 }
 
 
+int screen_config_get_index(int width, int height){
+    int index = -1;
+    for(int i = 0; i < ConfigCount; i++){
+        if(screenConfigs[i].Width == width && screenConfigs[i].Height == height){
+            index = i;
+            break;
+        }
+    }
+    return index;
+}
+
+int screen_config_set_and_get_index(int width, int hegith) {
+    int index = screen_config_get_index(width, hegith);
+    if(index >= 0){
+        return index;
+    }else{
+        screenConfigs[defaultConfigIndex].Width = width;
+        screenConfigs[defaultConfigIndex].Height = hegith;
+        if (width >= 2560) {
+            screenConfigs[defaultConfigIndex].Density = 256;
+        } else if (width <= 1920) {
+            screenConfigs[defaultConfigIndex].Density = 160;
+        } 
+        return defaultConfigIndex;
+    }
+}
+
 
 struct display *
 create_display(const char *gralloc)
@@ -2395,7 +2422,7 @@ create_display(const char *gralloc)
         display->primary_y = 0;
         ALOGI("fallback to root window size: %dx%d", display->full_width, display->full_height);
     }
-
+    display->active_config = screen_config_set_and_get_index(display->full_width, display->full_height);
     display->width = display->full_width /display->scale;
     display->height = display->full_height /display->scale;
     ALOGI("final display size: %dx%d (scale=%f), primary offset (%d,%d)",
