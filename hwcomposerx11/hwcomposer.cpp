@@ -1412,7 +1412,9 @@ static void hwc_dump(hwc_composer_device_1* dev , char* buff ,
             "  use_subsurface=%d multi_windows=%d\n"
             "  geo_changed=%d\n"
             "  windows=%zu buffers=%zu\n"
-            "  next_sync_point=%d\n",
+            "  next_sync_point=%d\n"
+            "  screen_config0width=%d\n"
+            "  screen_config0height=%d\n",
             pdev->display->active_config,
             pdev->display->width,
             pdev->display->height,
@@ -1428,7 +1430,9 @@ static void hwc_dump(hwc_composer_device_1* dev , char* buff ,
             pdev->display->geo_changed ? 1 : 0,
             window_count,
             buffer_count,
-            pdev->next_sync_point);
+            pdev->next_sync_point,
+            screenConfigs[0].Width,
+            screenConfigs[0].Height);
 
     if (written < 0 && buff_len > 0) {
         buff[0] = '\0';
@@ -1536,7 +1540,7 @@ static int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, in
         return -EINVAL;
     }
 
-    if (config > 1) {
+    if (config > ConfigCount -1) {
         ALOGE("unsupported active config %u for display %d", config, disp);
         return -EINVAL;
     }
@@ -1569,7 +1573,8 @@ static int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, in
         hwc_resize_x11_windows(pdev, target_width, target_height);
     }
 
-    ALOGI("setActiveConfig: config=%u resized windows to %dx%d", config, target_width, target_height);
+    ALOGE("setActiveConfig: config=%u resized windows to %dx%d", config, target_width, target_height);
+    pdev->display->active_config = config;
 
     return 0;
 }

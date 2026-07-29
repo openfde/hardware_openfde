@@ -316,12 +316,7 @@ struct ScreenConfig {
 
 const int ConfigCount = 3;
 const int defaultConfigIndex = 0;
-//fill the original screenConfigs array in the function of create_display
-static ScreenConfig screenConfigs[ConfigCount] = {
-    {0,0,0}, // the default config
-    {1920, 1080, 160}, // Config 0: Full HD
-    {2560, 1440, 256} // Config 1: 2K
-};
+extern ScreenConfig screenConfigs[];
 
 void
 handle_relative_motion(void *data, struct zwp_relative_pointer_v1*,

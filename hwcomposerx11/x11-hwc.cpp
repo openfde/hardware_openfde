@@ -2314,6 +2314,12 @@ cleanup:
     return success;
 }
 
+ScreenConfig screenConfigs[ConfigCount] = {
+    {0,0,0}, // the default config
+    {1920, 1080, 160}, // Config 0: Full HD
+    {2560, 1440, 256} // Config 1: 2K
+};
+
 
 int screen_config_get_index(int width, int height){
     int index = -1;
@@ -2326,13 +2332,13 @@ int screen_config_get_index(int width, int height){
     return index;
 }
 
-int screen_config_set_and_get_index(int width, int hegith) {
-    int index = screen_config_get_index(width, hegith);
+int screen_config_set_and_get_index(int width, int height) {
+    int index = screen_config_get_index(width, height);
     if(index >= 0){
         return index;
     }else{
         screenConfigs[defaultConfigIndex].Width = width;
-        screenConfigs[defaultConfigIndex].Height = hegith;
+        screenConfigs[defaultConfigIndex].Height = height;
         if (width >= 2560) {
             screenConfigs[defaultConfigIndex].Density = 256;
         } else if (width <= 1920) {
