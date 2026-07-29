@@ -1465,73 +1465,71 @@ static int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
     return -EINVAL;
 }
 
+
 static void hwc_resize_x11_windows(struct waydroid_hwc_composer_device_1* pdev,
                                    int target_width, int target_height) {
     if (!pdev || !pdev->display) {
         return;
     }
 
-    XSizeHints size_hints;
-    memset(&size_hints, 0, sizeof(size_hints));
-    size_hints.flags = PMinSize | PMaxSize;
-    size_hints.min_width = size_hints.max_width = target_width;
-    size_hints.min_height = size_hints.max_height = target_height;
+    struct window_snapshot {
+        std::string key;
+        std::string app_id;
+        std::string task_id;
+        bool is_active;
+        hwc_color_t color;
+    };
 
-    XRenderPictureAttributes pa;
-    pa.repeat = False;
-    XRenderColor transparent_color = {0, 0, 0, 0};
+    std::vector<window_snapshot> snapshots;
+    snapshots.reserve(pdev->windows.size());
 
     for (auto it = pdev->windows.begin(); it != pdev->windows.end(); ++it) {
         struct window* window = it->second;
-        if (!window || !window->xcbwindow) {
+        if (!window) {
             continue;
         }
-        if (window->xpicture) {
-            XRenderFillRectangle(pdev->display->x11display, PictOpClear, window->xpicture,
-                                 &transparent_color, 0, 0, target_width, target_height);
-        }
-        if (window->backxpicture) {
-            XRenderFillRectangle(pdev->display->x11display, PictOpClear, window->backxpicture,
-                                 &transparent_color, 0, 0, target_width, target_height);
-        }
 
-        XSetWMNormalHints(pdev->display->x11display, window->xcbwindow, &size_hints);
-        XMoveResizeWindow(pdev->display->x11display, window->xcbwindow,
-                          pdev->display->primary_x, pdev->display->primary_y,
-                          target_width, target_height);
-        if (window->xpicture) {
-            XRenderFreePicture(pdev->display->x11display, window->xpicture);
-            window->xpicture = 0;
-        }
+        uint8_t alpha = (window->appID == "Openfde" || !pdev->multi_windows) ? 255 : 0;
+        snapshots.push_back(window_snapshot{
+                it->first,
+                window->appID,
+                window->taskID,
+                window->isActive,
+                {0, 0, 0, alpha}});
+    }
 
-        if (window->backxpicture) {
-            XRenderFreePicture(pdev->display->x11display, window->backxpicture);
-            window->backxpicture = 0;
+    for (auto it = pdev->windows.begin(); it != pdev->windows.end(); ++it) {
+        if (it->second) {
+            destroy_window(it->second);
         }
-        if (window->backpixmap) {
-            XFreePixmap(pdev->display->x11display, window->backpixmap);
-            window->backpixmap = 0;
-        }
-        window->xpicture = XRenderCreatePicture(pdev->display->x11display,
-                            window->xcbwindow,
-                            pdev->display->argb_format,
-                            CPRepeat, &pa);
+    }
+    pdev->windows.clear();
 
-        window->backpixmap = XCreatePixmap(pdev->display->x11display, window->xcbwindow,
-                                           target_width, target_height, 32);
-        if (window->backpixmap != None1) {
-            window->backxpicture = XRenderCreatePicture(pdev->display->x11display,
-                                                        window->backpixmap,
-                                                        pdev->display->argb_format,
-                                                        CPRepeat, &pa);
-            XRenderFillRectangle(pdev->display->x11display, PictOpSrc, window->backxpicture,
-                                 &transparent_color, 0, 0, target_width, target_height);
+    for (const auto& snapshot : snapshots) {
+        struct window* new_window = create_window(
+                pdev->display,
+                pdev->use_subsurface,
+                snapshot.app_id,
+                snapshot.task_id,
+                snapshot.color);
+        if (!new_window) {
+            ALOGE("failed to recreate window for key=%s app=%s task=%s size=%dx%d",
+                  snapshot.key.c_str(),
+                  snapshot.app_id.c_str(),
+                  snapshot.task_id.c_str(),
+                  target_width,
+                  target_height);
+            continue;
         }
+        new_window->isActive = snapshot.is_active;
+        pdev->windows[snapshot.key] = new_window;
     }
 
     XFlush(pdev->display->x11display);
     xcb_flush(pdev->display->xcbconnection);
+    pdev->display->geo_changed = true;
 }
+
 
 static int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, int config) {
     struct waydroid_hwc_composer_device_1* pdev = (struct waydroid_hwc_composer_device_1*)dev;
