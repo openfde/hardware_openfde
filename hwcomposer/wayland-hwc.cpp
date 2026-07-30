@@ -2692,7 +2692,7 @@ get_gralloc_type(const char *gralloc)
 {
     if (strcmp(gralloc, "default") == 0) {
         return GRALLOC_DEFAULT;
-    } else if (strcmp(gralloc, "gbm") == 0) {
+    } else if (strcmp(gralloc, "gbm") == 0 || strcmp(gralloc, "gbm_proxy") == 0) {
         return GRALLOC_GBM;
     } else if (str_starts_with(gralloc, "minigbm_") == 0) {
         return GRALLOC_CROS;
