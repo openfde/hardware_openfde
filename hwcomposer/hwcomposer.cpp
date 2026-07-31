@@ -663,11 +663,11 @@ static int set(struct hwc_composer_device_1* dev,size_t numDisplays, hwc_display
     std::map<std::string, struct window *> windows = pdev->windows;
 
     if (target == HWC_DISPLAY_PRIMARY){
-	contents = displays[HWC_DISPLAY_PRIMARY];
+	    contents = displays[HWC_DISPLAY_PRIMARY];
     }else if (target == HWC_DISPLAY_EXTERNAL){
     	disp = pdev->secondary_display;
-	contents = displays[HWC_DISPLAY_EXTERNAL];
-	windows = pdev->secondary_windows;
+	    contents = displays[HWC_DISPLAY_EXTERNAL];
+	    windows = pdev->secondary_windows;
     }
 
     size_t fb_target = -1;
@@ -690,7 +690,7 @@ static int set(struct hwc_composer_device_1* dev,size_t numDisplays, hwc_display
 
           if (skipped.first == -1)
             skipped.first = i;
-          skipped.second = i;
+            skipped.second = i;
         }
     }
 
@@ -714,7 +714,7 @@ static int set(struct hwc_composer_device_1* dev,size_t numDisplays, hwc_display
     	property_get("openfde.active_apps", property, "none");
     }else{
     	property_get("openfde1.active_apps", property, "none");
-	ALOGE("num layers external %d", contents->numHwLayers);
+	    ALOGE("num layers external %d", contents->numHwLayers);
     }
     std::string active_apps = std::string(property);
     property_get("openfde.blacklist_apps", property, "com.android.launcher3");
@@ -771,7 +771,7 @@ static int set(struct hwc_composer_device_1* dev,size_t numDisplays, hwc_display
     } else if (!pdev->multi_windows) {
         // Single window mode, detecting if any unblacklisted app is on screen
         bool showWindow = false;
-	ALOGE("num layers in single %d", contents->numHwLayers);
+	    ALOGE("num layers in single %d", contents->numHwLayers);
         for (size_t l = 0; l < contents->numHwLayers; l++) {
             std::string layer_name = disp->layer_names[l];
             if (layer_name.substr(0, 4) == "TID:") {
