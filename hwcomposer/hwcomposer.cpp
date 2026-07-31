@@ -171,11 +171,11 @@ static int prepare(hwc_composer_device_1_t* dev,
     struct display *disp;
 
     if (target == HWC_DISPLAY_PRIMARY){
-	contents = displays[HWC_DISPLAY_PRIMARY];
-	disp = pdev->display;
+        contents = displays[HWC_DISPLAY_PRIMARY];
+        disp = pdev->display;
     }else {
     	contents = displays[HWC_DISPLAY_EXTERNAL];
-	disp = pdev->secondary_display;
+	    disp = pdev->secondary_display;
     }
 
     std::pair<int, int> skipped(-1, -1);
@@ -185,7 +185,7 @@ static int prepare(hwc_composer_device_1_t* dev,
 
       if (skipped.first == -1)
         skipped.first = i;
-      skipped.second = i;
+        skipped.second = i;
     }
 
     bool foundCursorLayer = false;
