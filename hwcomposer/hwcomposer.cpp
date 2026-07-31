@@ -748,7 +748,7 @@ static int set(struct hwc_composer_device_1* dev,size_t numDisplays, hwc_display
                 close(fb_layer->acquireFenceFd);
         }
 
-	property_set("openfde.open_windows", "0");
+	    property_set("openfde.open_windows", "0");
         goto sync;
     } else if (active_apps == "Openfde") {
         // Clear all open windows if there's any and just keep "Openfde"
@@ -791,14 +791,14 @@ static int set(struct hwc_composer_device_1* dev,size_t numDisplays, hwc_display
                             single_layer_aid = layer_aid;
                         }
                         if (windows.find(single_layer_tid) != windows.end()) {
-				if (target == HWC_DISPLAY_PRIMARY) {
-				    pdev->windows[single_layer_tid]->lastLayer = 0;
-				    pdev->windows[single_layer_tid]->last_layer_buffer = nullptr;
-				}else {
-				    pdev->secondary_windows[single_layer_tid]->lastLayer = 0;
-				    pdev->secondary_windows[single_layer_tid]->last_layer_buffer = nullptr;
-				}
-			}
+                            if (target == HWC_DISPLAY_PRIMARY) {
+                                pdev->windows[single_layer_tid]->lastLayer = 0;
+                                pdev->windows[single_layer_tid]->last_layer_buffer = nullptr;
+                            }else {
+                                pdev->secondary_windows[single_layer_tid]->lastLayer = 0;
+                                pdev->secondary_windows[single_layer_tid]->last_layer_buffer = nullptr;
+                            }
+			            }
                     }
                 }
             }
@@ -816,7 +816,7 @@ static int set(struct hwc_composer_device_1* dev,size_t numDisplays, hwc_display
                     close(fb_layer->acquireFenceFd);
             }
 
-	    property_set("openfde.open_windows", "0");
+	        property_set("openfde.open_windows", "0");
             goto sync;
         }
         bool shouldCloseLeftover = true;
@@ -839,7 +839,7 @@ static int set(struct hwc_composer_device_1* dev,size_t numDisplays, hwc_display
                         windows.erase(it++);
                         shouldCloseLeftover = true;
                         std::string windows_size_str = std::to_string(windows.size());
-			property_set("openfde.open_windows", windows_size_str.c_str());
+			            property_set("openfde.open_windows", windows_size_str.c_str());
                     } else
                         ++it;
                 } else
@@ -941,27 +941,27 @@ static int set(struct hwc_composer_device_1* dev,size_t numDisplays, hwc_display
         if (active_apps == "Openfde") {
             // Show everything in a single window
             if (windows.find(active_apps) == windows.end()) {
-		    if (target == HWC_DISPLAY_PRIMARY){
-                	pdev->windows[active_apps] = create_window(disp, pdev->use_subsurface, active_apps, "0", {0, 0, 0, 255});
-                	std::string windows_size_str = std::to_string(pdev->windows.size());
-                	property_set("openfde.open_windows", windows_size_str.c_str());
-		    }else {
-                	pdev->secondary_windows[active_apps] = create_window(disp, pdev->use_subsurface, active_apps, "0", {0, 0, 0, 255});
-                	std::string windows_size_str = std::to_string(pdev->secondary_windows.size());
-		    }
+                if (target == HWC_DISPLAY_PRIMARY){
+                        pdev->windows[active_apps] = create_window(disp, pdev->use_subsurface, active_apps, "0", {0, 0, 0, 255});
+                        std::string windows_size_str = std::to_string(pdev->windows.size());
+                        property_set("openfde.open_windows", windows_size_str.c_str());
+                }else {
+                        pdev->secondary_windows[active_apps] = create_window(disp, pdev->use_subsurface, active_apps, "0", {0, 0, 0, 255});
+                        std::string windows_size_str = std::to_string(pdev->secondary_windows.size());
+                }
             }
             window = windows[active_apps];
         } else if (!pdev->multi_windows) {
             if (single_layer_tid.length()) {
                 if (pdev->windows.find(single_layer_tid) == pdev->windows.end()) {
-		    if (target == HWC_DISPLAY_PRIMARY){
-			    pdev->windows[single_layer_tid] = create_window(disp, pdev->use_subsurface, single_layer_aid, single_layer_tid, {0, 0, 0, 255});
-			    std::string windows_size_str = std::to_string(pdev->windows.size());
-			    property_set("openfde.open_windows", windows_size_str.c_str());
-		    }else{
-			    pdev->secondary_windows[single_layer_tid] = create_window(disp, pdev->use_subsurface, single_layer_aid, single_layer_tid, {0, 0, 0, 255});
-			    std::string windows_size_str = std::to_string(pdev->secondary_windows.size());
-		    }
+                    if (target == HWC_DISPLAY_PRIMARY){
+                        pdev->windows[single_layer_tid] = create_window(disp, pdev->use_subsurface, single_layer_aid, single_layer_tid, {0, 0, 0, 255});
+                        std::string windows_size_str = std::to_string(pdev->windows.size());
+                        property_set("openfde.open_windows", windows_size_str.c_str());
+                    }else{
+                        pdev->secondary_windows[single_layer_tid] = create_window(disp, pdev->use_subsurface, single_layer_aid, single_layer_tid, {0, 0, 0, 255});
+                        std::string windows_size_str = std::to_string(pdev->secondary_windows.size());
+                    }
                 }
                 window = windows[single_layer_tid];
             }
@@ -984,14 +984,14 @@ static int set(struct hwc_composer_device_1* dev,size_t numDisplays, hwc_display
 
                 if (showWindow) {
                     if (windows.find(layer_tid) == windows.end()) {
-			    if (target == HWC_DISPLAY_PRIMARY){
-				    pdev->windows[layer_tid] = create_window(pdev->display, pdev->use_subsurface, layer_aid, layer_tid, {0, 0, 0, 0});
-				    std::string windows_size_str = std::to_string(pdev->windows.size());
-				    property_set("openfde.open_windows", windows_size_str.c_str());
-			    }else{
-				    pdev->secondary_windows[layer_tid] = create_window(pdev->display, pdev->use_subsurface, layer_aid, layer_tid, {0, 0, 0, 0});
-				    std::string windows_size_str = std::to_string(pdev->secondary_windows.size());
-			    }
+                        if (target == HWC_DISPLAY_PRIMARY){
+                            pdev->windows[layer_tid] = create_window(pdev->display, pdev->use_subsurface, layer_aid, layer_tid, {0, 0, 0, 0});
+                            std::string windows_size_str = std::to_string(pdev->windows.size());
+                            property_set("openfde.open_windows", windows_size_str.c_str());
+                        }else{
+                            pdev->secondary_windows[layer_tid] = create_window(pdev->display, pdev->use_subsurface, layer_aid, layer_tid, {0, 0, 0, 0});
+                            std::string windows_size_str = std::to_string(pdev->secondary_windows.size());
+                        }
                     }
                     if (windows.find(layer_tid) != windows.end())
                         window = windows[layer_tid];
@@ -1052,14 +1052,14 @@ static int set(struct hwc_composer_device_1* dev,size_t numDisplays, hwc_display
             }
             if (LayerRawName == "InputMethod") {
                 if (windows.find(LayerRawName) == windows.end()) {
-		    if (target == HWC_DISPLAY_PRIMARY){
-			    pdev->windows[LayerRawName] = create_window(disp, pdev->use_subsurface, LayerRawName, "none", {0, 0, 0, 0});
-			    std::string windows_size_str = std::to_string(pdev->windows.size());
-			    property_set("openfde.open_windows", windows_size_str.c_str());
-		    }else{
-			    pdev->secondary_windows[LayerRawName] = create_window(disp, pdev->use_subsurface, LayerRawName, "none", {0, 0, 0, 0});
-			    std::string windows_size_str = std::to_string(pdev->secondary_windows.size());
-		    }
+                    if (target == HWC_DISPLAY_PRIMARY){
+                        pdev->windows[LayerRawName] = create_window(disp, pdev->use_subsurface, LayerRawName, "none", {0, 0, 0, 0});
+                        std::string windows_size_str = std::to_string(pdev->windows.size());
+                        property_set("openfde.open_windows", windows_size_str.c_str());
+                    }else{
+                        pdev->secondary_windows[LayerRawName] = create_window(disp, pdev->use_subsurface, LayerRawName, "none", {0, 0, 0, 0});
+                        std::string windows_size_str = std::to_string(pdev->secondary_windows.size());
+                    }
                 }
                 if (windows.find(LayerRawName) != windows.end())
                     window = windows[LayerRawName];
