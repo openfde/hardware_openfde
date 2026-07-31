@@ -45,11 +45,11 @@ cc_library_shared {
         "libxkbcommon",
     ],
     srcs: [
-        "extension.cpp",
-        "hwcomposer.cpp",
-        "wayland-hwc.cpp",
-        "OpenfdeWindow.cpp",
-        "egl-tools.cpp",
+        "common/extension.cpp",
+        "wayland/hwcomposer.cpp",
+        "wayland/wayland-hwc.cpp",
+        "wayland/OpenfdeWindow.cpp",
+        "wayland/egl-tools.cpp",
     ],
     header_libs: [
         "libsystem_headers",
@@ -72,7 +72,7 @@ cc_library_shared {
 // Generate wayland-android protocol source file
 genrule {
     name: "wayland_android_client_protocol_sources",
-    srcs: ["wayland-android.xml"],
+    srcs: ["wayland/wayland-android.xml"],
     tools: ["wayland_scanner"],
     cmd: "$(location wayland_scanner) code < $(in) > $(out)",
     out: ["wayland-android-client-protocol.c"],
@@ -80,8 +80,416 @@ genrule {
 // Generate wayland-android protocol header file
 genrule {
     name: "wayland_android_client_protocol_headers",
-    srcs: ["wayland-android.xml"],
+    srcs: ["wayland/wayland-android.xml"],
     tools: ["wayland_scanner"],
     cmd: "$(location wayland_scanner) client-header < $(in) > $(out)",
     out: ["wayland-android-client-protocol.h"],
 }
+
+cc_prebuilt_library_shared {
+    name: "libXrender",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["x11/lib/libXrender.so"],
+        },
+    },
+
+    shared_libs: [
+        "libX11",
+        "libxcb",
+        "libandroid-support",
+        "libdl",
+    ],
+    proprietary : true,
+    vendor: false,
+    visibility: ["//hardware/openfde/hwcomposer"],
+}
+cc_prebuilt_library_shared {
+    name: "libX11-xcb",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["x11/lib/libX11-xcb.so"],
+        },
+    },
+
+    shared_libs: [
+        "libxcb",
+        "libandroid-support",
+        "libdl",
+    ],
+    proprietary : true,
+    vendor: false,
+    visibility: ["//hardware/openfde/hwcomposer"],
+}
+cc_prebuilt_library_shared {
+    name: "libxcb-shape",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["x11/lib/libxcb-shape.so"],
+        },
+    },
+
+    shared_libs: [
+        "libxcb",
+        "libXau",
+        "libXdmcp",
+    ],
+    proprietary : true,
+    vendor: false,
+    visibility: ["//hardware/openfde/hwcomposer"],
+}
+cc_prebuilt_library_shared {
+    name: "libX11",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["x11/lib/libX11.so"],
+        },
+    },
+
+    shared_libs: [
+        "libxcb",
+        "libandroid-support",
+        "libdl",
+    ],
+    proprietary : true,
+    vendor: false,
+    visibility: ["//hardware/openfde/hwcomposer"],
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb-dri3",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["x11/lib/libxcb-dri3.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+        "libxcb",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
+
+cc_prebuilt_library_shared {
+    name: "libandroid-support",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["x11/lib/libandroid-support.so"],
+        },
+    },
+    proprietary : true,
+    vendor: false,
+    visibility: ["//hardware/openfde/hwcomposer"],
+}
+
+cc_prebuilt_library_shared {
+    name: "libXau",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["x11/lib/libXau.so"],
+        },
+    },
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libXdmcp",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["x11/lib/libXdmcp.so"],
+        },
+    },
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["x11/lib/libxcb.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb-util",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["x11/lib/libxcb-util.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+        "libxcb",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb-imdkit",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["x11/lib/libxcb-imdkit.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+        "libxcb",
+        "libxcb-util",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb-xinput",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["x11/lib/libxcb-xinput.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+        "libxcb",
+        "libxcb-util",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb-randr",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["x11/lib/libxcb-randr.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+        "libxcb",
+        "libxcb-util",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
+cc_library_shared {
+    name: "hwcomposer.x11",
+    relative_install_path: "hw",
+    vendor: true,
+    shared_libs: [
+        "liblog",
+        "libutils",
+        "libcutils",
+        "libhardware",
+        "libhidlbase",
+        "libhidltransport",
+        "libhwbinder",
+        "libsync",
+        "libui",
+        "libdrm",
+        "libEGL",
+        "libGLESv2",
+        "libX11",
+        "libX11-xcb",
+        "libXrender",
+        "libxcb",
+        "libxcb-xinput",
+        "libxcb-randr",
+        "libxcb-imdkit",
+        "libxcb-util",
+        "libxcb-dri3",
+        "libxcb-shape",
+        "vendor.openfde.display@1.0",
+        "vendor.openfde.display@1.1",
+        "vendor.openfde.task@1.0",
+        "vendor.openfde.window@1.0",
+        "vendor.openfde.window@1.1",
+        "vendor.openfde.window@1.2",
+    ],
+    static_libs: [
+        "libwayland_client_static",
+        "libffi",
+        "libwayland_extension_client_protocols",
+        "libxkbcommon",
+    ],
+    srcs: [
+        "common/extension.cpp",
+        "x11/hwcomposer.cpp",
+        "x11/x11-hwc.cpp",
+        "x11/WaydroidWindow.cpp",
+        "x11/egl-tools.cpp",
+    ],
+    header_libs: [
+        "libsystem_headers",
+        "minigbm_headers",
+    ],
+    include_dirs: [
+        "system/core",
+        "system/core/libsync",
+        "system/core/libsync/include",
+        "device/generic/goldfish-opengl/shared/gralloc_cb/include",
+        "device/generic/goldfish-opengl/shared/qemupipe/include",
+        "device/generic/goldfish-opengl/shared/qemupipe/include-types",
+    ],
+
+    local_include_dirs: [
+        "x11/include"
+    ],
+
+    arch : {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            enabled: true,
+        },
+    },
+
+    cflags: [
+        "-DLOG_TAG=\"hwcomposer\"",
+        "-Wall",
+        "-Werror",
+        "-Wno-writable-strings",
+    ],
+}
+

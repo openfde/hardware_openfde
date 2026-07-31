@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 The Waydroid Project
+ * Copyright (C) 2021 The Opendfe Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef VENDOR_WAYDROID_DISPLAY_V1_1_WAYDROIDDISPLAY_H
-#define VENDOR_WAYDROID_DISPLAY_V1_1_WAYDROIDDISPLAY_H
+#ifndef VENDOR_OPENFDE_DISPLAY_V1_1_OPENFDEDISPLAY_H
+#define VENDOR_OPENFDE_DISPLAY_V1_1_OPENFDEDISPLAY_H
 
 #include <android/hardware/graphics/composer/2.1/IComposer.h>
 #include <vendor/openfde/display/1.1/IOpenfdeDisplay.h>
@@ -22,7 +22,9 @@
 #include <hidl/MQDescriptor.h>
 #include <hidl/Status.h>
 
-#include "x11-hwc.h"
+//#include "../wayland/wayland-hwc.h"
+
+#include "display.h"
 
 namespace vendor {
 namespace openfde {
@@ -36,26 +38,28 @@ using ::android::hardware::graphics::composer::V2_1::Error;
 using ::android::sp;
 using ::vendor::openfde::display::V1_1::IOpenfdeDisplay;
 
+
 class OpenfdeDisplay : public IOpenfdeDisplay {
   public:
-    OpenfdeDisplay(struct display *display);
+    OpenfdeDisplay(struct display_base *display, struct display_base *secondary_display);
 
-    // Methods from ::vendor::waydroid::display::V1_0::IWaydroidDisplay follow.
+    // Methods from ::vendor::openfde::display::V1_0::IOpenfdeDisplay follow.
     Return<Error> setLayerName(uint32_t layer, const hidl_string &name) override;
     Return<Error> setLayerHandleInfo(uint32_t layer, uint32_t format, uint32_t stride) override;
     Return<Error> setTargetLayerHandleInfo(uint32_t format, uint32_t stride) override;
 
-    // Methods from ::vendor::waydroid::display::V1_1::IWaydroidDisplay follow.
+    // Methods from ::vendor::openfde::display::V1_1::IOpenfdeDisplay follow.
     Return<Error> setLayerSize(uint32_t layer, uint32_t width, uint32_t height) override;
     Return<Error> setTargetLayerSize(uint32_t width, uint32_t height) override;
   private:
-    struct display *mDisplay;
+    struct display_base *mDisplay;
+    struct display_base *msecondary_Display;
 };
 
 }  // namespace implementation
 }  // namespace V1_1
 }  // namespace display
-}  // namespace waydroid
+}  // namespace openfde
 }  // namespace vendor
 
-#endif  // VENDOR_WAYDROID_DISPLAY_V1_1_WAYDROIDDISPLAY_H
+#endif  // VENDOR_OPENFDE_DISPLAY_V1_1_OPENFDEDISPLAY_H

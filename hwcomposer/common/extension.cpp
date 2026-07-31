@@ -22,7 +22,7 @@ namespace display {
 namespace V1_1 {
 namespace implementation {
 
-OpenfdeDisplay::OpenfdeDisplay(struct display *display , struct display *secondary_display)
+OpenfdeDisplay::OpenfdeDisplay(struct display_base *display , struct display_base *secondary_display)
     : mDisplay(display), msecondary_Display(secondary_display)
 {
 }

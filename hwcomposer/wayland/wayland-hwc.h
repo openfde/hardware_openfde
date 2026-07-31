@@ -122,6 +122,16 @@ struct output {
 
 
 struct display {
+    union {
+        struct display_base base;
+        struct {
+            int width;
+            int height;
+            std::map<uint32_t, std::string> layer_names;
+            std::map<uint32_t, struct handleExt> layer_handles_ext;
+            struct handleExt target_layer_handle_ext;
+        }
+    }
     struct wl_display *display;
     struct wl_registry *registry;
     struct wl_compositor *compositor;
@@ -147,7 +157,7 @@ struct display {
     struct wp_fractional_scale_manager_v1 *fractional_scale_manager;
     struct zwp_pointer_gestures_v1 *pointer_gestures;
     struct zwp_pointer_gesture_swipe_v1 *pointer_gestures_swipe;
-    struct zwp_pointer_gesture_pinch_v1 *pointer_gestures_pinch;
+    strct zwp_pointer_gesture_pinch_v1 *pointer_gestures_pinch;
     int gtype;
     double scale;
     double locally_calculated_scale;
@@ -184,8 +194,6 @@ struct display {
     sem_t egl_go;
     sem_t egl_done;
 
-    int width;
-    int height;
     int full_width;
     int full_height;
     int refresh;
@@ -193,9 +201,9 @@ struct display {
     int formats_count;
     std::map<uint32_t, std::vector<uint64_t>> modifiers;
     bool geo_changed;
-    std::map<uint32_t, std::string> layer_names;
-    std::map<uint32_t, struct handleExt> layer_handles_ext;
-    struct handleExt target_layer_handle_ext;
+    //std::map<uint32_t, std::string> layer_names;
+    //std::map<uint32_t, struct handleExt> layer_handles_ext;
+    //struct handleExt target_layer_handle_ext;
     std::map<buffer_handle_t, struct buffer *> buffer_map;
     std::array<uint8_t, 239> keysDown;
 

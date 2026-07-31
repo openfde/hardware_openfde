@@ -56,7 +56,7 @@
 #include <cutils/trace.h>
 #include <utils/Trace.h>
 
-#include "extension.h"
+#include "../common/extension.h"
 #include "WaydroidWindow.h"
 #include "egl-tools.h"
 

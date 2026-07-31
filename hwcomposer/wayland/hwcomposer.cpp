@@ -45,7 +45,7 @@
 #include <cutils/trace.h>
 #include <utils/Trace.h>
 
-#include "extension.h"
+#include "../common/extension.h"
 #include "OpenfdeWindow.h"
 #include "egl-tools.h"
 #include "xdg-shell-client-protocol.h"
@@ -124,7 +124,7 @@ static bool update_cursor_surface(struct display *disp, hwc_layer_1_t* fb_layer,
         disp->additional_refresh_cursor_times = 0;
         erase_cursor_layer_buffer(disp, fb_layer->handle);
     }else{
-        if(pdev->display->additional_refresh_cursor_times > 60){      //Refresh the wayland cursor three additional times
+        if(disp->additional_refresh_cursor_times > 60){      //Refresh the wayland cursor three additional times
             return true;
         }else{
             erase_cursor_layer_buffer(disp, fb_layer->handle);
@@ -141,9 +141,9 @@ static bool update_cursor_surface(struct display *disp, hwc_layer_1_t* fb_layer,
     if (wl_surface_get_version(disp->cursor_surface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
         wl_surface_damage_buffer(disp->cursor_surface, 0, 0, buf->width, buf->height);
     else
-        wl_surface_damage(pdev->display->cursor_surface, 0, 0, buf->width, buf->height);
+        wl_surface_damage(disp->cursor_surface, 0, 0, buf->width, buf->height);
     //locally_calculated_scale add for mutter env
-    if ((!pdev->display->viewporter && pdev->display->scale > 1) || pdev->display->scale > pdev->display->locally_calculated_scale) {
+    if ((!disp->viewporter && disp->scale > 1) || disp->scale > disp->locally_calculated_scale) {
         // With no viewporter the scale is guaranteed to be integer
         wl_surface_set_buffer_scale(disp->cursor_surface, (int)disp->scale);
     } else if (disp->viewporter && disp->scale != 1) {
@@ -153,11 +153,11 @@ static bool update_cursor_surface(struct display *disp, hwc_layer_1_t* fb_layer,
     wl_surface_commit(disp->cursor_surface);
     int32_t icon_hotspot_x = property_get_int32("fde.mouse_icon_hotspot_x", 5);
     int32_t icon_hotspot_y = property_get_int32("fde.mouse_icon_hotspot_y", 5);
-    if(pdev->display->pointer){
-        wl_pointer_set_cursor(pdev->display->pointer, pdev->display->serial,
-                                  pdev->display->cursor_surface, icon_hotspot_x, icon_hotspot_y);
+    if(disp->pointer){
+        wl_pointer_set_cursor(disp->pointer, disp->serial,
+                                  disp->cursor_surface, icon_hotspot_x, icon_hotspot_y);
     }
-    pdev->display->additional_refresh_cursor_times++;
+    disp->additional_refresh_cursor_times++;
 
     return true;
 }
@@ -393,14 +393,14 @@ static struct buffer *get_wl_buffer(struct display *disp, hwc_layer_1_t *layer, 
             }
             update_shm_buffer(disp, buf);
         }
-    } else if (pdev->display->gtype == GRALLOC_FTG340) {
+    } else if (disp->gtype == GRALLOC_FTG340) {
         const gc_private_handle_t *gc_handle = (const gc_private_handle_t *)layer->handle;
-        if (pdev->display->dmabuf) {
-            ret = create_dmabuf_wl_buffer(pdev->display, buf, gc_handle->width, gc_handle->height, gc_handle->format,
+        if (disp->dmabuf) {
+            ret = create_dmabuf_wl_buffer(disp, buf, gc_handle->width, gc_handle->height, gc_handle->format,
                 -1, gc_handle->prime_fd, pixel_stride, gc_handle->stride, 0, DRM_FORMAT_MOD_INVALID, layer->handle);
         } else {
-            ret = create_shm_wl_buffer(pdev->display, buf, gc_handle->width, gc_handle->height, gc_handle->format, pixel_stride, layer->handle);
-            update_shm_buffer(pdev->display, buf);
+            ret = create_shm_wl_buffer(disp, buf, gc_handle->width, gc_handle->height, gc_handle->format, pixel_stride, layer->handle);
+            update_shm_buffer(disp, buf);
         }
     } else {
         if (disp->gtype == GRALLOC_ANDROID) {
@@ -435,30 +435,30 @@ static struct wl_surface *get_surface(struct display *disp, hwc_layer_1_t *layer
         disp->layers[window->surface] = {
             .x = layer->displayFrame.left,
             .y = layer->displayFrame.top };
-        if ((!multi && pdev->display->scale != 1 && pdev->display->viewporter && !window->viewport) || pdev->display->preferred_scale) {
-            ALOGW("get_surface multi: %d, pdev->display->scale: %f, ", multi, pdev->display->scale);
-            if(pdev->display->preferred_scale){
-                pdev->display->preferred_scale = false;
+        if ((!multi && disp->scale != 1 && disp->viewporter && !window->viewport) || disp->preferred_scale) {
+            ALOGW("get_surface multi: %d, pdev->display->scale: %f, ", multi, disp->scale);
+            if(disp->preferred_scale){
+                disp->preferred_scale = false;
             }
             if(!window->viewport){
-                window->viewport = wp_viewporter_get_viewport(pdev->display->viewporter, window->surface);
+                window->viewport = wp_viewporter_get_viewport(disp->viewporter, window->surface);
             }
-            setup_viewport_destination(window->viewport, layer->displayFrame, pdev->display);
+            setup_viewport_destination(window->viewport, layer->displayFrame, disp);
 
-            pdev->display->width = (int)(pdev->display->full_width/pdev->display->scale);
-            pdev->display->height = (int)(pdev->display->full_height/pdev->display->scale);
+            disp->width = (int)(disp->full_width/disp->scale);
+            disp->height = (int)(disp->full_height/disp->scale);
 
             if(window->bg_viewport){
                 wl_surface_attach(window->bg_surface, window->bg_buffer, 0, 0);
                 wl_surface_damage_buffer(window->bg_surface, 0, 0, 1, 1);
-                wp_viewport_set_destination(window->bg_viewport, pdev->display->width, pdev->display->height);
-                ALOGW("get_surface window bg_viewport width: %d, height: %d", pdev->display->width, pdev->display->height);
+                wp_viewport_set_destination(window->bg_viewport, disp->width, disp->height);
+                ALOGW("get_surface window bg_viewport width: %d, height: %d", disp->width, disp->height);
                 wl_surface_commit(window->bg_surface);
             }
-            find_primary(pdev->display);
-            if(pdev->display->num_outputs > 0 && pdev->display->primary){
-                xdg_toplevel_set_fullscreen(window->xdg_toplevel, pdev->display->primary->wl_output);
-                ALOGW("xdg_toplevel_set_fullscreen output registry_id: %u", pdev->display->primary->registry_id);
+            find_primary(disp);
+            if(disp->num_outputs > 0 && disp->primary){
+                xdg_toplevel_set_fullscreen(window->xdg_toplevel, disp->primary->wl_output);
+                ALOGW("xdg_toplevel_set_fullscreen output registry_id: %u", disp->primary->registry_id);
             }else{
                 xdg_toplevel_set_fullscreen(window->xdg_toplevel, NULL);
                 ALOGW("xdg_toplevel_set_fullscreen NULL");
