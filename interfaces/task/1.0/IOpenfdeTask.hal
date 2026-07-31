@@ -20,4 +20,6 @@ interface IOpenfdeTask {
     removeTask(uint32_t taskID);
     removeAllVisibleRecentTasks();
     getAppName(string packageName) generates (string name);
+    commitText(string text);
+    sendKeyEvent(int32_t action, int32_t code);
 };

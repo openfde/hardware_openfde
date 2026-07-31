@@ -76,6 +76,34 @@ Return<void> OpenfdeTask::getAppName(const hidl_string& packageName, getAppName_
     return Void();
 }
 
+Return<void> OpenfdeTask::commitText(const hidl_string& text) {
+    ALOGE("WaydroidTask::commitText %s", text.c_str());
+    if (mPlatform == nullptr) {
+        sp<IBinder> binderPlatform = android::defaultServiceManager()->getService(android::String16("openfdeplatform"));
+        if (binderPlatform != nullptr)
+            mPlatform = android::interface_cast<IPlatform>(binderPlatform);
+    }
+    if (mPlatform != nullptr){
+        ALOGE("mPlatform->commitText %s", text.c_str());
+        mPlatform->commitText(android::String16(text.c_str()));
+    }
+    return Void();
+}
+
+Return<void> OpenfdeTask::sendKeyEvent(int32_t action, int32_t code) {
+    ALOGE("WaydroidTask::sendKeyEvent action %d, code %d", action, code);
+    if (mPlatform == nullptr) {
+        sp<IBinder> binderPlatform = android::defaultServiceManager()->getService(android::String16("openfdeplatform"));
+        if (binderPlatform != nullptr)
+            mPlatform = android::interface_cast<IPlatform>(binderPlatform);
+    }
+    if (mPlatform != nullptr){
+        ALOGE("mPlatform->sendKeyEvent");
+        mPlatform->sendKeyEvent(action, code);
+    }
+    return Void();
+}
+
 }  // namespace implementation
 }  // namespace V1_0
 }  // namespace task

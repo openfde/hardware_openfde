@@ -75,14 +75,101 @@
 #include "fractional-scale-v1-client-protocol.h"
 #include <pointer-gestures-unstable-v1-client-protocol.h>
 
+#include "xdg-output-unstable-v1-client-protocol.h"
+
 using ::android::hardware::hidl_string;
 
 const int AXIS_TOUCH_SLOT_ID = 8;
 const int AXIS_TOUCH_TRACKING_ID = AXIS_TOUCH_SLOT_ID;
+struct display *mDisplay;
+int mTouchMove;
+bool mVerticalScroll = true;
+int timer_active = 0;
+struct itimerval timer;
+int scroll_speed = 0;
+#define SCROLL_END_TIMEOUT_MS 150
+#define GESTURE_SCALING_DOWN_STRIDE 30
+#define GESTURE_SCALING_UP_STRIDE 480
+#define GESTURE_SCALING_DOWN_START_DISTANCE 180.0
+#define GESTURE_SCALING_UP_START_DISTANCE 10.0
+static double gesture_scaling_start_distance;
+static int gesture_scaling_stride;
 
 struct buffer;
 static void handle_pinch_update(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t time, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t scale, wl_fixed_t rotation);
 static void handle_pinch_end(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t serial, uint32_t time, int cancelled);
+static void pointer_axis_to_touch(struct display *display, int move, bool verticalScroll);
+
+void find_primary(struct display *d) {
+    d->primary = NULL;
+    for (int i = 0; i < d->num_outputs; i++) {
+        struct output *out = &d->outputs[i];
+        if (out->done && (out->logical_x == 0 && out->logical_y == 0)) {
+            d->primary = out;
+            ALOGW("find_primary success");
+            return;
+        }
+    }
+    if (d->num_outputs > 0) {
+        for (int i = 0; i < d->num_outputs; i++) {
+            struct output *out = &d->outputs[i];
+            if (out->done && out->pixel_width != 0 && out->pixel_width != 0 && out->scale != 0) {
+                d->primary = out;
+                ALOGW("find_primary use default %d", i);
+                return;
+            }
+        }
+    }
+}
+
+
+static void xdg_output_logical_position(void *data, struct zxdg_output_v1 *xdg_output,
+                                        int32_t x, int32_t y) {
+    ALOGW("xdg_output_logical_position logical_x: %d, logical_y: %d", x, y);
+    struct output *out = (struct output *)data;
+    out->logical_x = x;
+    out->logical_y = y;
+}
+
+static void xdg_output_logical_size(void *data, struct zxdg_output_v1 *xdg_output,
+                                    int32_t width, int32_t height) {
+    ALOGW("xdg_output_logical_size logical_width: %d, logical_height: %d", width, height);
+    struct output *out = (struct output *)data;
+    out->logical_width = width;
+    out->logical_height = height;
+}
+
+static void xdg_output_done(void *data, struct zxdg_output_v1 *xdg_output) {
+    ALOGW("xdg_output_done");
+    (void)xdg_output;
+    struct output *out = (struct output *)data;
+    out->done = 1;
+}
+
+static void xdg_output_name(void *data, struct zxdg_output_v1 *xdg_output,
+                            const char *name) {
+    ALOGW("xdg_output_name");
+    struct output *out = (struct output *)data;
+        if (name) out->name = strdup(name);
+
+}
+
+static void xdg_output_description(void *data, struct zxdg_output_v1 *xdg_output,
+                                   const char *description) {
+    ALOGW("xdg_output_description");
+    struct output *out = (struct output *)data;
+    if (description) out->description = strdup(description);
+}
+
+
+static const struct zxdg_output_v1_listener xdg_output_listener = {
+    .logical_position = xdg_output_logical_position,
+    .logical_size     = xdg_output_logical_size,
+    .done             = xdg_output_done,
+    .name             = xdg_output_name,
+    .description      = xdg_output_description
+};
+
 
 void
 destroy_buffer(struct buffer* buf) {
@@ -386,11 +473,12 @@ xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *,
                               int32_t width, int32_t height,
                               struct wl_array *)
 {
-    struct window *window = (struct window *)data;
+    ALOGW("xdg_toplevel_handle_configure: width: %d, height: %d",width, height);
+    /*struct window *window = (struct window *)data;
     struct display *display = window->display;
 
     if (width == 0 || height == 0) {
-		/* Compositor is deferring to us */
+		// Compositor is deferring to us
 		return;
 	}
 
@@ -398,7 +486,7 @@ xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *,
         choose_width_height(display, width, height);
         if (!display->isMaximized)
             xdg_toplevel_unset_maximized(window->xdg_toplevel);
-    }
+    }*/
 }
 
 static void
@@ -442,6 +530,7 @@ shell_surface_ping(void *, struct wl_shell_surface *shell_surface, uint32_t seri
 void
 shell_surface_configure(void *data, struct wl_shell_surface *, uint32_t, int32_t width, int32_t height)
 {
+    ALOGW("shell_surface_configure: width: %d, height: %d",width, height);
     struct window *window = (struct window *)data;
     struct display *display = window->display;
 
@@ -470,6 +559,10 @@ void
 destroy_window(struct window *window, bool keep)
 {
     if (window->isActive) {
+        if (window->fractional_scale) {
+            wp_fractional_scale_v1_destroy(window->fractional_scale);
+            window->fractional_scale = NULL;
+        }
         if (window->callback)
             wl_callback_destroy(window->callback);
 
@@ -509,13 +602,20 @@ destroy_window(struct window *window, bool keep)
 
 static void fractional_scale_handle_preferred_scale(void *data, struct wp_fractional_scale_v1 *,
             uint32_t scale_times_120) {
+    ALOGW("fractional_scale_handle_preferred_scale scale_times_120: %d", scale_times_120);
     struct display *display = (struct display *)data;
     if (!display->viewporter) {
         // We should always have the viewporter if we have the fractional scale manager
         // but for debugging purpuses we may decide to disable one
         return;
     }
-    display->scale = scale_times_120 / 120.0;
+    double scale = scale_times_120 / SCALING_FACTOR_DENOMINATOR;
+    if(display->scale != scale){
+        display->scale = scale;
+        display->locally_calculated_scale = scale;
+        ALOGW("fractional_scale_handle_preferred_scale display->scale: %f", display->scale);
+        display->preferred_scale = true;
+    }
 }
 
 static const struct wp_fractional_scale_v1_listener fractional_scale_listener = {
@@ -562,6 +662,13 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
                                       { xdg_toplevel_set_title(window->xdg_toplevel, value.c_str()); });
         else
             xdg_toplevel_set_title(window->xdg_toplevel, appID.c_str());
+        if(!display->multi_windows){
+            if(display->primary){
+                xdg_toplevel_set_fullscreen(window->xdg_toplevel, display->primary->wl_output);
+            }else{
+                xdg_toplevel_set_fullscreen(window->xdg_toplevel, NULL);
+            }
+        }
 
         if (appID != "Openfde")
             appID = "openfde." + appID;
@@ -590,11 +697,10 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
 
     if (calibrating && display->fractional_scale_manager) {
         // We only support one global scale
-        wp_fractional_scale_v1* fs = wp_fractional_scale_manager_v1_get_fractional_scale(
+        window->fractional_scale = wp_fractional_scale_manager_v1_get_fractional_scale(
                 display->fractional_scale_manager, window->surface);
-        wp_fractional_scale_v1_add_listener(fs, &fractional_scale_listener, display);
+        wp_fractional_scale_v1_add_listener(window->fractional_scale, &fractional_scale_listener, display);
         wl_display_roundtrip(display->display);
-        wp_fractional_scale_v1_destroy(fs);
     }
     finished_computing_scale(display);
 
@@ -647,6 +753,7 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
         window->bg_viewport = wp_viewporter_get_viewport(display->viewporter, surface);
         wp_viewport_set_source(window->bg_viewport, wl_fixed_from_int(0), wl_fixed_from_int(0), wl_fixed_from_int(1), wl_fixed_from_int(1));
         wp_viewport_set_destination(window->bg_viewport, display->width, display->height);
+        ALOGE("create_window bg_viewport width: %d, height: %d", display->width,display->height);
     }
 
     if (display->wm_base)
@@ -710,6 +817,7 @@ send_key_event(display *data, uint32_t key, wl_keyboard_key_state state)
     }
     ADD_EVENT(EV_KEY, key, state);
 
+    ALOGE("send_key_event write INPUT_KEYBOARD key: %d, state: %d", key, state);
     res = write(display->input_fd[INPUT_KEYBOARD], &event, sizeof(event));
     if (res < sizeof(event))
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -902,7 +1010,7 @@ pointer_cancel_axis_to_two_finger_touch(struct display *display){
         return;
 
     display->axis_simulation_two_finger_started = false;
-    display->gesture_scale = 260;
+    display->gesture_scale = 160;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
        ALOGE("%s:%d error in touch clock_gettime: %s",
@@ -969,7 +1077,6 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
         ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
         ADD_EVENT(EV_SYN, SYN_REPORT, 0);
     }
-
     res = write(display->input_fd[INPUT_TOUCH], &event, eventSize);
     if (res < sizeof(event)) {
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -979,6 +1086,47 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
     return true;
 }
 
+void timer_handler(int sig) {
+    if (sig == SIGALRM) {
+        if(mDisplay){
+            if(mDisplay->axis_simulation_two_finger_started){
+                ALOGD("pointer axis stopped, called pointer_cancel_axis_to_two_finger_touch");
+                pointer_cancel_axis_to_two_finger_touch(mDisplay);
+            }else{
+                ALOGD("pointer axis stopped, called pointer_cancel_axis_to_touch");
+                if(scroll_speed < 2){
+                    pointer_axis_to_touch(mDisplay, mTouchMove, mVerticalScroll);
+                }
+                pointer_cancel_axis_to_touch(mDisplay, true, true);
+            }
+        }
+        timer_active = 0;
+        scroll_speed = 0;
+    }
+}
+
+void reset_timer() {
+    property_set("fde.axis_converting_touch", "true");
+
+    memset(&timer, 0, sizeof(timer));
+
+    timer.it_value.tv_sec = 0;
+    timer.it_value.tv_usec = SCROLL_END_TIMEOUT_MS * 1000;
+
+    setitimer(ITIMER_REAL, &timer, NULL);
+    timer_active = 1;
+    if(scroll_speed < 3){
+        scroll_speed += 1;
+    }
+}
+
+void init_timer() {
+    struct sigaction sa;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = timer_handler;
+    sigaction(SIGALRM, &sa, NULL);
+}
 
 static void
 pointer_handle_motion(void *data, struct wl_pointer *,
@@ -986,7 +1134,7 @@ pointer_handle_motion(void *data, struct wl_pointer *,
 {
     struct display* display = (struct display*)data;
     if(display->axis_simulation_two_finger_started){
-        pointer_cancel_axis_to_two_finger_touch(display);
+        return;
     }
     int x, y;
 
@@ -1046,7 +1194,7 @@ handle_relative_motion(void *data, struct zwp_relative_pointer_v1*,
 {
     struct display *display = (struct display *)data;
     if(display->axis_simulation_two_finger_started){
-        pointer_cancel_axis_to_two_finger_touch(display);
+        return;
     }
 
     static double acc_x = 0;
@@ -1094,6 +1242,10 @@ pointer_handle_button(void *data, struct wl_pointer *,
     pointer_cancel_axis_to_touch(display, false, true);
     if(display->axis_simulation_two_finger_started){
         pointer_cancel_axis_to_two_finger_touch(display);
+    }
+
+    if(button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED){
+        property_set("fde.axis_converting_touch", "false");
     }
 
     // Left button convert to touch event, right button reserved mouse event
@@ -1149,9 +1301,9 @@ pointer_axis_to_touch(struct display *display, int move, bool verticalScroll)
 
     int64_t nanoSeconds = rt.tv_sec * 1000 * 1000 * 1000 + rt.tv_nsec;
     if(verticalScroll){
-        display->axisY += move;
+        display->axisY += move*scroll_speed;
     }else{
-        display->axisX += move;
+        display->axisX += move*scroll_speed;
     }
 
     // if ((nanoSeconds - display->lastAxisEventNanoSeconds) < 20 * 1000 * 1000) {
@@ -1194,6 +1346,7 @@ pointer_axis_to_touch(struct display *display, int move, bool verticalScroll)
     }
     ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
     ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+
     res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
     if (res < sizeof(event))
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -1242,12 +1395,23 @@ pointer_handle_axis(void *data, struct wl_pointer *,
     }
 
     if(property_get_bool("fde.click_as_touch", false)){
+        reset_timer();
         if(display->ctrl_key_pressed){
+            if(!display->axis_simulation_two_finger_started){
+                display->axis_simulation_two_finger_started = true;
+                if(touchMove > 0){
+                    gesture_scaling_start_distance = GESTURE_SCALING_UP_START_DISTANCE;
+                    gesture_scaling_stride = GESTURE_SCALING_UP_STRIDE;
+                }else{
+                    gesture_scaling_start_distance = GESTURE_SCALING_DOWN_START_DISTANCE;
+                    gesture_scaling_stride = GESTURE_SCALING_DOWN_STRIDE;
+                }
+            }
             if(touchMove > 0){
-                display->gesture_scale += 15;
+                display->gesture_scale += gesture_scaling_stride;
             }else{
-                display->gesture_scale -= 15;
-                if(display->gesture_scale < 15){
+                display->gesture_scale -= gesture_scaling_stride;
+                if(display->gesture_scale < gesture_scaling_stride){
                     display->gesture_scale = 5;
                 }
             }
@@ -1255,12 +1419,13 @@ pointer_handle_axis(void *data, struct wl_pointer *,
                 pointer_cancel_axis_to_touch(display, true, true);
             }
             handle_pinch_update(data, NULL,0,0,0,display->gesture_scale,0);
-            display->axis_simulation_two_finger_started = true;
         }else{
             if(display->axis_simulation_two_finger_started){
                 pointer_cancel_axis_to_two_finger_touch(display);
             }
             pointer_axis_to_touch(display, touchMove, axis == WL_POINTER_AXIS_VERTICAL_SCROLL);
+            mTouchMove = touchMove;
+            mVerticalScroll = (axis == WL_POINTER_AXIS_VERTICAL_SCROLL);
         }
     }else{
         if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -1318,10 +1483,68 @@ static const struct wl_pointer_listener pointer_listener = {
     pointer_handle_axis_discrete,
 };
 
+static void send_multi_touch_frame(struct display *display)
+{
+    if (ensure_pipe(display, INPUT_TOUCH)) return;
+
+    struct input_event event[128];
+    struct timespec rt;
+    unsigned int n = 0;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
+        ALOGE("%s:%d clock_gettime error", __FILE__, __LINE__);
+        return;
+    }
+
+    int active = 0;
+    for (int i = 0; i < MAX_TOUCHPOINTS; i++) {
+        if (display->touch_id[i] != -1) active++;
+    }
+    ALOGD("send_multi_touch_frame: active=%d", active);
+
+    if(display->need_send_touch_btn_down){
+        ADD_EVENT(EV_KEY, BTN_TOUCH, 1);
+        display->need_send_touch_btn_down = false;
+    }
+
+    for (int i = 0; i < MAX_TOUCHPOINTS; i++) {
+        if (display->touch_changed[i] || display->touch_id[i] != -1) {
+            if(display->touch_id[i] == -1 && display->touch_tracking_id[i] == -1) continue;
+            ADD_EVENT(EV_ABS, ABS_MT_SLOT, i);
+            if (display->touch_id[i] == -1) {
+                ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
+                display->touch_tracking_id[i] = -1;
+            } else {
+                ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, display->touch_tracking_id[i]);
+                ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, display->touch_x[i]);
+                ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, display->touch_y[i]);
+                ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 80);
+            }
+        }
+    }
+
+    if(display->need_send_touch_btn_up){
+        ADD_EVENT(EV_KEY, BTN_TOUCH, 0);
+        display->need_send_touch_btn_up = false;
+    }
+
+    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    size_t bytes = n * sizeof(struct input_event);
+    ALOGD("send_multi_touch_frame write INPUT_TOUCH");
+    write(display->input_fd[INPUT_TOUCH], event, bytes);
+}
 static int
-get_touch_id(struct display *display, int id)
+get_touch_id(struct display *display, uint32_t id)
 {
     int i = 0;
+    int active = 0;
+    for (i = 0; i < MAX_TOUCHPOINTS; i++) {
+        if (display->touch_id[i] != -1) active++;
+    }
+    if (active > MAX_TOUCHPOINTS) {
+        ALOGW("Touch point limit reached (%d), ignore new touch id=%d", MAX_TOUCHPOINTS, id);
+        return -1;
+    }
     for (i = 0; i < MAX_TOUCHPOINTS; i++) {
         if (display->touch_id[i] == id)
             return i;
@@ -1329,6 +1552,16 @@ get_touch_id(struct display *display, int id)
     for (i = 0; i < MAX_TOUCHPOINTS; i++) {
         if (display->touch_id[i] == -1) {
             display->touch_id[i] = id;
+            display->next_tracking_id = (display->next_tracking_id + 1) % 0x7FFFFFFF;
+            if (display->next_tracking_id == 0)
+                display->next_tracking_id = 1;
+            display->touch_tracking_id[i] = display->next_tracking_id;
+            display->active_touch_count++;
+
+            // first finger send BTN_TOUCH DOWN
+            if (display->active_touch_count == 1) {
+                display->need_send_touch_btn_down = true;
+            }
             return i;
         }
     }
@@ -1336,16 +1569,25 @@ get_touch_id(struct display *display, int id)
 }
 
 static int
-flush_touch_id(struct display *display, int id)
+flush_touch_id(struct display *display, uint32_t id)
 {
     for (int i = 0; i < MAX_TOUCHPOINTS; i++) {
         if (display->touch_id[i] == id) {
             display->touch_id[i] = -1;
+            display->touch_changed[i] = true;
+            display->active_touch_count = std::max(0, display->active_touch_count - 1);
+            // last finger send BTN_TOUCH UP
+            if (display->active_touch_count == 0) {
+                ALOGD("flush_touch_id id: %d, display->active_touch_count: %d", id, display->active_touch_count);
+                display->need_send_touch_btn_up = true;
+            }
+            send_multi_touch_frame(display);
             return i;
         }
     }
     return -1;
 }
+
 
 static void
 touch_handle_down(void *data, struct wl_touch *,
@@ -1376,43 +1618,26 @@ touch_handle_down(void *data, struct wl_touch *,
     x += display->layers[surface].x;
     y += display->layers[surface].y;
 
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, get_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, get_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y);
-    ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-
-    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-    if (res < sizeof(event))
-        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
+    int slot = get_touch_id(display, id);
+    if (slot < 0) return;
+    display->touch_x[slot] = x;
+    display->touch_y[slot] = y;
+    display->touch_changed[slot] = true;
+    ALOGI("touch_handle_down slot=%d id=%d x=%d y=%d", slot, id, x, y);
+    send_multi_touch_frame(display);
 }
 
 static void
 touch_handle_up(void *data, struct wl_touch *,
         uint32_t, uint32_t, int32_t id)
 {
+
     struct display* display = (struct display*)data;
-    struct input_event event[3];
-    struct timespec rt;
-    unsigned int res, n = 0;
-
-    if (ensure_pipe(display, INPUT_TOUCH))
-        return;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-       ALOGE("%s:%d error in touch clock_gettime: %s",
-            __FILE__, __LINE__, strerror(errno));
-    }
     display->touch_surfaces[id] = NULL;
+    int slot = flush_touch_id(display, id);
+    if (slot < 0) return;
 
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, flush_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-
-    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-    if (res < sizeof(event))
-        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
+    ALOGI("touch_handle_up slot=%d id=%d", slot, id);
 }
 
 static void
@@ -1427,6 +1652,8 @@ touch_handle_motion(void *data, struct wl_touch *,
 
     if (ensure_pipe(display, INPUT_TOUCH))
         return;
+    int slot = get_touch_id(display, id);
+    if (slot < 0) return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
        ALOGE("%s:%d error in touch clock_gettime: %s",
@@ -1441,16 +1668,25 @@ touch_handle_motion(void *data, struct wl_touch *,
     x += display->layers[display->touch_surfaces[id]].x;
     y += display->layers[display->touch_surfaces[id]].y;
 
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, get_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, get_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y);
-    ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    nsecs_t now = rt.tv_sec * 1000000000LL + rt.tv_nsec;
 
-    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-    if (res < sizeof(event))
-        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
+    const nsecs_t MIN_INTERVAL = 8 * 1000000LL;
+
+    if (now - display->last_touch_frame_time < MIN_INTERVAL) {
+        display->touch_x[slot] = x;
+        display->touch_y[slot] = y;
+        display->touch_changed[slot] = true;
+        return;
+    }
+
+    display->touch_x[slot] = x;
+    display->touch_y[slot] = y;
+    display->touch_changed[slot] = true;
+
+    display->last_touch_frame_time = now;
+
+    ALOGD("touch_handle_motion slot=%d id=%d x=%d y=%d", slot, id, x, y);
+    send_multi_touch_frame(display);
 }
 
 static void
@@ -1552,33 +1788,51 @@ static const struct xdg_wm_base_listener xdg_wm_base_listener = {
 
 static void handle_swipe_begin(void *data, struct zwp_pointer_gesture_swipe_v1 *gesture, uint32_t serial, uint32_t time, struct wl_surface *surface, uint32_t fingers)
 {
-    (void) data;
     (void) gesture;
     (void) serial;
     (void) time;
     (void) surface;
-    (void) fingers;
     ALOGI("handle_swipe_begin");
+    struct display* display = (struct display*)data;
+    if (fingers == 4) {
+        display->four_finger_gesture_active = true;
+        display->four_finger_app_launcher_triggered = false;
+        ALOGI("four finger gesture start: %d fingers", fingers);
+    }
 }
 
 static void handle_swipe_update(void *data, struct zwp_pointer_gesture_swipe_v1 *gesture, uint32_t time, wl_fixed_t dx, wl_fixed_t dy)
 {
-    (void) data;
     (void) gesture;
     (void) time;
-    (void) dx;
-    (void) dy;
     ALOGI("handle_swipe_update");
+    struct display* display = (struct display*)data;
+    if (display->four_finger_gesture_active && !display->four_finger_app_launcher_triggered) {
+        double delta_x = wl_fixed_to_double(dx);
+        double delta_y = wl_fixed_to_double(dy);
+        double distance = sqrt(delta_x * delta_x + delta_y * delta_y);
+        if (distance > 5.0) {
+            display->four_finger_app_launcher_triggered = true;
+            ALOGD("four-finger gesture moves a distance of %f, triggering the application list.", distance);
+            send_key_event(display, KEY_LEFTMETA, WL_KEYBOARD_KEY_STATE_PRESSED);
+            send_key_event(display, KEY_LEFTMETA, WL_KEYBOARD_KEY_STATE_RELEASED);
+        }
+    }
 }
 
 static void handle_swipe_end(void *data, struct zwp_pointer_gesture_swipe_v1 *gesture, uint32_t serial, uint32_t time, int cancelled)
 {
-    (void) data;
     (void) gesture;
     (void) serial;
     (void) time;
     (void) cancelled;
     ALOGI("handle_swipe_end");
+    struct display* display = (struct display*)data;
+    if (display->four_finger_gesture_active) {
+        ALOGI("the four-finger gesture ends");
+        display->four_finger_gesture_active = false;
+        display->four_finger_app_launcher_triggered = false;
+    }
 }
 
 static void handle_pinch_begin(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t serial, uint32_t time, struct wl_surface *surface, uint32_t fingers)
@@ -1621,10 +1875,10 @@ static void handle_pinch_update(void *data, struct zwp_pointer_gesture_pinch_v1 
     double iscale = wl_fixed_to_double(scale);
     double irotation = 90;
 
-    int x0 = x - (240.0 * iscale * cos(irotation));
-    int y0 = y - (240.0 * iscale * sin(irotation));
-    int x1 = x + (240.0 * iscale * cos(irotation));
-    int y1 = y + (240.0 * iscale * sin(irotation));
+    int x0 = x - (gesture_scaling_start_distance * iscale * cos(irotation));
+    int y0 = y - (gesture_scaling_start_distance * iscale * sin(irotation));
+    int x1 = x + (gesture_scaling_start_distance * iscale * cos(irotation));
+    int y1 = y + (gesture_scaling_start_distance * iscale * sin(irotation));
 
     ADD_EVENT(EV_ABS, ABS_MT_SLOT, 0);
     ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, 0);
@@ -1769,9 +2023,9 @@ seat_handle_capabilities(void *data, struct wl_seat *seat, uint32_t wl_caps)
         wl_touch_set_user_data(d->touch, d);
         wl_touch_add_listener(d->touch, &touch_listener, d);
     } else if (!(caps & WL_SEAT_CAPABILITY_TOUCH) && d->touch) {
-        remove(INPUT_PIPE_NAME[INPUT_TOUCH]);
-        wl_touch_destroy(d->touch);
-        d->touch = NULL;
+        //remove(INPUT_PIPE_NAME[INPUT_TOUCH]);
+        //wl_touch_destroy(d->touch);
+        //d->touch = NULL;
     }
 }
 
@@ -1826,40 +2080,64 @@ static const struct zwp_linux_dmabuf_v1_listener dmabuf_listener = {
 
 static void
 output_handle_mode(void *data, struct wl_output *,
-                   uint32_t, int32_t width, int32_t height,
+                   uint32_t flags, int32_t width, int32_t height,
                    int32_t refresh)
 {
-    struct display *d = (struct display *)data;
+    ALOGW("output_handle_mode width: %d, height: %d, refresh: %d", width, height, refresh);
+    struct output *out = (struct output *)data;
+    if (flags & WL_OUTPUT_MODE_CURRENT) {
+        out->pixel_width  = width;
+        out->pixel_height = height;
+        out->refresh = refresh;
+    }
+
+    /*struct display *d = (struct display *)data;
     d->refresh = std::max(d->refresh, refresh);
 
     // Fallback size
     // We can't do anything meaningful if there's more than one display, just pick one at random
     // Hopefully these won't need to be used
     d->full_width = width;
-    d->full_height = height;
+    d->full_height = height;*/
 }
 
 static void
-output_handle_geometry(void *, struct wl_output *,
-               int32_t, int32_t,
-               int32_t, int32_t,
-               int32_t,
-               const char *, const char *,
-               int32_t)
+output_handle_geometry(void *data, struct wl_output *,
+                int32_t x,
+                int32_t y,
+                int32_t physical_width,
+                int32_t physical_height,
+                int32_t subpixel,
+                const char *make,
+                const char *model,
+                int32_t transform)
 {
+    ALOGW("Physical output: %s %s at %d,%d (phys: %dx%d mm)\n",
+           make, model, x, y, physical_width, physical_height);
+    struct output *out = (struct output *)data;
+    out->phys_width_mm  = physical_width;
+    out->phys_height_mm = physical_height;
 }
 
 static void
-output_handle_done(void *, struct wl_output *)
+output_handle_done(void *data, struct wl_output *)
 {
+    ALOGW("output_handle_done");
+
+    struct output *out = (struct output *)data;
+    out->done = 1;
+
 }
 
 static void
 output_handle_scale(void *data, struct wl_output *,
             int32_t scale)
 {
-    struct display *d = (struct display*)data;
-    d->scale = std::max((int)d->scale, scale);
+    ALOGW("output_handle_scale scale: %d", scale);
+    struct output *out = (struct output *)data;
+    out->scale = scale;
+    /*struct display *d = (struct display*)data;
+    d->scale = std::max((int)d->scale, scale);*/
 }
 
 static const struct wl_output_listener output_listener = {
@@ -2291,12 +2569,29 @@ registry_handle_global(void *data, struct wl_registry *registry,
     } else if (strcmp(interface, "wl_shm") == 0) {
 		d->shm = (struct wl_shm *)wl_registry_bind(registry, id,
                 &wl_shm_interface, 1);
-    } else if (strcmp(interface, "wl_output") == 0) {
-        d->output = (struct wl_output*)wl_registry_bind(registry, id,
-                &wl_output_interface, std::min(version, 3U));
-        wl_output_add_listener(d->output, &output_listener, d);
-        wl_display_roundtrip(d->display);
-    } else if (strcmp(interface, "wp_presentation") == 0) {
+    } else if (strcmp(interface, "wl_output") == 0  && d->num_outputs < MAX_OUTPUTS) {
+        ALOGE("wl_output version: %d",version);
+        struct output *out = &d->outputs[d->num_outputs++];
+        out->registry_id = id;
+        out->wl_output = (struct wl_output*)wl_registry_bind(registry, id, &wl_output_interface, std::min(version, 3U));
+        wl_output_add_listener(out->wl_output, &output_listener, out);
+
+        if (d->xdg_output_manager) {
+            out->xdg_output = zxdg_output_manager_v1_get_xdg_output(d->xdg_output_manager, out->wl_output);
+            zxdg_output_v1_add_listener(out->xdg_output, &xdg_output_listener, out);
+        }
+    } else if (strcmp(interface, "zxdg_output_manager_v1") == 0) {
+        ALOGE("zxdg_output_manager_v1 version: %d", version);
+        d->xdg_output_manager = (struct zxdg_output_manager_v1 *)wl_registry_bind(registry, id, &zxdg_output_manager_v1_interface, std::min(version, 3U));
+
+        for (int i = 0; i < d->num_outputs; i++) {
+            struct output *out = &d->outputs[i];
+            if (out->wl_output && !out->xdg_output) {
+                out->xdg_output = zxdg_output_manager_v1_get_xdg_output(d->xdg_output_manager, out->wl_output);
+                zxdg_output_v1_add_listener(out->xdg_output, &xdg_output_listener, out);
+            }
+        }
+    }else if (strcmp(interface, "wp_presentation") == 0) {
         bool no_presentation = property_get_bool("persist.openfde.no_presentation", false);
         if (!no_presentation) {
             d->presentation = (struct wp_presentation*)wl_registry_bind(registry, id,
@@ -2311,8 +2606,8 @@ registry_handle_global(void *data, struct wl_registry *registry,
                (strcmp(interface, "android_wlegl") == 0)) {
         d->android_wlegl = (struct android_wlegl*)wl_registry_bind(registry, id,
                 &android_wlegl_interface, 1);
-    } else if ((d->gtype == GRALLOC_GBM || d->gtype == GRALLOC_CROS || d->gtype == GRALLOC_X100) &&
-               (strcmp(interface, "zwp_linux_dmabuf_v1") == 0)) {
+    } else if ((d->gtype == GRALLOC_GBM || d->gtype == GRALLOC_CROS || d->gtype == GRALLOC_X100 ||
+               d->gtype == GRALLOC_FTG340) && (strcmp(interface, "zwp_linux_dmabuf_v1") == 0)) {
         if (version < 3)
             return;
         d->dmabuf = (struct zwp_linux_dmabuf_v1*)wl_registry_bind(registry, id,
@@ -2342,8 +2637,43 @@ registry_handle_global(void *data, struct wl_registry *registry,
 }
 
 static void
-registry_handle_global_remove(void *, struct wl_registry *, uint32_t)
+registry_handle_global_remove(void *data, struct wl_registry *, uint32_t id)
 {
+    ALOGW("registry_handle_global_remove");
+    struct display *d = (struct display *)data;
+
+    for (int i = 0; i < d->num_outputs; i++) {
+        struct output *out = &d->outputs[i];
+
+        if (out->registry_id == id) {
+            ALOGW("Output removed: id=%u  (logical %dx%d)", id,
+                  out->logical_width, out->logical_height);
+
+            /*if (out->xdg_output) {
+                zxdg_output_v1_destroy(out->xdg_output);
+                out->xdg_output = NULL;
+            }
+
+            if (out->wl_output) {
+                wl_output_release(out->wl_output);
+                out->wl_output = NULL;
+            }*/
+
+            for (int j = i; j < d->num_outputs - 1; j++) {
+                d->outputs[j] = d->outputs[j + 1];
+            }
+            d->num_outputs--;
+
+            if (d->primary == out || d->primary == NULL) {
+                d->primary = NULL;
+                find_primary(d);
+            }
+
+            return;
+        }
+    }
+
+    ALOGW("Unknown global removed: id=%u", id);
 }
 
 static const struct wl_registry_listener registry_listener = {
@@ -2368,7 +2698,9 @@ get_gralloc_type(const char *gralloc)
         return GRALLOC_CROS;
     } else if (strcmp(gralloc, "ft2004") == 0) {
         return GRALLOC_X100;
-    } else {
+    } else if (strcmp(gralloc, "FTG340") == 0) {
+        return GRALLOC_FTG340;
+    }else {
         return GRALLOC_ANDROID;
     }
 }
@@ -2392,6 +2724,7 @@ create_display(const char *gralloc)
     display->refresh = 0;
     display->isMaximized = true;
     display->display = wl_display_connect(NULL);
+    display->multi_windows = property_get_bool("persist.openfde.multi_windows", false);
     ALOGI("WAYLAND_DISPLAY: %s", getenv("WAYLAND_DISPLAY"));
     ALOGI("XDG_RUNTIME_DIR: %s", getenv("XDG_RUNTIME_DIR"));
     if (!display->display) {
@@ -2408,11 +2741,63 @@ create_display(const char *gralloc)
     wl_registry_add_listener(display->registry,
                  &registry_listener, display);
     wl_display_roundtrip(display->display);
+    wl_display_roundtrip(display->display);
+
+    find_primary(display);
+    if(display->scale == 0){
+        display->scale = 1.0;
+    }
+
+    if (display->primary) {
+        ALOGW("Detected primary screen (logical position 0,0):\n");
+        ALOGW("  Current pixel resolution (physical pixels): %d × %d\n", display->primary->pixel_width, display->primary->pixel_height);
+        display->full_width = display->primary->pixel_width;
+        display->full_height = display->primary->pixel_height;
+        ALOGW("  Logical resolution (scaled): %d × %d\n", display->primary->logical_width, display->primary->logical_height);
+	    double scale = ((double)display->primary->pixel_width) / display->primary->logical_width;
+        scale = round(scale * 100.0) / 100.0;
+        display->scale = scale;
+        display->locally_calculated_scale = scale;
+        ALOGW("  scaling factor: %d\n", display->primary->scale);
+        ALOGW("  Floating-point scaling factor: %f\n", scale);
+        if(display->scale == 1 && display->primary->scale > 1){
+            display->scale = display->primary->scale;
+        }
+        ALOGW("  display->scale: %f", display->scale);
+        ALOGW("  Physical dimensions (mm): %d mm × %d mm\n", display->primary->phys_width_mm, display->primary->phys_height_mm);
+        if (display->primary->phys_width_mm > 0 && display->primary->pixel_width > 0) {
+            double dpi_x = (double)display->primary->pixel_width / (display->primary->phys_width_mm / 25.4);
+            ALOGW("  Estimate horizontal DPI (based on physical pixels): %.1f\n", dpi_x);
+        }
+        if (display->primary->name)        ALOGW("  name: %s", display->primary->name);
+        if (display->primary->description) ALOGW("  description: %s", display->primary->description);
+    } else {
+        ALOGE("Output not found for logical (0,0)");
+        if (display->num_outputs > 0) {
+            ALOGW("Use the first output as the fallback:");
+            ALOGW("  Current pixel resolution: %d × %d", display->outputs[0].pixel_width, display->outputs[0].pixel_height);
+            ALOGW("  Logical resolution: %d × %d", display->outputs[0].logical_width, display->outputs[0].logical_height);
+            ALOGW("  scaling factor: %d", display->outputs[0].scale);
+            display->full_width = display->outputs[0].pixel_width;
+            display->full_height = display->outputs[0].pixel_height;
+        }
+    }
+
+    if(display->full_width == 0){
+        display->full_width = 1920;
+    }
+    if(display->full_height == 0){
+        display->full_height = 1080;
+    }
+
+    ALOGW("display->full_width: %d, display->full_height: %d", display->full_width, display->full_height);
 
     display->task = IOpenfdeTask::getService();
     display->isTouchDown = false;
     display->lastAxisEventNanoSeconds = 0;
-    display->gesture_scale = 260;
+    display->gesture_scale = 160;
+    init_timer();
+    mDisplay = display;
     return display;
 }
 

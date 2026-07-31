@@ -29,6 +29,7 @@
 #pragma once
 
 #include <cutils/native_handle.h>
+#include <utils/Timers.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -56,6 +57,9 @@
 
 #include <functional>
 
+#define MAX_OUTPUTS 16
+#define SCALING_FACTOR_DENOMINATOR 120.0
+
 using ::android::sp;
 using ::vendor::openfde::task::V1_0::IOpenfdeTask;
 
@@ -79,7 +83,8 @@ enum {
     GRALLOC_GBM,
     GRALLOC_CROS,
     GRALLOC_DEFAULT,
-    GRALLOC_X100
+    GRALLOC_X100,
+    GRALLOC_FTG340
 };
 
 #define MAX_TOUCHPOINTS 10
@@ -97,6 +102,24 @@ struct handleExt {
 };
 
 struct window;
+
+struct output {
+    uint32_t registry_id;
+    struct wl_output *wl_output;
+    struct zxdg_output_v1 *xdg_output;
+    int32_t logical_x, logical_y;
+    int32_t logical_width, logical_height;
+    int32_t scale;
+    char *name;
+    char *description;
+    int32_t phys_width_mm;   // Physical width (mm)
+    int32_t phys_height_mm;  // Physical height (mm)
+    int32_t pixel_width;     // pixel width (physical pixel resolution) of the current mode.
+    int32_t pixel_height;    // Pixel height (physical pixel resolution) of the current mode.
+    int done;
+    int32_t refresh;
+};
+
 
 struct display {
     struct wl_display *display;
@@ -127,6 +150,10 @@ struct display {
     struct zwp_pointer_gesture_pinch_v1 *pointer_gestures_pinch;
     int gtype;
     double scale;
+    double locally_calculated_scale;
+
+    bool four_finger_gesture_active;
+    bool four_finger_app_launcher_triggered;
 
     int input_fd[INPUT_TOTAL];
     int ptrPrvX;
@@ -180,6 +207,25 @@ struct display {
     bool ctrl_key_pressed;
     wl_fixed_t gesture_scale;
     bool axis_simulation_two_finger_started;
+
+    bool multi_windows;
+    bool preferred_scale;
+    struct zxdg_output_manager_v1 *xdg_output_manager;
+    struct zxdg_output_v1 *xdg_output;
+    struct output outputs[MAX_OUTPUTS];
+    int num_outputs;
+    struct output *primary;
+
+    int   touch_x[MAX_TOUCHPOINTS];
+    int   touch_y[MAX_TOUCHPOINTS];
+    bool  touch_changed[MAX_TOUCHPOINTS];
+    nsecs_t last_touch_frame_time;
+
+    int next_tracking_id;
+    int active_touch_count;
+    bool need_send_touch_btn_down;
+    bool need_send_touch_btn_up;
+    long touch_tracking_id[MAX_TOUCHPOINTS];
 };
 
 struct buffer {
@@ -221,6 +267,7 @@ struct window {
     std::string appID;
     std::string taskID;
     bool isActive;
+    struct wp_fractional_scale_v1 *fractional_scale;
 };
 
 typedef struct
@@ -244,6 +291,38 @@ typedef struct
 	int iLunKnown;
 
 } __attribute__((aligned(sizeof(int)),packed))  X100_native_handle_t;
+
+typedef struct {
+    native_handle_t nativeHandle;
+
+    /* file descriptors */
+    int prime_fd;
+
+
+    /* integers */
+    int magic;
+
+    int flags;
+    int size;
+    int offset;
+    uint64_t base __attribute__((aligned(8)));
+    uint64_t phys __attribute__((aligned(8)));
+
+    int width;
+    int height;
+    int format;
+    int stride; /* the stride in bytes. */
+    int b_unknown;
+
+    int u_unknown;
+    int p_unknown;
+    uint64_t f_unknown[3] __attribute__((aligned(8)));
+    uint64_t s_unknown;
+
+    /* pointer to some bo struct. */
+    uint64_t d_unknown __attribute__((aligned(8)));
+    uint64_t r_unknown[3];
+} gc_private_handle_t;
 
 void
 handle_relative_motion(void *data, struct zwp_relative_pointer_v1*,
@@ -281,3 +360,5 @@ struct window *
 create_window(struct display *display, bool with_dummy, std::string appID, std::string taskID, hwc_color_t color);
 void
 choose_width_height(struct display* display, int32_t hint_width, int32_t hint_height);
+
+void find_primary(struct display *d);
