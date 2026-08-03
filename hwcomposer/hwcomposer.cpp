@@ -626,6 +626,9 @@ static const struct wp_presentation_feedback_listener feedback_listener = {
 };
 
 static int set(struct hwc_composer_device_1* dev,size_t numDisplays, hwc_display_contents_1_t** displays, int target);
+static int hwc_setCursorPositionAsync(struct hwc_composer_device_1 *dev, int disp, int x_pos, int y_pos){
+    return 0;
+}
 
 static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                    hwc_display_contents_1_t** displays) {
@@ -1456,6 +1459,7 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
 
     pdev->base.prepare = hwc_prepare;
     pdev->base.set = hwc_set;
+    pdev->base.setCursorPositionAsync  = hwc_setCursorPositionAsync;
     pdev->base.eventControl = hwc_event_control;
     pdev->base.blank = hwc_blank;
     pdev->base.query = hwc_query;
@@ -1489,7 +1493,7 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     ALOGE("wayland display %p", pdev->display);
 
     if (!pdev->secondary_display) {
-        ALOGE("failed to open wayland connection");
+        ALOGE("failed to open wayland secondary connection");
         return -ENODEV;
     }
     ALOGE("wayland secondary_display %p", pdev->secondary_display);
