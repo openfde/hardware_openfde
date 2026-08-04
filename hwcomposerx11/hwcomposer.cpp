@@ -1397,8 +1397,9 @@ static int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
 static int32_t hwc_attribute(struct waydroid_hwc_composer_device_1* pdev,
                              const uint32_t attribute) {
     char property[PROPERTY_VALUE_MAX];
-    int width = floor(pdev->display->width * pdev->display->scale);
-    int height = floor(pdev->display->height * pdev->display->scale);
+    int width = pdev->display->full_width;
+    int height = pdev->display->full_height;
+    ALOGE("hwc_attribute width: %d, height: %d", width, height);
     int density = 180;
 
     switch(attribute) {
