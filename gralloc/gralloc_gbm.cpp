@@ -295,7 +295,7 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 	int usage = get_pipe_bind(handle->usage);
 	int width, height;
 
-	handle->convert_format = 0;
+	//handle->convert_format = 0;
 	width = handle->width;
 	height = handle->height;
 	if (usage & GBM_BO_USE_CURSOR) {
@@ -317,7 +317,7 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 		}
 		height += handle->height / 2;
 		if (format == GBM_FORMAT_RGB565) {
-			handle->convert_format = 1;
+			//handle->convert_format = 1;
 		}
 	}
 
@@ -433,7 +433,7 @@ struct gbm_device *gbm_dev_create(void)
 	char egl_type[PROPERTY_VALUE_MAX];
 	property_get("ro.hardware.egl", egl_type, "none");
 	if (strcmp(egl_type, "mesa") == 0) {
-		flag_is_mesa_env = 1;
+		//flag_is_mesa_env = 1;
 	}
 
 	return gbm;
@@ -645,7 +645,7 @@ int gralloc_gbm_need_convert_format(buffer_handle_t _handle)
 {
 	struct gralloc_handle_t *handle = gralloc_handle(_handle);
 	if (flag_is_mesa_env) {
-		return handle->convert_format;
+		//return handle->convert_format;
 	}
 	return 0;
 }

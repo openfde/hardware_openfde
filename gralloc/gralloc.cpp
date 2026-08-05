@@ -336,7 +336,7 @@ struct gbm_module_t HAL_MODULE_INFO_SYM = {
 		.unlock = gbm_mod_unlock,
 		.perform = gbm_mod_perform,
 		.lock_ycbcr = gbm_mod_lock_ycbcr,
-		.need_convert_format = gbm_mod_need_convert_format
+		//.need_convert_format = gbm_mod_need_convert_format
 	},
 
 	.mutex = PTHREAD_MUTEX_INITIALIZER,
