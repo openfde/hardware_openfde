@@ -62,6 +62,10 @@
 #include <cutils/properties.h>
 
 #include <xkbcommon/xkbcommon.h>
+#ifndef Status
+#define Status int
+#endif
+
 #include <X11/XKBlib.h>
 #include <xcb/xinput.h>
 #include <xcb/randr.h>

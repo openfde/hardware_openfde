@@ -41,7 +41,7 @@
 #include <viewporter-client-protocol.h>
 #include <gralloc_handle.h>
 #include <cros_gralloc/cros_gralloc_handle.h>
-#include <gralloc_cb_bp.h>
+//#include <gralloc_cb_bp.h>
 #include <system/graphics.h>
 
 #include <X11/Xlib.h>
@@ -91,6 +91,7 @@ struct waydroid_hwc_composer_device_1 {
     int next_sync_point;
     bool use_subsurface;
     bool multi_windows;
+    int32_t aosp_version;
 };
 
 int cancel_maximum(xcb_connection_t *conn,xcb_screen_t * screen, xcb_window_t main_win);
@@ -169,7 +170,7 @@ static void x11_set_custom_cursor(waydroid_hwc_composer_device_1* pdev, Picture 
 static bool update_cursor_surface(waydroid_hwc_composer_device_1* pdev, hwc_layer_1_t* fb_layer, size_t layer) {
     std::string layer_name = pdev->display->layer_names[layer];
 
-    if (layer_name.substr(0, 6) != "Sprite" || fb_layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
+    if (layer_name.length() < 12 || layer_name.substr(0, 12) != "[BBQ] Sprite" || fb_layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
         return false;
     }
 
@@ -276,7 +277,7 @@ static int hwc_prepare(hwc_composer_device_1_t* dev,
 
     if (!contents) return 0;
 
-    if ((contents->flags & HWC_GEOMETRY_CHANGED) && pdev->use_subsurface)
+    if (pdev->aosp_version == 17 || ((contents->flags & HWC_GEOMETRY_CHANGED) && pdev->use_subsurface))
         pdev->display->geo_changed = true;
 
     std::pair<int, int> skipped(-1, -1);
@@ -578,7 +579,7 @@ static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev,
             delete buf;
             return NULL;
         }
-    } else if (pdev->display->gtype == GRALLOC_RANCHU) {
+    } /*else if (pdev->display->gtype == GRALLOC_RANCHU) {
         struct cb_handle_t* cb_handle = (struct cb_handle_t*)layer->handle;
         auto width = cb_handle->width;
         auto height = cb_handle->height;
@@ -609,7 +610,7 @@ static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev,
             delete buf;
             return NULL;
         }
-    } else if (pdev->display->gtype == GRALLOC_CROS) {
+    } */else if (pdev->display->gtype == GRALLOC_CROS) {
         const struct cros_gralloc_handle *cros_handle = (const struct cros_gralloc_handle *)layer->handle;
         buf->width=cros_handle->width;
         buf->height=cros_handle->height;
@@ -1397,8 +1398,9 @@ static int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
 static int32_t hwc_attribute(struct waydroid_hwc_composer_device_1* pdev,
                              const uint32_t attribute) {
     char property[PROPERTY_VALUE_MAX];
-    int width = floor(pdev->display->width * pdev->display->scale);
-    int height = floor(pdev->display->height * pdev->display->scale);
+    int width = pdev->display->full_width;
+    int height = pdev->display->full_height;
+    ALOGE("hwc_attribute width: %d, height: %d", width, height);
     int density = 180;
 
     switch(attribute) {
@@ -1566,6 +1568,7 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
 
     pdev->multi_windows = property_get_bool("persist.openfde.multi_windows", false);
     pdev->use_subsurface = property_get_bool("persist.openfde.use_subsurface", false) || pdev->multi_windows;
+    pdev->aosp_version = property_get_int32("ro.vendor.build.version.release", 0);
     pdev->timeline_fd = sw_sync_timeline_create();
     pdev->next_sync_point = 1;
 

@@ -26,6 +26,10 @@
 #pragma once
 
 #include "x11-hwc.h"
+#ifdef Status
+#undef Status
+#endif
+
 #include <ui/GraphicBuffer.h>
 
 void* egl_loop(void* data);
