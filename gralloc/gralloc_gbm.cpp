@@ -136,14 +136,8 @@ static uint32_t get_gbm_format(int format)
 			fmt = GBM_FORMAT_ARGB8888;
 		break;
 	case HAL_PIXEL_FORMAT_YV12:
-		if (flag_is_mesa_env) {
-			fmt = GBM_FORMAT_RGB565;
-		} else {
-			/* YV12 is planar, but must be a single buffer so ask for GR88 */
-			fmt = GBM_FORMAT_GR88;
-		}
-		break;
 	case HAL_PIXEL_FORMAT_YCbCr_420_888:
+	case HAL_PIXEL_FORMAT_YCrCb_420_SP:
 		/* YV12 is planar, but must be a single buffer so ask for GR88 */
 		fmt = GBM_FORMAT_GR88;
 		break;
@@ -157,7 +151,6 @@ static uint32_t get_gbm_format(int format)
 		fmt = GBM_FORMAT_R8;
 		break;
 	case HAL_PIXEL_FORMAT_YCbCr_422_SP:
-	case HAL_PIXEL_FORMAT_YCrCb_420_SP:
 	default:
 		fmt = 0;
 		break;
@@ -258,12 +251,10 @@ static struct gbm_bo *gbm_import(struct gbm_device *gbm,
 	data.height = handle->height;
 	data.format = format;
 	/* Adjust the width and height for a GBM GR88 buffer */
-	if (handle->format == HAL_PIXEL_FORMAT_YV12 || handle->format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
-		if (flag_is_mesa_env) {
-			data.width = GRALLOC_ALIGN(data.width/2, 256);
-		} else {
-			data.width /= 2;
-		}
+	if (handle->format == HAL_PIXEL_FORMAT_YV12
+	    || handle->format == HAL_PIXEL_FORMAT_YCbCr_420_888
+	    || handle->format == HAL_PIXEL_FORMAT_YCrCb_420_SP) {
+		data.width = GRALLOC_ALIGN(data.width / 2, 256);
 		data.height += handle->height / 2;
 	}
 	if (handle->format == HAL_PIXEL_FORMAT_BLOB) {
@@ -309,16 +300,11 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 	 * For YV12, we request GR88, so halve the width since we're getting
 	 * 16bpp. Then increase the height by 1.5 for the U and V planes.
 	 */
-	if (handle->format == HAL_PIXEL_FORMAT_YV12 || handle->format == HAL_PIXEL_FORMAT_YCbCr_420_888) {
-		if (flag_is_mesa_env) {
-			width = GRALLOC_ALIGN(width/2, 256);
-		} else {
-			width /= 2;
-		}
+	if (handle->format == HAL_PIXEL_FORMAT_YV12
+	    || handle->format == HAL_PIXEL_FORMAT_YCbCr_420_888
+	    || handle->format == HAL_PIXEL_FORMAT_YCrCb_420_SP) {
+		width = GRALLOC_ALIGN(width / 2, 256);
 		height += handle->height / 2;
-		if (format == GBM_FORMAT_RGB565) {
-			//handle->convert_format = 1;
-		}
 	}
 
 	if (handle->format == HAL_PIXEL_FORMAT_BLOB) {
@@ -429,13 +415,6 @@ struct gbm_device *gbm_dev_create(void)
 		ALOGE("failed to create gbm device");
 		close(fd);
 	}
-
-	char egl_type[PROPERTY_VALUE_MAX];
-	property_get("ro.hardware.egl", egl_type, "none");
-	if (strcmp(egl_type, "mesa") == 0) {
-		//flag_is_mesa_env = 1;
-	}
-
 	return gbm;
 }
 
@@ -606,7 +585,7 @@ int gralloc_gbm_bo_lock_ycbcr(buffer_handle_t handle,
 
 	switch (hnd->format) {
 	case HAL_PIXEL_FORMAT_YCrCb_420_SP:
-		ystride = cstride = GRALLOC_ALIGN(hnd->width, 16);
+		ystride = cstride = hnd->stride;
 		ycbcr->y = addr;
 		ycbcr->cr = (unsigned char *)addr + ystride * hnd->height;
 		ycbcr->cb = (unsigned char *)addr + ystride * hnd->height + 1;
@@ -615,7 +594,7 @@ int gralloc_gbm_bo_lock_ycbcr(buffer_handle_t handle,
 		ycbcr->chroma_step = 2;
 		break;
 	case HAL_PIXEL_FORMAT_YCbCr_420_888:
-		ystride = cstride = GRALLOC_ALIGN(hnd->width, 16);
+		ystride = cstride = hnd->stride;
 		ycbcr->y = addr;
 		ycbcr->cb = (unsigned char *)addr + ystride * hnd->height;
 		ycbcr->cr = (unsigned char *)addr + ystride * hnd->height + 1;
@@ -624,8 +603,8 @@ int gralloc_gbm_bo_lock_ycbcr(buffer_handle_t handle,
 		ycbcr->chroma_step = 2;
 		break;
 	case HAL_PIXEL_FORMAT_YV12:
-		ystride = hnd->width;
-		cstride = GRALLOC_ALIGN(ystride / 2, 16);
+		ystride = hnd->stride;
+		cstride = hnd->stride / 2;
 		ycbcr->y = addr;
 		ycbcr->cr = (unsigned char *)addr + ystride * hnd->height;
 		ycbcr->cb = (unsigned char *)addr + ystride * hnd->height + cstride * hnd->height / 2;
@@ -638,14 +617,5 @@ int gralloc_gbm_bo_lock_ycbcr(buffer_handle_t handle,
 		return -EINVAL;
 	}
 
-	return 0;
-}
-
-int gralloc_gbm_need_convert_format(buffer_handle_t _handle)
-{
-	struct gralloc_handle_t *handle = gralloc_handle(_handle);
-	if (flag_is_mesa_env) {
-		//return handle->convert_format;
-	}
 	return 0;
 }
