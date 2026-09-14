@@ -181,18 +181,6 @@ static int gbm_mod_unregister_buffer(const gralloc_module_t *mod,
 	return err;
 }
 
-static int gbm_mod_need_convert_format(const gralloc_module_t *mod, buffer_handle_t handle)
-{
-	struct gbm_module_t *dmod = (struct gbm_module_t *) mod;
-	int err;
-
-	pthread_mutex_lock(&dmod->mutex);
-	err = gralloc_gbm_need_convert_format(handle);
-	pthread_mutex_unlock(&dmod->mutex);
-
-	return err;
-}
-
 static int gbm_mod_lock(const gralloc_module_t *mod, buffer_handle_t handle,
 		int usage, int x, int y, int w, int h, void **ptr)
 {
@@ -336,7 +324,6 @@ struct gbm_module_t HAL_MODULE_INFO_SYM = {
 		.unlock = gbm_mod_unlock,
 		.perform = gbm_mod_perform,
 		.lock_ycbcr = gbm_mod_lock_ycbcr,
-		.need_convert_format = gbm_mod_need_convert_format
 	},
 
 	.mutex = PTHREAD_MUTEX_INITIALIZER,
