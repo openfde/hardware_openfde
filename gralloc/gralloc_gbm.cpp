@@ -48,9 +48,10 @@
 #include <unordered_map>
 #include <sstream>
 #include <vector>
-#include <cmath>
+#include <drm_fourcc.h>
+#include <sys/mman.h>
 
-int flag_is_mesa_env = 0;
+
 #define GRALLOC_ALIGN(value, base) (((value) + ((base)-1)) & ~((base)-1))
 
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
@@ -65,6 +66,30 @@ struct bo_data_t {
 	int lock_count;
 	int locked_for;
 };
+
+struct blob_mmap_info {
+    void *addr;
+    size_t size;
+    int ref_count;
+    int lock_count;
+};
+static std::unordered_map<buffer_handle_t, struct blob_mmap_info> g_blob_mmap_map;
+
+static int alloc_memfd_memory(size_t size, int *out_fd) {
+    int fd = memfd_create("camera_blob", MFD_CLOEXEC);
+    if (fd < 0) {
+        ALOGE("memfd_create failed: %s", strerror(errno));
+        return -errno;
+    }
+
+    if (ftruncate(fd, size) != 0) {
+        ALOGE("ftruncate failed: %s", strerror(errno));
+        close(fd);
+        return -errno;
+    }
+    *out_fd = fd;
+    return 0;
+}
 
 void gralloc_gbm_destroy_user_data(struct gbm_bo *bo, void *data)
 {
@@ -147,9 +172,6 @@ static uint32_t get_gbm_format(int format)
 	case HAL_PIXEL_FORMAT_RGBA_1010102:
 		fmt = GBM_FORMAT_ABGR2101010;
 		break;
-	case HAL_PIXEL_FORMAT_BLOB:
-		fmt = GBM_FORMAT_R8;
-		break;
 	case HAL_PIXEL_FORMAT_YCbCr_422_SP:
 	default:
 		fmt = 0;
@@ -213,24 +235,6 @@ static unsigned int get_pipe_bind(int usage)
 	return bind;
 }
 
-static std::pair<int, int> find_closest_size(int blob) {
-    if (blob <= 0) {
-        return {0, 0};
-    }
-
-    int width = static_cast<int>(std::sqrt(blob));
-    int height = width = ((width + 7) / 8) * 8;
-
-    while (true) {
-        if (width * height == blob) {
-            return {width, height};
-        } else if (width * height < blob) {
-            return {width, height + 1};
-        }
-        height--;
-    }
-}
-
 static struct gbm_bo *gbm_import(struct gbm_device *gbm,
 		buffer_handle_t _handle)
 {
@@ -256,11 +260,6 @@ static struct gbm_bo *gbm_import(struct gbm_device *gbm,
 	    || handle->format == HAL_PIXEL_FORMAT_YCrCb_420_SP) {
 		data.width = GRALLOC_ALIGN(data.width / 2, 256);
 		data.height += handle->height / 2;
-	}
-	if (handle->format == HAL_PIXEL_FORMAT_BLOB) {
-		std::pair<int, int> size = find_closest_size(data.width);
-		data.width = size.first;
-		data.height = size.second;
 	}
 	#ifdef GBM_BO_IMPORT_FD_MODIFIER
 	data.num_fds = 1;
@@ -307,11 +306,6 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 		height += handle->height / 2;
 	}
 
-	if (handle->format == HAL_PIXEL_FORMAT_BLOB) {
-		std::pair<int, int> size = find_closest_size(width);
-		width = size.first;
-		height = size.second;
-	}
 	ALOGV("create BO, size=%dx%d, fmt=%d, usage=%x",
 	      handle->width, handle->height, handle->format, usage);
 	std::vector<uint64_t> modifiers = get_supported_modifiers(gbm, format);
@@ -339,6 +333,10 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 
 void gbm_free(buffer_handle_t handle)
 {
+    struct gralloc_handle_t *hnd = gralloc_handle(handle);
+    if (hnd->format == HAL_PIXEL_FORMAT_BLOB) {
+        return;
+    }
 	struct gbm_bo *bo = gralloc_gbm_bo_from_handle(handle);
 
 	if (!bo)
@@ -428,6 +426,20 @@ int gralloc_gbm_handle_register(buffer_handle_t _handle, struct gbm_device *gbm)
 	if (!_handle)
 		return -EINVAL;
 
+    struct gralloc_handle_t *gbm_handle = gralloc_handle(_handle);
+
+    if (gbm_handle->format == HAL_PIXEL_FORMAT_BLOB) {
+        auto it = g_blob_mmap_map.find(_handle);
+        if (it != g_blob_mmap_map.end()) {
+            it->second.ref_count++;
+        } else {
+            size_t size = (size_t)gbm_handle->stride;
+            struct blob_mmap_info info = {nullptr, size, 1};
+            g_blob_mmap_map.emplace(_handle, info);
+        }
+        return 0;
+    }
+
 	if (gbm_bo_handle_map.count(_handle))
 		return -EINVAL;
 
@@ -445,6 +457,20 @@ int gralloc_gbm_handle_register(buffer_handle_t _handle, struct gbm_device *gbm)
  */
 int gralloc_gbm_handle_unregister(buffer_handle_t handle)
 {
+    struct gralloc_handle_t *gbm_handle = gralloc_handle(handle);
+
+    if (gbm_handle->format == HAL_PIXEL_FORMAT_BLOB) {
+        auto it = g_blob_mmap_map.find(handle);
+        if (it != g_blob_mmap_map.end()) {
+            if (--it->second.ref_count == 0) {
+                if (it->second.addr != nullptr) {
+                    munmap(it->second.addr, it->second.size);
+                }
+                g_blob_mmap_map.erase(it);
+            }
+        }
+        return 0;
+    }
 	gbm_free(handle);
 
 	return 0;
@@ -456,6 +482,41 @@ int gralloc_gbm_handle_unregister(buffer_handle_t handle)
 buffer_handle_t gralloc_gbm_bo_create(struct gbm_device *gbm,
 		int width, int height, int format, int usage, int *stride)
 {
+    if (format == HAL_PIXEL_FORMAT_BLOB) {
+        const int blob_incompatible_usage =
+            GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_RENDER |
+            GRALLOC_USAGE_HW_COMPOSER | GRALLOC_USAGE_HW_FB |
+            GRALLOC_USAGE_HW_VIDEO_ENCODER;
+        if (usage & blob_incompatible_usage) {
+            ALOGW("BLOB with GPU usage 0x%x: memfd is not dma-buf, this will not be importable",
+                usage & blob_incompatible_usage);
+        }
+        size_t size = (size_t)width * height;
+        if (width <= 0 || height <= 0 || size > INT_MAX) {
+            ALOGE("blob size(%dx%d) fail!!", width, height);
+            return NULL;
+        }
+
+        int mem_fd = -1;
+        if (alloc_memfd_memory(size, &mem_fd) < 0) {
+            ALOGE("alloc_memfd_memory fail!!");
+            return NULL;
+        }
+
+        native_handle_t *handle = gralloc_handle_create(width, height, format, usage);
+        if (!handle) {
+            close(mem_fd);
+            ALOGE("gralloc_handle_create fail!!");
+            return NULL;
+        }
+        struct gralloc_handle_t *hnd = gralloc_handle(handle);
+        hnd->prime_fd = mem_fd;
+        hnd->stride = (int)size;
+        hnd->modifier = DRM_FORMAT_MOD_INVALID;
+        *stride = (int)size;
+        return handle;
+    }
+
 	struct gbm_bo *bo;
 	native_handle_t *handle;
 
@@ -485,6 +546,27 @@ int gralloc_gbm_bo_lock(buffer_handle_t handle,
 		void **addr)
 {
 	struct gralloc_handle_t *gbm_handle = gralloc_handle(handle);
+
+    if (gbm_handle->format == HAL_PIXEL_FORMAT_BLOB) {
+        auto it = g_blob_mmap_map.find(handle);
+        if (it != g_blob_mmap_map.end()) {
+            if (it->second.addr == nullptr) {
+                void *map_addr = mmap(NULL, it->second.size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                                  gbm_handle->prime_fd, 0);
+                if (map_addr == MAP_FAILED) {
+                    ALOGE("mmap BLOB failed: %s", strerror(errno));
+                    return -EINVAL;
+                }
+                it->second.addr = map_addr;
+            }
+            *addr = it->second.addr;
+            it->second.lock_count++;
+            return 0;
+        }
+        ALOGE("gralloc_gbm_bo_lock blob handle not found!!");
+        return -EINVAL;
+    }
+
 	struct gbm_bo *bo = gralloc_gbm_bo_from_handle(handle);
 	struct bo_data_t *bo_data;
 
@@ -543,6 +625,20 @@ int gralloc_gbm_bo_lock(buffer_handle_t handle,
  */
 int gralloc_gbm_bo_unlock(buffer_handle_t handle)
 {
+    struct gralloc_handle_t *hnd = gralloc_handle(handle);
+
+    if (hnd->format == HAL_PIXEL_FORMAT_BLOB) {
+        auto it = g_blob_mmap_map.find(handle);
+        if (it == g_blob_mmap_map.end() || it->second.lock_count == 0) {
+            return 0;
+        }
+        if (--it->second.lock_count == 0 && it->second.addr) {
+            munmap(it->second.addr, it->second.size);
+            it->second.addr = nullptr;
+        }
+        return 0;
+    }
+
 	struct gbm_bo *bo = gralloc_gbm_bo_from_handle(handle);
 	struct bo_data_t *bo_data;
 	if (!bo)
