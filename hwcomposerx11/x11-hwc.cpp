@@ -148,7 +148,7 @@ get_gralloc_type(const char *gralloc)
 {
     if (strcmp(gralloc, "default") == 0) {
         return GRALLOC_DEFAULT;
-    } else if (strcmp(gralloc, "gbm") == 0) {
+    } else if (strcmp(gralloc, "gbm") == 0 || strcmp(gralloc, "gbm_proxy") == 0) {
         return GRALLOC_GBM;
     } else if (strcmp(gralloc, "ranchu") == 0) {
     return GRALLOC_RANCHU;
