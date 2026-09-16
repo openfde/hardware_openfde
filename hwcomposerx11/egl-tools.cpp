@@ -200,14 +200,14 @@ static GLuint create_shader_program() {
 }
 
 void egl_convert_buffer_to_BGRA_8888(struct display* display, android::sp<android::GraphicBuffer> src_buffer, android::sp<android::GraphicBuffer> dst_buffer) {
-    static GLuint shader_program = 0;
-    static GLuint VAO = 0, VBO = 0, EBO = 0;
-    static int gl_initialized = 0;
+    //static GLuint shader_program = 0;
+    //static GLuint VAO = 0, VBO = 0, EBO = 0;
+    //static int gl_initialized = 0;
 
-    if (!gl_initialized) {
+    if (!display->gl_initialized) {
         // 创建着色器程序
-        shader_program = create_shader_program();
-        if (!shader_program) {
+        display->shader_program = create_shader_program();
+        if (!display->shader_program) {
             return;
         }
 
@@ -224,15 +224,15 @@ void egl_convert_buffer_to_BGRA_8888(struct display* display, android::sp<androi
             2, 3, 0
         };
 
-        glGenVertexArraysOES(1, &VAO);
-        glGenBuffers(1, &VBO);
-        glGenBuffers(1, &EBO);
+        glGenVertexArraysOES(1, &display->VAO);
+        glGenBuffers(1, &display->VBO);
+        glGenBuffers(1, &display->EBO);
 
-        glBindVertexArrayOES(VAO);
-        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        glBindVertexArrayOES(display->VAO);
+        glBindBuffer(GL_ARRAY_BUFFER, display->VBO);
         glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, display->EBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
@@ -240,7 +240,7 @@ void egl_convert_buffer_to_BGRA_8888(struct display* display, android::sp<androi
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
         glEnableVertexAttribArray(1);
 
-        gl_initialized = 1;
+        display->gl_initialized = 1;
     }
 
     EGLint image_attrs[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
@@ -300,17 +300,17 @@ void egl_convert_buffer_to_BGRA_8888(struct display* display, android::sp<androi
 
     // Set viewport and use shader program
     glViewport(0, 0, src_buffer->getWidth(), src_buffer->getHeight());
-    glUseProgram(shader_program);
+    glUseProgram(display->shader_program);
 
     // Set uniform variable
-    GLint texture_location = glGetUniformLocation(shader_program, "ourTexture");
+    GLint texture_location = glGetUniformLocation(display->shader_program, "ourTexture");
     glUniform1i(texture_location, 0);
 
     // Bind source texture and render
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, src_texture);
 
-    glBindVertexArrayOES(VAO);
+    glBindVertexArrayOES(display->VAO);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
     glFinish();
 
