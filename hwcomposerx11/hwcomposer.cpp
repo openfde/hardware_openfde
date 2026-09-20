@@ -185,7 +185,7 @@ static bool update_cursor_surface(struct display *disp, hwc_layer_1_t* fb_layer,
     //   x11_set_custom_cursor(disp, 0, 0, 0, windows);
     //   return false; 
     //}
-    fb_layer->compositionType = HWC_OVERLAY; // Not participating in SurfaceFlinger GPU compositing hide internal cursor
+    //fb_layer->compositionType = HWC_OVERLAY; // Not participating in SurfaceFlinger GPU compositing hide internal cursor
     disp->hide_cursor = false;
     int64_t mouse_icon_addr = property_get_int64("fde.mouse_icon_addr", 0);
     if (disp->mouse_icon_addr != mouse_icon_addr) {
@@ -341,15 +341,15 @@ static int prepare(hwc_composer_device_1_t* dev,
         foundCursorLayer |= update_cursor_surface(disp, fb_layer, i, &windows);
     }
 
-    ALOGE("fde_test prepare foundCursorLayer: %d", foundCursorLayer);
+    //ALOGE("fde_test prepare foundCursorLayer: %d", foundCursorLayer);
     
-    ALOGE("fde_test prepare disp->mouse_icon_addr begin: %ld", disp->mouse_icon_addr);
+    //ALOGE("fde_test prepare disp->mouse_icon_addr begin: %ld", disp->mouse_icon_addr);
     if(!foundCursorLayer && disp->mouse_icon_addr != -1){
         disp->hide_cursor = true;
         disp->mouse_icon_addr = -1;
         
     }
-    ALOGE("fde_test prepare disp->mouse_icon_addr end: %ld", disp->mouse_icon_addr);
+    //ALOGE("fde_test prepare disp->mouse_icon_addr end: %ld", disp->mouse_icon_addr);
 
     if(pdev->display->hide_cursor && pdev->secondary_display->hide_cursor){
         //x11_set_custom_cursor(disp, 0, 0, 0,&windows);
@@ -908,11 +908,9 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
     hwc_display_contents_1_t* contents = displays[HWC_DISPLAY_PRIMARY];
     hwc_display_contents_1_t* external_contents = displays[HWC_DISPLAY_EXTERNAL];
     if (contents){
-	    ALOGE("gy set primary display");
 	    ret = set(dev,numDisplays,displays,HWC_DISPLAY_PRIMARY);
     }
     if (external_contents){
-	    ALOGE("gy set external display");
 	    ret = set(dev,numDisplays,displays,HWC_DISPLAY_EXTERNAL);
     }
     return ret;
@@ -922,6 +920,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
 
 static int set(struct hwc_composer_device_1* dev,size_t numDisplays,
                    hwc_display_contents_1_t** displays, int target) {
+    //ALOGE("hwc set target: %d", target);
     char property[PROPERTY_VALUE_MAX];
     struct waydroid_hwc_composer_device_1* pdev = (struct waydroid_hwc_composer_device_1*)dev;
 
@@ -983,7 +982,7 @@ static int set(struct hwc_composer_device_1* dev,size_t numDisplays,
     	property_get("openfde.active_apps", property, "none");
     }else{
     	property_get("openfde1.active_apps", property, "none");
-	    ALOGE("num layers external %zu", contents->numHwLayers);
+	    //ALOGE("num layers external %zu", contents->numHwLayers);
     }
     std::string active_apps = std::string(property);
     std::string blacklist_apps = std::string("com.android.launcher3");

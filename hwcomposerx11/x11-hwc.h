@@ -212,6 +212,9 @@ struct display {
     int primary_x = 0;      //primary display X offset
     int primary_y = 0;      //primary display Y offset
     bool is_fullscreen = true;  //Initially full screen (for toggle state tracking)
+    int event_root_x = 0;
+    int event_root_y = 0;
+    bool mouse_left_btn_pressed = false;
 };
 
 struct buffer {
