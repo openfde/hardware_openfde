@@ -1541,12 +1541,12 @@ static int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
 }
 
 
-static int32_t hwc_attribute(struct waydroid_hwc_composer_device_1* pdev,
+static int32_t hwc_attribute(struct waydroid_hwc_composer_device_1* pdev, struct display *display,
                              const uint32_t attribute) {
     char property[PROPERTY_VALUE_MAX];
-    int width = pdev->display->full_width;
-    int height = pdev->display->full_height;
-    ALOGE("hwc_attribute width: %d, height: %d", width, height);
+    int width = display->full_width; //pdev->display->full_width;
+    int height = display->full_height; //pdev->display->full_height;
+    ALOGE("hwc_attribute display_type: %d width: %d, height: %d", display->display_type ,width, height);
     int density = 180;
 
     switch(attribute) {
@@ -1556,14 +1556,22 @@ static int32_t hwc_attribute(struct waydroid_hwc_composer_device_1* pdev,
             if (property_get("persist.openfde.width_padding", property, nullptr) > 0)
                 width -= atoi(property);
             std::string width_str = std::to_string(width);
-            property_set("openfde.display_width", width_str.c_str());
+            if(display->display_type == HWC_DISPLAY_PRIMARY){
+                property_set("openfde.display_width", width_str.c_str());
+            }else{
+                property_set("openfde.external_display_width", width_str.c_str());
+            }
             return width;
         }
         case HWC_DISPLAY_HEIGHT: {
             if (property_get("persist.openfde.height_padding", property, nullptr) > 0)
                 height -= atoi(property);
             std::string height_str = std::to_string(height);
-            property_set("openfde.display_height", height_str.c_str());
+            if(display->display_type == HWC_DISPLAY_PRIMARY){
+                property_set("openfde.display_height", height_str.c_str());
+            }else{
+                property_set("openfde.external_display_height", height_str.c_str());
+            }
             return height;
         }
         case HWC_DISPLAY_DPI_X:
@@ -1585,7 +1593,11 @@ static int hwc_get_display_attributes(struct hwc_composer_device_1* dev __unused
     struct waydroid_hwc_composer_device_1* pdev = (struct waydroid_hwc_composer_device_1*)dev;
     for (int i = 0; attributes[i] != HWC_DISPLAY_NO_ATTRIBUTE; i++) {
         if (disp == HWC_DISPLAY_PRIMARY || disp == HWC_DISPLAY_EXTERNAL) {
-            values[i] = hwc_attribute(pdev, attributes[i]);
+            if(disp == HWC_DISPLAY_PRIMARY){
+                values[i] = hwc_attribute(pdev, pdev->display, attributes[i]);
+            }else{
+                values[i] = hwc_attribute(pdev, pdev->secondary_display, attributes[i]);
+            }
             if (values[i] == -EINVAL) {
                 return -EINVAL;
             }
