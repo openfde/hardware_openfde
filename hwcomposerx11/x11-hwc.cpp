@@ -312,9 +312,10 @@ destroy_window(struct window *window, bool keep)
 static int
 ensure_pipe(struct display* display, int input_type)
 {
-    if (display->input_fd[input_type] == -1) {
+    if (display->input_fd[input_type] < 0) {
         display->input_fd[input_type] = open(INPUT_PIPE_NAME[input_type], O_WRONLY | O_NONBLOCK);
-        if (display->input_fd[input_type] == -1) {
+        ALOGI("ensure_pipe display->input_fd[%d]: %d", input_type, display->input_fd[input_type]);
+        if (display->input_fd[input_type] < 0) {
             ALOGE("Failed to open pipe to InputFlinger: %s", strerror(errno));
             return -1;
         }
