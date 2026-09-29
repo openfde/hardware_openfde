@@ -80,7 +80,6 @@ enum {
     INPUT_TOUCH_EXTERNAL,
     INPUT_KEYBOARD,
     INPUT_POINTER,
-    INPUT_POINTER_EXTERNAL,
     INPUT_TABLET,
     INPUT_TOTAL
 };
@@ -90,7 +89,6 @@ static const char *INPUT_PIPE_NAME[INPUT_TOTAL] = {
     "/dev/input/wl_touch_external_events",
     "/dev/input/wl_keyboard_events",
     "/dev/input/wl_pointer_events",
-    "/dev/input/wl_pointer_external_events",
     "/dev/input/wl_tablet_events"
 };
 

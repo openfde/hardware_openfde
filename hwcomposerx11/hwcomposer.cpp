@@ -181,10 +181,6 @@ static bool update_cursor_surface(struct display *disp, hwc_layer_1_t* fb_layer,
     }
 
     ALOGE("update_cursor_surface found cursor layer: %s", layer_name.c_str());
-    //if(property_get_bool("fde.force_relative_coordinates", false)){
-    //   x11_set_custom_cursor(disp, 0, 0, 0, windows);
-    //   return false; 
-    //}
     //fb_layer->compositionType = HWC_OVERLAY; // Not participating in SurfaceFlinger GPU compositing hide internal cursor
     disp->hide_cursor = false;
     int64_t mouse_icon_addr = property_get_int64("fde.mouse_icon_addr", 0);
@@ -204,6 +200,10 @@ static bool update_cursor_surface(struct display *disp, hwc_layer_1_t* fb_layer,
     if (!buf) {
         ALOGE("Failed to get wayland buffer");
         return false;
+    }
+    if(buf->width > 128 || buf->height > 128){
+        ALOGE("cursor size error");
+        return true;
     }
     int32_t icon_hotspot_x = property_get_int32("fde.mouse_icon_hotspot_x", 5);
     int32_t icon_hotspot_y = property_get_int32("fde.mouse_icon_hotspot_y", 5);
@@ -281,6 +281,7 @@ static int set_black_background(struct display *disp, struct window * win){
 
 static int prepare(hwc_composer_device_1_t* dev,
                        size_t numDisplays, hwc_display_contents_1_t** displays, int target) {
+    //ALOGE("prepare target: %d", target);
     struct waydroid_hwc_composer_device_1 *pdev = (struct waydroid_hwc_composer_device_1 *)dev;
 
     if (!numDisplays || !displays) return 0;
@@ -319,7 +320,6 @@ static int prepare(hwc_composer_device_1_t* dev,
     bool foundCursorLayer = false;
     for (size_t i = 0; i < contents->numHwLayers; i++) {
         hwc_layer_1_t* fb_layer = &contents->hwLayers[i];
-
         if (fb_layer->compositionType == HWC_FRAMEBUFFER_TARGET)
             continue;
         if (fb_layer->flags & HWC_SKIP_LAYER)
@@ -341,15 +341,11 @@ static int prepare(hwc_composer_device_1_t* dev,
         foundCursorLayer |= update_cursor_surface(disp, fb_layer, i, &windows);
     }
 
-    //ALOGE("fde_test prepare foundCursorLayer: %d", foundCursorLayer);
-    
-    //ALOGE("fde_test prepare disp->mouse_icon_addr begin: %ld", disp->mouse_icon_addr);
     if(!foundCursorLayer && disp->mouse_icon_addr != -1){
         disp->hide_cursor = true;
         disp->mouse_icon_addr = -1;
         
     }
-    //ALOGE("fde_test prepare disp->mouse_icon_addr end: %ld", disp->mouse_icon_addr);
 
     if(pdev->display->hide_cursor && pdev->secondary_display->hide_cursor){
         //x11_set_custom_cursor(disp, 0, 0, 0,&windows);
