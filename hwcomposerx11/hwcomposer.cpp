@@ -34,6 +34,13 @@
 #include <hardware/hwcomposer.h>
 #include <ui/Rect.h>
 #include <ui/GraphicBufferMapper.h>
+#if defined(__has_include)
+#if __has_include(<ui/PlaneLayout.h>)
+#include <ui/PlaneLayout.h>
+#include <vector>
+#define HWC_HAVE_GRALLOC4_PLANE_LAYOUT 1
+#endif
+#endif
 #include <libsync/sw_sync.h>
 #include <sync/sync.h>
 #include <drm_fourcc.h>
@@ -384,6 +391,50 @@ static void * produce_BGRA_8888(struct waydroid_hwc_composer_device_1 *pdev, sp<
 	return (void *)dst_gb->getNativeBuffer()->handle;
 }
 
+static bool try_get_stride_bytes_gralloc4(buffer_handle_t handle, uint32_t* out_stride_bytes) {
+#ifdef HWC_HAVE_GRALLOC4_PLANE_LAYOUT
+    if (handle == nullptr || out_stride_bytes == nullptr)
+        return false;
+    std::vector<android::ui::PlaneLayout> layouts;
+    if (android::GraphicBufferMapper::get().getPlaneLayouts(handle, &layouts) != android::NO_ERROR)
+        return false;
+    if (layouts.empty() || layouts[0].strideInBytes <= 0)
+        return false;
+    *out_stride_bytes = (uint32_t)layouts[0].strideInBytes;
+    return true;
+#else
+    (void)handle;
+    (void)out_stride_bytes;
+    return false;
+#endif
+}
+
+static bool fallback_stride_bytes_by_format(uint32_t width, int format, int usage, uint32_t* out_stride_bytes) {
+    sp<android::GraphicBuffer> gb_for_stride = new android::GraphicBuffer(width, 1,
+        format, 1, GRALLOC_USAGE_HW_COMPOSER |
+        GRALLOC_USAGE_HW_TEXTURE, std::string("gb_for_stride") + std::to_string(getpid()));
+    if (gb_for_stride->initCheck() != android::NO_ERROR) {
+        ALOGE("Failed to create gb_for_stride");
+        return false;
+    }
+    switch (format) {
+        case HAL_PIXEL_FORMAT_RGBA_8888:
+        case HAL_PIXEL_FORMAT_RGBX_8888:
+        case HAL_PIXEL_FORMAT_BGRA_8888:
+            *out_stride_bytes = gb_for_stride->getStride() * 4;
+            break;
+        case HAL_PIXEL_FORMAT_RGB_888:
+            *out_stride_bytes = gb_for_stride->getStride() * 3;
+            break;
+        case HAL_PIXEL_FORMAT_RGB_565:
+            *out_stride_bytes = gb_for_stride->getStride() * 2;
+            break;
+        default: //other formats need to test!!!
+            *out_stride_bytes = gb_for_stride->getStride();
+    }
+    return true;
+}
+
 static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, struct window *window, struct buffer *buf, int pixel_stride) {
 	int width,height, stride, format, prime_fd, size;
 	int usage = GRALLOC_USAGE_HW_TEXTURE;
@@ -429,30 +480,13 @@ static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pde
 	return ;
     }
     if (format != HAL_PIXEL_FORMAT_BGRA_8888) {
-	    sp<android::GraphicBuffer> gb_for_stride = new android::GraphicBuffer(width, height,
-		format, 1, GRALLOC_USAGE_HW_COMPOSER |
-		GRALLOC_USAGE_HW_TEXTURE, std::string("gb_for_stride") + std::to_string(getpid()));
-	    if (gb_for_stride->initCheck() != android::NO_ERROR) {
-		ALOGE("Failed to create gb_for_stride");
+	    uint32_t stride_bytes = 0;
+	    if (!try_get_stride_bytes_gralloc4(layer->handle, &stride_bytes) &&
+		!fallback_stride_bytes_by_format(width, format, usage, &stride_bytes)) {
+		ALOGE("Failed to resolve source stride for format %d", format);
 		return;
 	    }
-
-	    int stride_for_src_gb;
-	    switch (format) {
-		case HAL_PIXEL_FORMAT_RGBA_8888:
-		case HAL_PIXEL_FORMAT_RGBX_8888:
-		case HAL_PIXEL_FORMAT_BGRA_8888:
-		    stride_for_src_gb = gb_for_stride->getStride() * 4;
-		    break;
-		case HAL_PIXEL_FORMAT_RGB_888:
-		    stride_for_src_gb = gb_for_stride->getStride() * 3;
-		    break;
-		case HAL_PIXEL_FORMAT_RGB_565:
-		    stride_for_src_gb = gb_for_stride->getStride() * 2;
-		    break;
-		default: //other formats need to test!!!
-		    stride_for_src_gb = gb_for_stride->getStride();
-	    }
+	    int stride_for_src_gb = stride_bytes;
 
 	    // Create source GraphicBuffer from existing handle
 	    sp<android::GraphicBuffer> src_gb = new android::GraphicBuffer(
