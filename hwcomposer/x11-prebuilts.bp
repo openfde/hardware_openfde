@@ -39,7 +39,7 @@ cc_prebuilt_library_shared {
     ],
     proprietary : true,
     vendor: false,
-    visibility: ["//hardware/openfde/hwcomposerx11"],
+    visibility: ["//hardware/openfde/hwcomposer"],
 }
 cc_prebuilt_library_shared {
     name: "libX11-xcb",
@@ -65,7 +65,7 @@ cc_prebuilt_library_shared {
     ],
     proprietary : true,
     vendor: false,
-    visibility: ["//hardware/openfde/hwcomposerx11"],
+    visibility: ["//hardware/openfde/hwcomposer"],
 }
 cc_prebuilt_library_shared {
     name: "libxcb-shape",
@@ -91,7 +91,7 @@ cc_prebuilt_library_shared {
     ],
     proprietary : true,
     vendor: false,
-    visibility: ["//hardware/openfde/hwcomposerx11"],
+    visibility: ["//hardware/openfde/hwcomposer"],
 }
 cc_prebuilt_library_shared {
     name: "libX11",
@@ -117,7 +117,7 @@ cc_prebuilt_library_shared {
     ],
     proprietary : true,
     vendor: false,
-    visibility: ["//hardware/openfde/hwcomposerx11"],
+    visibility: ["//hardware/openfde/hwcomposer"],
 }
 
 cc_prebuilt_library_shared {
@@ -164,7 +164,7 @@ cc_prebuilt_library_shared {
     },
     proprietary : true,
     vendor: false,
-    visibility: ["//hardware/openfde/hwcomposerx11"],
+    visibility: ["//hardware/openfde/hwcomposer"],
 }
 
 cc_prebuilt_library_shared {
@@ -334,92 +334,6 @@ cc_prebuilt_library_shared {
     vendor: false,
 }
 
-cc_library_shared {
-    name: "hwcomposer.x11",
-    relative_install_path: "hw",
-    vendor: true,
-    shared_libs: [
-        "liblog",
-        "libutils",
-        "libcutils",
-        "libhardware",
-        "libhidlbase",
-        "libhidltransport",
-        "libhwbinder",
-        "libsync",
-        "libui",
-        "libdrm",
-        "libEGL",
-        "libGLESv2",
-        "libX11",
-        "libX11-xcb",
-        "libXrender",
-        "libxcb",
-        "libxcb-xinput",
-        "libxcb-randr",
-        "libxcb-imdkit",
-        "libxcb-util",
-        "libxcb-dri3",
-        "libxcb-shape",
-        "vendor.openfde.display@1.0",
-        "vendor.openfde.display@1.1",
-        "vendor.openfde.task@1.0",
-        "vendor.openfde.window@1.0",
-        "vendor.openfde.window@1.1",
-        "vendor.openfde.window@1.2",
-    ],
-    static_libs: [
-        "libwayland_client_static",
-        "libffi",
-        "libwayland_extension_client_protocols",
-        "libxkbcommon",
-    ],
-    srcs: [
-        "extension.cpp",
-        "hwcomposer.cpp",
-        "x11-hwc.cpp",
-        "WaydroidWindow.cpp",
-        "egl-tools.cpp",
-    ],
-    header_libs: [
-        "libsystem_headers",
-        "minigbm_headers",
-    ],
-    include_dirs: [
-        "system/core",
-        "system/core/libsync",
-        "system/core/libsync/include",
-        "device/generic/goldfish-opengl/shared/gralloc_cb/include",
-        "device/generic/goldfish-opengl/shared/qemupipe/include",
-        "device/generic/goldfish-opengl/shared/qemupipe/include-types",
-    ],
-
-    local_include_dirs: [
-        "include"
-    ],
-
-    arch : {
-        arm: {
-            enabled: false,
-        },
-        x86 : {
-            enabled : false,
-        },
-        x86_64 : {
-            enabled : false,
-        },
-        arm64: {
-            enabled: true,
-        },
-    },
-
-    cflags: [
-        "-DLOG_TAG=\"hwcomposer\"",
-        "-Wall",
-        "-Werror",
-        "-Wno-writable-strings",
-    ],
-    generated_sources: ["wayland_android_client_protocol_sources"],
-    generated_headers: ["wayland_android_client_protocol_headers"],
-}
+// 注意：X11 预编译库仅提供 arm64 版本，非 arm64 架构上这些模块被禁用，
+// 因此 hwcomposer.openfde 仅在 arm64 上编译 x11-backend.cpp 并链接这些库。
 

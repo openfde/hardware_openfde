@@ -20,7 +20,7 @@
 #include <hidl/MQDescriptor.h>
 #include <hidl/Status.h>
 
-#include "wayland-hwc.h"
+#include "hwc_backend.h"
 
 namespace vendor::openfde::window::implementation {
 
@@ -32,9 +32,10 @@ using ::android::hardware::Return;
 using ::android::hardware::Void;
 using ::android::sp;
 
+/* 统一的窗口 HIDL 服务实现，具体协议操作委托给 HwcBackend 子类 */
 struct OpenfdeWindow : public V1_2::IOpenfdeWindow {
   public:
-    OpenfdeWindow(struct display *display);
+    OpenfdeWindow(HwcBackend *backend, std::map<std::string, struct window *> *windows);
     // Methods from ::vendor::openfde::window::V1_0::IOpenfdeWindow follow.
     Return<bool> minimize(const hidl_string& packageName) override;
 
@@ -44,7 +45,8 @@ struct OpenfdeWindow : public V1_2::IOpenfdeWindow {
     // Methods from ::vendor::openfde::window::V1_2::IOpenfdeWindow follow.
     Return<void> setIdleInhibit(const hidl_string& packageName, bool enabled) override;
   private:
-    struct display *mDisplay;
+    HwcBackend *mBackend;
+    std::map<std::string, struct window *> *mWindows;
 };
 
 }  // namespace vendor::openfde::window::implementation
