@@ -143,7 +143,6 @@ int scroll_speed = 0;
 static double gesture_scaling_start_distance;
 static int gesture_scaling_stride;
 
-struct buffer;
 static void handle_pinch_update(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t time, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t scale, wl_fixed_t rotation);
 static void handle_pinch_end(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t serial, uint32_t time, int cancelled);
 static void pointer_axis_to_touch(struct display *display, int move, bool verticalScroll);
