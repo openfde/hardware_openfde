@@ -260,6 +260,8 @@ typedef struct {
     /* file descriptors */
     int prime_fd;
 
+    int  fd_runknown;
+    int  fd_reunknown[8];
 
     /* integers */
     int magic;
@@ -274,10 +276,22 @@ typedef struct {
     int height;
     int format;
     int stride; /* the stride in bytes. */
-    int b_unknown;
+    int bpp;
 
     int u_unknown;
     int p_unknown;
+
+    uint32_t id;
+    uint32_t num_planes;
+    uint32_t strides[4];
+    uint32_t offsets[4];
+    uint32_t sizes[4];
+    uint64_t format_modifier;
+    uint64_t reserved_region_size;
+    uint64_t total_size; /* Total allocation size */
+    char name[64];
+
+    uint64_t modifier;
     uint64_t f_unknown[3] __attribute__((aligned(8)));
     uint64_t s_unknown;
 
