@@ -117,3 +117,324 @@ genrule {
     cmd: "$(location wayland_scanner) client-header < $(in) > $(out)",
     out: ["wayland-android-client-protocol.h"],
 }
+
+// X11 后端依赖的预编译库（仅提供 arm64 版本）
+cc_prebuilt_library_shared {
+    name: "libXrender",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libXrender.so"],
+        },
+    },
+
+    shared_libs: [
+        "libX11",
+        "libxcb",
+        "libandroid-support",
+        "libdl",
+    ],
+    proprietary : true,
+    vendor: false,
+    visibility: ["//hardware/openfde/hwcomposer"],
+}
+cc_prebuilt_library_shared {
+    name: "libX11-xcb",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libX11-xcb.so"],
+        },
+    },
+
+    shared_libs: [
+        "libxcb",
+        "libandroid-support",
+        "libdl",
+    ],
+    proprietary : true,
+    vendor: false,
+    visibility: ["//hardware/openfde/hwcomposer"],
+}
+cc_prebuilt_library_shared {
+    name: "libxcb-shape",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libxcb-shape.so"],
+        },
+    },
+
+    shared_libs: [
+        "libxcb",
+        "libXau",
+        "libXdmcp",
+    ],
+    proprietary : true,
+    vendor: false,
+    visibility: ["//hardware/openfde/hwcomposer"],
+}
+cc_prebuilt_library_shared {
+    name: "libX11",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libX11.so"],
+        },
+    },
+
+    shared_libs: [
+        "libxcb",
+        "libandroid-support",
+        "libdl",
+    ],
+    proprietary : true,
+    vendor: false,
+    visibility: ["//hardware/openfde/hwcomposer"],
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb-dri3",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libxcb-dri3.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+        "libxcb",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
+
+cc_prebuilt_library_shared {
+    name: "libandroid-support",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libandroid-support.so"],
+        },
+    },
+    proprietary : true,
+    vendor: false,
+    visibility: ["//hardware/openfde/hwcomposer"],
+}
+
+cc_prebuilt_library_shared {
+    name: "libXau",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libXau.so"],
+        },
+    },
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libXdmcp",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libXdmcp.so"],
+        },
+    },
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libxcb.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb-util",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libxcb-util.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+        "libxcb",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb-imdkit",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libxcb-imdkit.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+        "libxcb",
+        "libxcb-util",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb-xinput",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libxcb-xinput.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+        "libxcb",
+        "libxcb-util",
+    ],
+    proprietary: true,
+    vendor: false,
+}
+
+cc_prebuilt_library_shared {
+    name: "libxcb-randr",
+    arch: {
+        arm: {
+            enabled: false,
+        },
+        x86 : {
+            enabled : false,
+        },
+        x86_64 : {
+            enabled : false,
+        },
+        arm64: {
+            srcs: ["lib/libxcb-randr.so"],
+        },
+    },
+    shared_libs: [
+        "libXau",
+        "libXdmcp",
+        "libxcb",
+        "libxcb-util",
+    ],
+    proprietary: true,
+    vendor: false,
+}
