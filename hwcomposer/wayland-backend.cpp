@@ -26,9 +26,15 @@
  * SOFTWARE.
  */
 
-#include "wayland-hwc.h"
+#include "wayland-backend.h"
 #include "egl-tools.h"
 
+#include <cutils/properties.h>
+#include <gralloc_handle.h>
+#include <cros_gralloc/cros_gralloc_handle.h>
+
+#include <sys/resource.h>
+#include <string.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,7 +83,49 @@
 
 #include "xdg-output-unstable-v1-client-protocol.h"
 
+namespace hwc_wayland {
+
 using ::android::hardware::hidl_string;
+
+/* 原 wayland-hwc.h 中的接口声明（本文件内实现，供文件内前后引用） */
+void
+handle_relative_motion(void *data, struct zwp_relative_pointer_v1*,
+        uint32_t, uint32_t, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t, wl_fixed_t);
+
+void
+destroy_buffer(struct buffer* buf);
+
+int
+create_android_wl_buffer(struct display *display, struct buffer *buffer,
+             int width, int height, int format,
+             int pixel_stride, buffer_handle_t target);
+
+int
+create_dmabuf_wl_buffer(struct display *display, struct buffer *buffer,
+             int width, int height, int hal_format, int format,
+             int prime_fd, int pixel_stride, int byte_stride,
+             int offset, uint64_t modifier, buffer_handle_t target);
+
+int
+create_shm_wl_buffer(struct display *display, struct buffer *buffer,
+             int width, int height, int format, int pixel_stride, buffer_handle_t target);
+
+void
+snapshot_inactive_app_window(struct display *display, struct window *window);
+
+struct display *
+create_display(const char* gralloc);
+void
+destroy_display(struct display *display);
+
+void
+destroy_window(struct window *window, bool keep = false);
+struct window *
+create_window(struct display *display, bool with_dummy, std::string appID, std::string taskID, hwc_color_t color);
+void
+choose_width_height(struct display* display, int32_t hint_width, int32_t hint_height);
+
+void find_primary(struct display *d);
 
 const int AXIS_TOUCH_SLOT_ID = 8;
 const int AXIS_TOUCH_TRACKING_ID = AXIS_TOUCH_SLOT_ID;
@@ -95,7 +143,6 @@ int scroll_speed = 0;
 static double gesture_scaling_start_distance;
 static int gesture_scaling_stride;
 
-struct buffer;
 static void handle_pinch_update(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t time, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t scale, wl_fixed_t rotation);
 static void handle_pinch_end(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t serial, uint32_t time, int cancelled);
 static void pointer_axis_to_touch(struct display *display, int move, bool verticalScroll);
@@ -2833,4 +2880,666 @@ destroy_display(struct display *display)
     wl_display_flush(display->display);
     wl_display_disconnect(display->display);
     delete display;
+}
+
+/*****************************************************************************
+ * 以下代码迁移自原 hwcomposer.cpp，为 Wayland 协议特有的合成/光标/呈现逻辑
+ *****************************************************************************/
+
+static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos);
+static void setup_viewport_destination(wp_viewport *viewport, hwc_rect_t frame, struct display *display);
+
+static void erase_cursor_layer_buffer(openfde_hwc_composer_device_1* pdev, buffer_handle_t handle){
+    auto it = pdev->display->buffer_map.find(handle);
+    if (it != pdev->display->buffer_map.end()) {
+        destroy_buffer(it->second);
+        pdev->display->buffer_map.erase(it);
+    }
+}
+
+static bool update_cursor_surface(openfde_hwc_composer_device_1* pdev, hwc_layer_1_t* fb_layer, size_t layer) {
+    if (!pdev->display->cursor_surface) {
+        return false;
+    }
+
+    std::string layer_name = pdev->display->layer_names[layer];
+
+    if (layer_name.substr(0, 6) != "Sprite" || fb_layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
+        return false;
+    }
+
+    fb_layer->compositionType = HWC_OVERLAY; // Not participating in SurfaceFlinger GPU compositing hide internal cursor
+
+    /*
+     * To update the wayland cursor, the fde.mouse_icon_addr system property was introduced.
+     * When the internal mouse shape changes, its value will change accordingly.
+     * Its value is set by SpriteController and PointerController.
+     */
+    int64_t mouse_icon_addr = property_get_int64("fde.mouse_icon_addr", 0);
+    if (pdev->display->mouse_icon_addr != mouse_icon_addr) {
+        pdev->display->mouse_icon_addr = mouse_icon_addr;
+        pdev->display->additional_refresh_cursor_times = 0;
+        erase_cursor_layer_buffer(pdev, fb_layer->handle);
+    }else{
+        if(pdev->display->additional_refresh_cursor_times > 60){      //Refresh the wayland cursor three additional times
+            return true;
+        }else{
+            erase_cursor_layer_buffer(pdev, fb_layer->handle);
+        }
+    }
+
+    struct buffer *buf = get_wl_buffer(pdev, fb_layer, layer);
+    if (!buf) {
+        ALOGE("Failed to get wayland buffer");
+        return true;
+    }
+
+    wl_surface_attach(pdev->display->cursor_surface, buf->buffer, 0, 0);
+    if (wl_surface_get_version(pdev->display->cursor_surface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
+        wl_surface_damage_buffer(pdev->display->cursor_surface, 0, 0, buf->width, buf->height);
+    else
+        wl_surface_damage(pdev->display->cursor_surface, 0, 0, buf->width, buf->height);
+    //locally_calculated_scale add for mutter env
+    if ((!pdev->display->viewporter && pdev->display->scale > 1) || pdev->display->scale > pdev->display->locally_calculated_scale) {
+        // With no viewporter the scale is guaranteed to be integer
+        wl_surface_set_buffer_scale(pdev->display->cursor_surface, (int)pdev->display->scale);
+    } else if (pdev->display->viewporter && pdev->display->scale != 1) {
+        setup_viewport_destination(pdev->display->cursor_viewport, fb_layer->displayFrame, pdev->display);
+    }
+
+    wl_surface_commit(pdev->display->cursor_surface);
+    int32_t icon_hotspot_x = property_get_int32("fde.mouse_icon_hotspot_x", 5);
+    int32_t icon_hotspot_y = property_get_int32("fde.mouse_icon_hotspot_y", 5);
+    if(pdev->display->pointer){
+        wl_pointer_set_cursor(pdev->display->pointer, pdev->display->serial,
+                                  pdev->display->cursor_surface, icon_hotspot_x, icon_hotspot_y);
+    }
+    pdev->display->additional_refresh_cursor_times++;
+
+    return true;
+}
+
+static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos)
+{
+    uint32_t format;
+    uint32_t pixel_stride;
+    uint32_t width;
+    uint32_t height;
+    if (layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
+        format = pdev->display->target_layer_handle_ext.format;
+        pixel_stride = pdev->display->target_layer_handle_ext.stride;
+        width = pdev->display->target_layer_handle_ext.width;
+        height = pdev->display->target_layer_handle_ext.height;
+    } else {
+        format = pdev->display->layer_handles_ext[pos].format;
+        pixel_stride = pdev->display->layer_handles_ext[pos].stride;
+        width = pdev->display->layer_handles_ext[pos].width;
+        height = pdev->display->layer_handles_ext[pos].height;
+    }
+
+    if (!width)
+        width = layer->displayFrame.right - layer->displayFrame.left;
+    if (!height)
+        height = layer->displayFrame.bottom - layer->displayFrame.top;
+
+    auto it = pdev->display->buffer_map.find(layer->handle);
+    if (it != pdev->display->buffer_map.end()) {
+        if (it->second->isShm) {
+            if (width != it->second->width || height != it->second->height) {
+                destroy_buffer(it->second);
+                pdev->display->buffer_map.erase(it);
+            } else {
+                update_shm_buffer(pdev->display, it->second);
+                return it->second;
+            }
+        } else
+            return it->second;
+    }
+
+    struct buffer *buf;
+    int ret = 0;
+
+    buf = new struct buffer();
+    if (pdev->display->gtype == GRALLOC_GBM) {
+        struct gralloc_handle_t *drm_handle = (struct gralloc_handle_t *)layer->handle;
+        if (pdev->display->dmabuf) {
+            ret = create_dmabuf_wl_buffer(pdev->display, buf, drm_handle->width, drm_handle->height, drm_handle->format, -1 /* compute drm format */, drm_handle->prime_fd, pixel_stride, drm_handle->stride, 0 /* offset */, drm_handle->modifier, layer->handle);
+        } else {
+            ret = create_shm_wl_buffer(pdev->display, buf, drm_handle->width, drm_handle->height, drm_handle->format, pixel_stride, layer->handle);
+            update_shm_buffer(pdev->display, buf);
+        }
+    } else if (pdev->display->gtype == GRALLOC_CROS) {
+        const struct cros_gralloc_handle *cros_handle = (const struct cros_gralloc_handle *)layer->handle;
+        if (pdev->display->dmabuf) {
+            ret = create_dmabuf_wl_buffer(pdev->display, buf, cros_handle->width, cros_handle->height, cros_handle->droid_format, cros_handle->format, cros_handle->fds[0], pixel_stride, cros_handle->strides[0], cros_handle->offsets[0], cros_handle->format_modifier, layer->handle);
+        } else {
+            ret = create_shm_wl_buffer(pdev->display, buf, cros_handle->width, cros_handle->height, cros_handle->droid_format, pixel_stride, layer->handle);
+            update_shm_buffer(pdev->display, buf);
+        }
+    } else if (pdev->display->gtype == GRALLOC_X100) {
+        const X100_native_handle_t *cros_handle = (const X100_native_handle_t *)layer->handle;
+        if (pdev->display->dmabuf) {
+            //stride = pixel_stride * 4 is based on aligned memory by page(32bit)
+            ret = create_dmabuf_wl_buffer(pdev->display, buf, cros_handle->iWidth, cros_handle->iHeight, cros_handle->iFormat, -1, cros_handle->fd[0], pixel_stride, pixel_stride *4, 0,DRM_FORMAT_MOD_INVALID, layer->handle);
+            if (ret != 0 ){
+                ALOGE("x100 create dmabuf wl buffer failed");
+            }
+        } else {
+            ret = create_shm_wl_buffer(pdev->display, buf, cros_handle->iWidth, cros_handle->iHeight, cros_handle->iFormat, pixel_stride, layer->handle);
+            if (ret != 0 ){
+                ALOGE("x100 create shm wl buffer failed");
+            }
+            update_shm_buffer(pdev->display, buf);
+        }
+    } else if (pdev->display->gtype == GRALLOC_FTG340) {
+        const gc_private_handle_t *gc_handle = (const gc_private_handle_t *)layer->handle;
+        if (pdev->display->dmabuf) {
+            ret = create_dmabuf_wl_buffer(pdev->display, buf, gc_handle->width, gc_handle->height, gc_handle->format,
+                -1, gc_handle->prime_fd, pixel_stride, gc_handle->stride, 0, DRM_FORMAT_MOD_INVALID, layer->handle);
+        } else {
+            ret = create_shm_wl_buffer(pdev->display, buf, gc_handle->width, gc_handle->height, gc_handle->format, pixel_stride, layer->handle);
+            update_shm_buffer(pdev->display, buf);
+        }
+    } else {
+        if (pdev->display->gtype == GRALLOC_ANDROID) {
+            ret = create_android_wl_buffer(pdev->display, buf, width, height, format, pixel_stride, layer->handle);
+        } else {
+            ret = create_shm_wl_buffer(pdev->display, buf, width, height, format, pixel_stride, layer->handle);
+            update_shm_buffer(pdev->display, buf);
+        }
+    }
+
+    if (ret) {
+        ALOGE("failed to create a wayland buffer");
+        return NULL;
+    }
+    pdev->display->buffer_map[layer->handle] = buf;
+
+    return pdev->display->buffer_map[layer->handle];
+}
+
+static void setup_viewport_destination(wp_viewport *viewport, hwc_rect_t frame, struct display *display)
+{
+    wp_viewport_set_destination(viewport,
+            fmax(1, ceil((frame.right - frame.left) / display->scale)),
+            fmax(1, ceil((frame.bottom - frame.top) / display->scale)));
+    ALOGW("setup_viewport_destination display->scale: %f", display->scale);
+}
+
+static struct wl_surface *get_surface(struct openfde_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, struct window *window, bool multi)
+{
+    pdev->display->windows[window->surface] = window;
+    if (!multi) {
+        pdev->display->layers[window->surface] = {
+            .x = layer->displayFrame.left,
+            .y = layer->displayFrame.top };
+        if ((!multi && pdev->display->scale != 1 && pdev->display->viewporter && !window->viewport) || pdev->display->preferred_scale) {
+            ALOGW("get_surface multi: %d, pdev->display->scale: %f, ", multi, pdev->display->scale);
+            if(pdev->display->preferred_scale){
+                pdev->display->preferred_scale = false;
+            }
+            if(!window->viewport){
+                window->viewport = wp_viewporter_get_viewport(pdev->display->viewporter, window->surface);
+            }
+            setup_viewport_destination(window->viewport, layer->displayFrame, pdev->display);
+
+            pdev->display->width = (int)(pdev->display->full_width/pdev->display->scale);
+            pdev->display->height = (int)(pdev->display->full_height/pdev->display->scale);
+
+            if(window->bg_viewport){
+                wl_surface_attach(window->bg_surface, window->bg_buffer, 0, 0);
+                wl_surface_damage_buffer(window->bg_surface, 0, 0, 1, 1);
+                wp_viewport_set_destination(window->bg_viewport, pdev->display->width, pdev->display->height);
+                ALOGW("get_surface window bg_viewport width: %d, height: %d", pdev->display->width, pdev->display->height);
+                wl_surface_commit(window->bg_surface);
+            }
+            find_primary(pdev->display);
+            if(pdev->display->num_outputs > 0 && pdev->display->primary){
+                xdg_toplevel_set_fullscreen(window->xdg_toplevel, pdev->display->primary->wl_output);
+                ALOGW("xdg_toplevel_set_fullscreen output registry_id: %u", pdev->display->primary->registry_id);
+            }else{
+                xdg_toplevel_set_fullscreen(window->xdg_toplevel, NULL);
+                ALOGW("xdg_toplevel_set_fullscreen NULL");
+            }
+        }
+        return window->surface;
+    }
+
+    struct wl_surface *surface = NULL;
+    struct wl_subsurface *subsurface = NULL;
+    struct wp_viewport *viewport = NULL;
+
+    if (window->surfaces.find(window->lastLayer) == window->surfaces.end()) {
+        surface = wl_compositor_create_surface(pdev->display->compositor);
+        subsurface = wl_subcompositor_get_subsurface(pdev->display->subcompositor,
+                                                     surface,
+                                                     window->surface);
+        if (pdev->display->viewporter)
+            viewport = wp_viewporter_get_viewport(pdev->display->viewporter, surface);
+        window->surfaces[window->lastLayer] = surface;
+        window->subsurfaces[window->lastLayer] = subsurface;
+        window->viewports[window->lastLayer] = viewport;
+    }
+
+    hwc_rect_t sourceCrop = layer->sourceCropi;
+
+    if (layer->transform & HWC_TRANSFORM_ROT_90) {
+        sourceCrop.left = layer->sourceCropi.top;
+        sourceCrop.top = layer->sourceCropi.left;
+        sourceCrop.right = layer->sourceCropi.bottom;
+        sourceCrop.bottom = layer->sourceCropi.right;
+    }
+
+    if (pdev->display->viewporter) {
+        wp_viewport_set_source(window->viewports[window->lastLayer],
+                               wl_fixed_from_double(fmax(0, pdev->display->viewporter ? sourceCrop.left : sourceCrop.left / pdev->display->scale)),
+                               wl_fixed_from_double(fmax(0, pdev->display->viewporter ? sourceCrop.top : sourceCrop.top / pdev->display->scale)),
+                               wl_fixed_from_double(fmax(1, pdev->display->viewporter ? (sourceCrop.right - sourceCrop.left) :
+                                                                                        (sourceCrop.right - sourceCrop.left) / pdev->display->scale)),
+                               wl_fixed_from_double(fmax(1, pdev->display->viewporter ? (sourceCrop.bottom - sourceCrop.top) :
+                                                                                        (sourceCrop.bottom - sourceCrop.top) / pdev->display->scale)));
+
+        setup_viewport_destination(window->viewports[window->lastLayer], layer->displayFrame, pdev->display);
+    }
+
+    wl_subsurface_set_position(window->subsurfaces[window->lastLayer],
+                               floor(layer->displayFrame.left / pdev->display->scale),
+                               floor(layer->displayFrame.top / pdev->display->scale));
+
+    pdev->display->layers[window->surfaces[window->lastLayer]] = {
+        .x = layer->displayFrame.left,
+        .y = layer->displayFrame.top };
+    return window->surfaces[window->lastLayer];
+}
+
+static void
+feedback_sync_output(void *, struct wp_presentation_feedback *,
+             struct wl_output *)
+{
+}
+
+static void
+feedback_presented(void *data,
+           struct wp_presentation_feedback *feedback,
+           uint32_t tv_sec_hi,
+           uint32_t tv_sec_lo,
+           uint32_t tv_nsec,
+           uint32_t,
+           uint32_t,
+           uint32_t,
+           uint32_t)
+{
+    struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)data;
+    wp_presentation_feedback_destroy(feedback);
+
+    pthread_mutex_lock(&pdev->vsync_lock);
+    pdev->last_vsync_ns = (((uint64_t)tv_sec_hi << 32) + tv_sec_lo) * 1e9 + tv_nsec;
+    pthread_mutex_unlock(&pdev->vsync_lock);
+}
+
+static void
+feedback_discarded(void *, struct wp_presentation_feedback *feedback)
+{
+    wp_presentation_feedback_destroy(feedback);
+}
+
+static const struct wp_presentation_feedback_listener feedback_listener = {
+    feedback_sync_output,
+    feedback_presented,
+    feedback_discarded
+};
+
+}  // namespace hwc_wayland
+
+/*****************************************************************************
+ * WaylandBackend：HwcBackend 的 Wayland 协议子类实现
+ *****************************************************************************/
+
+static const struct zwp_relative_pointer_v1_listener openfde_relative_pointer_listener = {
+    hwc_wayland::handle_relative_motion,
+};
+
+void WaylandBackend::preInit() {
+    char property[PROPERTY_VALUE_MAX];
+    if (property_get("openfde.wayland_display", property, "wayland-0") > 0) {
+        setenv("WAYLAND_DISPLAY", property, 1);
+    }
+}
+
+bool WaylandBackend::createDisplay(const char *gralloc) {
+    display = hwc_wayland::create_display(gralloc);
+    if (!display) {
+        ALOGE("failed to open wayland connection");
+        return false;
+    }
+    ALOGE("wayland display %p", display);
+    return true;
+}
+
+void WaylandBackend::postDisplayInit() {
+    // Initialize width and height with user-provided overrides if any
+    hwc_wayland::choose_width_height(display, 0, 0);
+
+    display->cursor_surface =
+        wl_compositor_create_surface(display->compositor);
+    if (display->viewporter) {
+        display->cursor_viewport =
+            wp_viewporter_get_viewport(display->viewporter, display->cursor_surface);
+    }
+}
+
+void *WaylandBackend::eventThreadTrampoline(void *data) {
+    WaylandBackend *self = static_cast<WaylandBackend*>(data);
+    int ret = 0;
+
+    setpriority(PRIO_PROCESS, 0, HAL_PRIORITY_URGENT_DISPLAY);
+
+    while (ret != -1)
+        ret = wl_display_dispatch(self->display->display);
+
+    ALOGE("*** %s: Wayland client was disconnected: %s", __PRETTY_FUNCTION__, strerror(ret));
+
+    return NULL;
+}
+
+void WaylandBackend::startEventThread() {
+    int ret = pthread_create(&pdev->event_thread, NULL, &WaylandBackend::eventThreadTrampoline, this);
+    if (ret) {
+        ALOGE("openfde_hw_composer could not start wayland event thread\n");
+    }
+}
+
+void WaylandBackend::destroyDisplay() {
+    hwc_wayland::destroy_display(display);
+
+    pthread_kill(pdev->event_thread, SIGTERM);
+    pthread_join(pdev->event_thread, NULL);
+}
+
+struct window *WaylandBackend::createWindow(bool use_subsurfaces, const std::string &appID,
+                                            const std::string &taskID, hwc_color_t color) {
+    return hwc_wayland::create_window(display, use_subsurfaces, appID, taskID, color);
+}
+
+void WaylandBackend::destroyWindow(struct window *window, bool keep) {
+    hwc_wayland::destroy_window(window, keep);
+}
+
+struct buffer *WaylandBackend::getLayerBuffer(hwc_layer_1_t *layer, size_t pos,
+                                              struct window *) {
+    return hwc_wayland::get_wl_buffer(pdev, layer, pos);
+}
+
+void WaylandBackend::destroyBuffer(struct buffer *buf) {
+    hwc_wayland::destroy_buffer(buf);
+}
+
+bool WaylandBackend::updateCursorSurface(hwc_layer_1_t *fb_layer, size_t layer) {
+    return hwc_wayland::update_cursor_surface(pdev, fb_layer, layer);
+}
+
+void WaylandBackend::hideCursor() {
+    if (display->pointer) {
+        wl_pointer_set_cursor(display->pointer, display->serial, NULL, 0, 0);
+    }
+    ALOGI("wayland cursor hidden");
+}
+
+std::string WaylandBackend::getBlacklistApps() {
+    char property[PROPERTY_VALUE_MAX];
+    property_get("openfde.blacklist_apps", property, "com.android.launcher3");
+    return std::string(property);
+}
+
+bool WaylandBackend::handleFallbackLayer(const std::string &layerRawName, hwc_layer_1_t *fb_layer,
+                                         size_t layer, struct window **out_window) {
+    *out_window = nullptr;
+    if (layerRawName == "Sprite" && display->pointer_surface) {
+        if (display->cursor_surface) {
+            struct buffer *buf = hwc_wayland::get_wl_buffer(pdev, fb_layer, layer);
+            if (!buf) {
+                ALOGE("Failed to get wayland buffer");
+                if (fb_layer->acquireFenceFd != -1) {
+                    close(fb_layer->acquireFenceFd);
+                }
+                return true;
+            }
+
+            wl_surface_attach(display->cursor_surface, buf->buffer, 0, 0);
+            if (wl_surface_get_version(display->cursor_surface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
+                wl_surface_damage_buffer(display->cursor_surface, 0, 0, buf->width, buf->height);
+            else
+                wl_surface_damage(display->cursor_surface, 0, 0, buf->width, buf->height);
+            if (!display->viewporter && display->scale > 1) {
+                // With no viewporter the scale is guaranteed to be integer
+                wl_surface_set_buffer_scale(display->cursor_surface, (int)display->scale);
+            } else if (display->viewporter && display->scale != 1) {
+                hwc_wayland::setup_viewport_destination(display->cursor_viewport, fb_layer->displayFrame, display);
+            }
+
+            wl_surface_commit(display->cursor_surface);
+
+            if (fb_layer->acquireFenceFd != -1) {
+                close(fb_layer->acquireFenceFd);
+            }
+            return true;
+        } else {
+            for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
+                if (it->second) {
+                    if (it->second->surface == display->pointer_surface) {
+                        *out_window = it->second;
+                        break;
+                    }
+                    for (auto itt = it->second->surfaces.begin(); itt != it->second->surfaces.end(); itt++) {
+                        if (itt->second == display->pointer_surface) {
+                            *out_window = it->second;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (layerRawName == "InputMethod") {
+        if (pdev->windows.find(layerRawName) == pdev->windows.end()) {
+            pdev->windows[layerRawName] = createWindow(pdev->use_subsurface, layerRawName, "none", {0, 0, 0, 0});
+            std::string windows_size_str = std::to_string(pdev->windows.size());
+            property_set("openfde.open_windows", windows_size_str.c_str());
+        }
+        if (pdev->windows.find(layerRawName) != pdev->windows.end())
+            *out_window = pdev->windows[layerRawName];
+    }
+    return false;
+}
+
+void WaylandBackend::presentLayer(struct window *window, struct buffer *buf, hwc_layer_1_t *layer) {
+    struct wl_surface *surface = hwc_wayland::get_surface(pdev, layer, window, pdev->use_subsurface);
+    if (!surface) {
+        ALOGE("Failed to get surface");
+        return;
+    }
+
+    wl_surface_attach(surface, buf->buffer, 0, 0);
+    if (wl_surface_get_version(surface) >= WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION)
+        wl_surface_damage_buffer(surface, 0, 0, buf->width, buf->height);
+    else
+        wl_surface_damage(surface, 0, 0, buf->width, buf->height);
+    if (!display->viewporter && display->scale > 1) {
+        // With no viewporter the scale is guaranteed to be integer
+        wl_surface_set_buffer_scale(surface, (int)display->scale);
+    }
+    switch (layer->transform) {
+        case HWC_TRANSFORM_FLIP_H:
+            wl_surface_set_buffer_transform(surface, WL_OUTPUT_TRANSFORM_FLIPPED_180);
+            break;
+        case HWC_TRANSFORM_FLIP_V:
+            wl_surface_set_buffer_transform(surface, WL_OUTPUT_TRANSFORM_FLIPPED);
+            break;
+        case HWC_TRANSFORM_ROT_90:
+            wl_surface_set_buffer_transform(surface, WL_OUTPUT_TRANSFORM_90);
+            break;
+        case HWC_TRANSFORM_ROT_180:
+            wl_surface_set_buffer_transform(surface, WL_OUTPUT_TRANSFORM_180);
+            break;
+        case HWC_TRANSFORM_ROT_270:
+            wl_surface_set_buffer_transform(surface, WL_OUTPUT_TRANSFORM_270);
+            break;
+        case HWC_TRANSFORM_FLIP_H_ROT_90:
+            wl_surface_set_buffer_transform(surface, WL_OUTPUT_TRANSFORM_FLIPPED_270);
+            break;
+        case HWC_TRANSFORM_FLIP_V_ROT_90:
+            wl_surface_set_buffer_transform(surface, WL_OUTPUT_TRANSFORM_FLIPPED_90);
+            break;
+        default:
+            wl_surface_set_buffer_transform(surface, WL_OUTPUT_TRANSFORM_NORMAL);
+            break;
+    }
+
+    struct wp_presentation *pres = window->display->presentation;
+    if (pres) {
+        buf->feedback = wp_presentation_feedback(pres, surface);
+        wp_presentation_feedback_add_listener(buf->feedback,
+                          &hwc_wayland::feedback_listener, pdev);
+    }
+
+    wl_surface_commit(surface);
+}
+
+void WaylandBackend::endFrame(const std::string &active_apps, const std::string &single_layer_tid) {
+    // Layers order is changed from SF so we rearrange wayland surfaces
+    if (display->geo_changed) {
+        for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
+            if (it->second) {
+                // This window has no changes in layers, leaving it
+                if (!it->second->lastLayer)
+                    continue;
+                // Neutralize unused surfaces
+                for (size_t l = it->second->lastLayer; l < it->second->surfaces.size(); l++) {
+                    if (it->second->surfaces.find(l) != it->second->surfaces.end()) {
+                        wl_surface_attach(it->second->surfaces[l], NULL, 0, 0);
+                        wl_surface_commit(it->second->surfaces[l]);
+                    }
+                }
+            }
+        }
+        display->geo_changed = false;
+    }
+
+    if (!pdev->multi_windows && single_layer_tid.length() && active_apps != "Openfde") {
+        for (auto const& [layer_tid, window] : pdev->windows) {
+            // Replace inactive app window buffer with snapshot in staged mode
+            if (layer_tid != single_layer_tid && !window->snapshot_buffer) {
+                display->egl_work_queue.push_back(std::bind(hwc_wayland::snapshot_inactive_app_window, display, window));
+            }
+        }
+        if (!display->egl_work_queue.empty()) {
+            sem_post(&display->egl_go);
+            sem_wait(&display->egl_done);
+        }
+    }
+
+    if (pdev->use_subsurface)
+        for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++)
+            if (it->second)
+                wl_surface_commit(it->second->surface);
+    wl_display_flush(display->display);
+}
+
+bool WaylandBackend::minimizeWindow(const std::string &packageName,
+                                    std::map<std::string, struct window *> *) {
+    char property[PROPERTY_VALUE_MAX];
+
+    if (!display->wm_base)
+        return false;
+
+    property_get("openfde.active_apps", property, "Openfde");
+    if (!strcmp(property, "Openfde"))
+        return false;
+
+    std::scoped_lock lock(display->windowsMutex);
+    for (auto it = display->windows.begin(); it != display->windows.end(); it++) {
+        struct window* window = it->second;
+        if (window && window->appID == packageName) {
+            xdg_toplevel_set_minimized(window->xdg_toplevel);
+            return true;
+        }
+    }
+    return false;
+}
+
+void WaylandBackend::setPointerCapture(const std::string &packageName, bool enabled) {
+    char property[PROPERTY_VALUE_MAX];
+    std::string windowName = packageName;
+
+    if (!display->pointer_constraints)
+        return;
+
+    if (!display->pointer)
+        return;
+
+    property_get("openfde.active_apps", property, "Openfde");
+    if (!strcmp(property, "Openfde"))
+        windowName = "Openfde";
+
+    std::scoped_lock lock(display->windowsMutex);
+    for (auto it = display->windows.begin(); it != display->windows.end(); it++) {
+        struct window* window = it->second;
+        if (window && window->appID == windowName) {
+            if (enabled && window->locked_pointer == nullptr) {
+                window->locked_pointer = zwp_pointer_constraints_v1_lock_pointer(
+                        display->pointer_constraints,
+                        window->surface, display->pointer, nullptr,
+                        ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT);
+                if (display->relative_pointer == nullptr) {
+                    display->relative_pointer = zwp_relative_pointer_manager_v1_get_relative_pointer(
+                            display->relative_pointer_manager, display->pointer);
+                    zwp_relative_pointer_v1_add_listener(display->relative_pointer, &openfde_relative_pointer_listener, display);
+                }
+            } else if (!enabled && window->locked_pointer != nullptr) {
+                zwp_locked_pointer_v1_destroy(window->locked_pointer);
+                window->locked_pointer = nullptr;
+                bool anyLocks = false;
+                for (auto jt = display->windows.begin(); jt != display->windows.end(); jt++) {
+                    struct window* window = jt->second;
+                    if (window->locked_pointer) {
+                        anyLocks = true;
+                        break;
+                    }
+                }
+                if (!anyLocks) {
+                    zwp_relative_pointer_v1_destroy(display->relative_pointer);
+                    display->relative_pointer = nullptr;
+                }
+            }
+            break;
+        }
+    }
+}
+
+void WaylandBackend::setIdleInhibit(const std::string &task, bool enabled) {
+    char property[PROPERTY_VALUE_MAX];
+    std::string taskID = task;
+
+    if (!display->idle_manager)
+        return;
+
+    property_get("openfde.active_apps", property, "Openfde");
+    if (!strcmp(property, "Openfde"))
+        taskID = "0";
+
+    std::scoped_lock lock(display->windowsMutex);
+    for (auto it = display->windows.begin(); it != display->windows.end(); it++) {
+        struct window* window = it->second;
+        if (window && window->isActive && (window->taskID == taskID || taskID == "*")) {
+            ALOGI("%sinhibiting sleep from %s#%s", enabled ? "" : "not ", window->appID.c_str(), window->taskID.c_str());
+            if (enabled && window->idle_inhibitor == nullptr) {
+                window->idle_inhibitor = zwp_idle_inhibit_manager_v1_create_inhibitor(
+                        display->idle_manager,
+                        window->surface);
+            } else if (!enabled && window->idle_inhibitor != nullptr) {
+                zwp_idle_inhibitor_v1_destroy(window->idle_inhibitor);
+                window->idle_inhibitor = nullptr;
+            }
+        }
+    }
 }

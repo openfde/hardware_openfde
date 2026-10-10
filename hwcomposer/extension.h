@@ -22,7 +22,7 @@
 #include <hidl/MQDescriptor.h>
 #include <hidl/Status.h>
 
-#include "wayland-hwc.h"
+#include "hwc_backend.h"
 
 namespace vendor {
 namespace openfde {

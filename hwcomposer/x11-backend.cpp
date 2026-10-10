@@ -26,8 +26,14 @@
  * SOFTWARE.
  */
 
-#include "x11-hwc.h"
+#include "x11-backend.h"
 #include "egl-tools.h"
+
+#include <cutils/properties.h>
+#include <gralloc_handle.h>
+#include <cros_gralloc/cros_gralloc_handle.h>
+#include <gralloc_cb_bp.h>
+#include <ui/GraphicBuffer.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -65,6 +71,7 @@
 #include <X11/XKBlib.h>
 #include <xcb/xinput.h>
 #include <xcb/randr.h>
+#include <xcb/shape.h>
 #include <xcb/xcb_icccm.h>
 
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
@@ -78,7 +85,44 @@
 #include "fractional-scale-v1-client-protocol.h"
 #include <pointer-gestures-unstable-v1-client-protocol.h>
 
+namespace hwc_x11 {
+
 using ::android::hardware::hidl_string;
+
+/* 原 x11-hwc.h 中的接口声明（本文件内实现，供文件内前后引用） */
+void
+destroy_buffer(struct display *display, struct buffer* buf);
+
+struct display *
+create_display(const char* gralloc);
+void
+destroy_display(struct display *display);
+int remove_title(xcb_connection_t *conn, xcb_window_t main_win);
+
+void
+destroy_window(struct window *window, bool keep = false);
+struct window *
+create_window(struct display *display, bool with_dummy, std::string appID, std::string taskID, hwc_color_t color);
+void
+choose_width_height(struct display* display, int32_t hint_width, int32_t hint_height);
+
+void forward_event(xcb_xim_t *im, xcb_xic_t ic, xcb_key_press_event_t *event, void *user_data);
+void commit_string(xcb_xim_t *im, xcb_xic_t ic, uint32_t flag, char *str,
+                   uint32_t length, uint32_t *keysym, size_t nKeySym,
+                   void *user_data);
+void disconnected(xcb_xim_t *im, void *user_data);
+void create_ic_callback(xcb_xim_t *im, xcb_xic_t new_ic, void *user_data);
+void open_im_callback(xcb_xim_t *im, void *user_data);
+void update_spot_location(xcb_xim_t *im, xcb_xic_t ic, xcb_point_t spot);
+void set_window_title(xcb_connection_t *connection, xcb_window_t window, const std::string &title);
+void set_window_class(xcb_connection_t *connection, xcb_window_t window, const std::string &instance_name, const std::string &class_name);
+void disable_auto_repeat(Display *display);
+void enable_auto_repeat(Display *display);
+int create_shm_buffer(struct buffer *buffer, int width, int height, int format, int pixel_stride, buffer_handle_t target);
+bool isValidInteger(const std::string& str);
+bool isStartWithSpecialSymbols(const std::string& layer_name);
+bool isStartWithTidSymbols(const std::string& layer_name);
+int add_title(xcb_connection_t *conn, xcb_window_t main_win);
 
 const int AXIS_TOUCH_SLOT_ID = 8;
 const int AXIS_TOUCH_TRACKING_ID = AXIS_TOUCH_SLOT_ID;
@@ -2601,5 +2645,888 @@ create_shm_buffer(struct buffer *buffer, int width, int height, int format, int 
     }
     close(fd);
     return 0;
+}
+
+/*****************************************************************************
+ * 以下代码迁移自原 hwcomposerx11/hwcomposer.cpp，为 X11 协议特有的合成/光标/呈现逻辑
+ *****************************************************************************/
+
+static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos, struct window *window);
+
+int cancel_maximum(xcb_connection_t *conn, xcb_screen_t * screen, xcb_window_t main_win){
+    // 取消窗口最大化（移除 _NET_WM_STATE_MAXIMIZED_HORZ 和 _NET_WM_STATE_MAXIMIZED_VERT）
+    xcb_intern_atom_cookie_t state_cookie = xcb_intern_atom(conn, 0, strlen("_NET_WM_STATE"), "_NET_WM_STATE");
+    xcb_intern_atom_cookie_t max_horz_cookie = xcb_intern_atom(conn, 0, strlen("_NET_WM_STATE_MAXIMIZED_HORZ"), "_NET_WM_STATE_MAXIMIZED_HORZ");
+    xcb_intern_atom_cookie_t max_vert_cookie = xcb_intern_atom(conn, 0, strlen("_NET_WM_STATE_MAXIMIZED_VERT"), "_NET_WM_STATE_MAXIMIZED_VERT");
+
+    xcb_intern_atom_reply_t *state_atom = xcb_intern_atom_reply(conn, state_cookie, NULL);
+    xcb_intern_atom_reply_t *max_horz_atom = xcb_intern_atom_reply(conn, max_horz_cookie, NULL);
+    xcb_intern_atom_reply_t *max_vert_atom = xcb_intern_atom_reply(conn, max_vert_cookie, NULL);
+
+    if (state_atom && max_horz_atom && max_vert_atom) {
+        xcb_client_message_event_t ev ;
+        ev.response_type = XCB_CLIENT_MESSAGE;
+        ev.format = 32;
+        ev.window = main_win;
+        ev.type = state_atom->atom;
+        ev.data.data32[0] = 0; // _NET_WM_STATE_REMOVE
+        ev.data.data32[1] = max_horz_atom->atom;
+        ev.data.data32[2] = max_vert_atom->atom;
+        ev.data.data32[3] = 1;
+        ev.data.data32[4] = 0;
+        xcb_send_event(conn, 0, screen->root,
+            XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+            (const char *)&ev);
+    }
+    return 0;
+}
+
+void get_input_shape(xcb_connection_t *conn, xcb_window_t window) {
+    if (!xcb_get_extension_data(conn, &xcb_shape_id)->present) {
+        ALOGE("Shape extension not available\n");
+        return;
+    }
+
+    xcb_shape_get_rectangles_reply_t *reply = xcb_shape_get_rectangles_reply(
+        conn, xcb_shape_get_rectangles(conn, window, XCB_SHAPE_SK_INPUT), NULL);
+    if (!reply) {
+        ALOGE("Failed to query input shape\n");
+        return;
+    }
+
+    int num_rects = xcb_shape_get_rectangles_rectangles_length(reply);
+    xcb_rectangle_t *rects = xcb_shape_get_rectangles_rectangles(reply);
+    ALOGI("hwc_set Current input shape (%d rectangles):\n", num_rects);
+    for (int i = 0; i < num_rects; i++) {
+        ALOGE("  hwc_set rectangle %d: x=%d, y=%d, width=%u, height=%u\n",
+               i, rects[i].x, rects[i].y, rects[i].width, rects[i].height);
+    }
+
+    free(reply);
+}
+
+static void erase_cursor_layer_buffer(openfde_hwc_composer_device_1* pdev, buffer_handle_t handle){
+    auto it = pdev->display->buffer_map.find(handle);
+    if (it != pdev->display->buffer_map.end()) {
+        destroy_buffer(pdev->display, it->second);
+        pdev->display->buffer_map.erase(it);
+    }
+}
+
+Cursor create_empty_cursor(Display *display, Window root) {
+    // Create a 1x1 empty pixmap (transparent)
+    Pixmap empty_pixmap = XCreatePixmap(display, root, 1, 1, 1);
+
+    // Create an empty mask (for transparency)
+    Pixmap mask_pixmap = XCreatePixmap(display, root, 1, 1, 1);
+
+    // Create a graphics context
+    XGCValues xgc;
+    GC gc = XCreateGC(display, empty_pixmap, 0, &xgc);
+
+    // Clear both pixmaps (fill them with "0", meaning transparency)
+    XSetForeground(display, gc, 0);
+    XFillRectangle(display, empty_pixmap, gc, 0, 0, 1, 1);
+    XFillRectangle(display, mask_pixmap, gc, 0, 0, 1, 1);
+
+    // Create an empty cursor with the transparent pixmap and mask
+    XColor black;
+    black.red = black.green = black.blue = 0;
+    Cursor cursor = XCreatePixmapCursor(display, empty_pixmap, mask_pixmap, &black, &black, 0, 0);
+
+    // Free resources
+    XFreeGC(display, gc);
+    XFreePixmap(display, empty_pixmap);
+    XFreePixmap(display, mask_pixmap);
+
+    return cursor;
+}
+
+static void x11_set_custom_cursor(openfde_hwc_composer_device_1* pdev, Picture xpicture, int hot_x, int hot_y) {
+    ALOGD("x11_set_custom_cursor hot_x: %d, hot_y: %d", hot_x, hot_y);
+    struct display *display = pdev->display;
+
+    if(!display)
+       return;
+
+    if(!xpicture){
+        ALOGE("error xpicture is null");
+        Cursor empty_cursor = create_empty_cursor(pdev->display->x11display, pdev->display->xcbscreen->root);
+        std::scoped_lock lock(pdev->display->windowsMutex);
+        for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
+            if (it->second){
+                XDefineCursor(display->x11display, it->second->xcbwindow, empty_cursor);
+            }
+        }
+        return;
+    }
+
+    // Create the cursor from the picture
+    Cursor cursor = XRenderCreateCursor(display->x11display, xpicture, hot_x, hot_y);
+    if(cursor == None1){
+        return;
+    }
+    std::scoped_lock lock(pdev->display->windowsMutex);
+    for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
+        if (it->second){
+            XDefineCursor(display->x11display, it->second->xcbwindow, cursor);
+        }
+    }
+
+}
+
+static bool update_cursor_surface(openfde_hwc_composer_device_1* pdev, hwc_layer_1_t* fb_layer, size_t layer) {
+    std::string layer_name = pdev->display->layer_names[layer];
+
+    if (layer_name.substr(0, 6) != "Sprite" || fb_layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
+        return false;
+    }
+
+    fb_layer->compositionType = HWC_OVERLAY; // Not participating in SurfaceFlinger GPU compositing hide internal cursor
+    int64_t mouse_icon_addr = property_get_int64("fde.mouse_icon_addr", 0);
+    if (pdev->display->mouse_icon_addr != mouse_icon_addr) {
+        pdev->display->mouse_icon_addr = mouse_icon_addr;
+        pdev->display->additional_refresh_cursor_times = 0;
+        erase_cursor_layer_buffer(pdev, fb_layer->handle);
+    }else{
+        if(pdev->display->additional_refresh_cursor_times > 60){      //Refresh the wayland cursor three additional times
+            return true;
+        }else{
+            erase_cursor_layer_buffer(pdev, fb_layer->handle);
+        }
+    }
+
+    struct buffer *buf = get_wl_buffer(pdev, fb_layer, layer, NULL);
+    if (!buf) {
+        ALOGE("Failed to get wayland buffer");
+        return false;
+    }
+    int32_t icon_hotspot_x = property_get_int32("fde.mouse_icon_hotspot_x", 5);
+    int32_t icon_hotspot_y = property_get_int32("fde.mouse_icon_hotspot_y", 5);
+    x11_set_custom_cursor(pdev, buf->xpicture, icon_hotspot_x, icon_hotspot_y);
+    pdev->display->additional_refresh_cursor_times++;
+    return true;
+}
+
+
+static int set_black_background(struct openfde_hwc_composer_device_1 * pdev, struct window * win){
+	if (win->rects.size() <= 1) {
+		return 0;
+	}
+	int min_x = INT_MAX, min_y = INT_MAX , cropx = 0, cropy = 0;
+	int max_right = INT_MIN, max_bottom = INT_MIN;
+	// Calculate bounding box from all rectangles
+	for (size_t i = 0; i < win->rects.size(); i++) {
+		const auto& rect = win->rects[i];
+		const auto& crop = win->crops[i];
+		min_x = std::min(min_x, (int)rect.x);
+		if (min_x == rect.x){
+			cropx = crop.left;
+		}
+		min_y = std::min(min_y, (int)rect.y);
+		if (min_y == rect.y) {
+			cropy = crop.top;
+		}
+		max_right = std::max(max_right, (int)(rect.x + rect.width));
+		max_bottom = std::max(max_bottom, (int)(rect.y + rect.height));
+	}
+
+	// Get outer frame dimensions
+	int frame_x = min_x;
+	int frame_y = min_y;
+	int border = 10;
+	int borderAndRadius = 14;
+	int src_x = fmax(0, cropx);
+	int src_y = fmax(0, cropy);
+	int frame_width = max_right - min_x;
+	int frame_height = max_bottom - min_y;
+	if (frame_width < pdev->display->width) {
+		frame_x += (border - src_x);
+	}
+	frame_y += borderAndRadius;
+	//ALOGI("black background src_x %d src_Y %d  w %d h %d  frame_x %d fram_y %d ", src_x ,src_y, frame_width, frame_height, frame_x, frame_y);
+	if (frame_width + frame_x >= pdev->display->width + border) {
+		frame_width -= (border - src_x);
+	}else {
+		frame_width -=(border + border - src_x);
+	}
+	frame_height -= 2* borderAndRadius;
+	if ( src_x <= border ) {
+		src_x = 0;
+	}
+	XRenderColor frame_color = {0, 0, 0, 0xFFFF}; // black
+
+	// Create a temporary picture to store current backxpicture content
+	Pixmap tempPixmap = XCreatePixmap(pdev->display->x11display, win->xcbwindow, pdev->display->width,pdev->display->height, 32);
+	Picture temp_picture = XRenderCreatePicture(pdev->display->x11display, tempPixmap, pdev->display->argb_format, 0, NULL);
+	// Copy current backxpicture to temporary picture
+	XRenderComposite(pdev->display->x11display, PictOpSrc, win->backxpicture, None1, temp_picture,
+		    0, 0, 0, 0, 0, 0, pdev->display->width, pdev->display->height);
+	Picture solid_picture = XRenderCreateSolidFill(pdev->display->x11display, &frame_color);
+	XRenderComposite(pdev->display->x11display, PictOpSrc, solid_picture, None1, win->backxpicture,
+		    src_x, src_y, 0, 0, frame_x, frame_y, frame_width , frame_height);
+	XRenderFreePicture(pdev->display->x11display, solid_picture);
+	// Blend the temporary picture back onto backxpicture with PictOpOver
+	XRenderComposite(pdev->display->x11display, PictOpOver, temp_picture, None1, win->backxpicture,
+		    0, 0, 0, 0, 0, 0, pdev->display->width, pdev->display->height);
+	XFreePixmap(pdev->display->x11display, tempPixmap);
+	// Clean up temporary picture
+	XRenderFreePicture(pdev->display->x11display, temp_picture);
+	return 0;
+}
+
+static int update_shm_pixmap(struct display * display, struct buffer *buffer, struct window *window) {
+	int width = buffer->width;
+	int height = buffer->height;
+	update_shm_buffer(display,buffer);
+	if (window != NULL){
+		xcb_put_image(display->xcbconnection, XCB_IMAGE_FORMAT_Z_PIXMAP,
+		    buffer->xcbpixmap, window->xcbgc, width, height, 0, 0, 0, 32,
+		    width * height * 4, (uint8_t*)buffer->shm_data);
+	}else{
+		xcb_gcontext_t gc = xcb_generate_id(display->xcbconnection);
+		xcb_create_gc(display->xcbconnection, gc, buffer->xcbpixmap, 0, NULL);
+		xcb_put_image(display->xcbconnection, XCB_IMAGE_FORMAT_Z_PIXMAP,
+		    buffer->xcbpixmap, gc, width, height, 0, 0, 0, 32,
+		    width * height * 4, (uint8_t*)buffer->shm_data);
+		xcb_free_gc(display->xcbconnection, gc);
+	}
+	return 0;
+}
+
+
+static void * produce_BGRA_8888(struct openfde_hwc_composer_device_1 *pdev, sp<android::GraphicBuffer> src_gb, sp<android::GraphicBuffer> dst_gb) {
+    pdev->display->egl_work_queue.push_back(std::bind(egl_convert_buffer_to_BGRA_8888, pdev->display, src_gb,dst_gb));
+	sem_post(&pdev->display->egl_go);
+	sem_wait(&pdev->display->egl_done);
+	return (void *)dst_gb->getNativeBuffer()->handle;
+}
+
+static void createDri3XRenderPicture (struct openfde_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, struct window *window, struct buffer *buf, int pixel_stride) {
+	int width,height, stride, format, prime_fd, size;
+	int usage = GRALLOC_USAGE_HW_TEXTURE;
+    if (pdev->display->gtype == GRALLOC_GBM) {
+        struct gralloc_handle_t *drm_handle = (struct gralloc_handle_t *)layer->handle;
+        width = drm_handle->width;
+        height = drm_handle->height;
+        stride = drm_handle->stride;
+        format = drm_handle->format;
+        usage = drm_handle->usage;
+        prime_fd = drm_handle->prime_fd;
+    }else if (pdev->display->gtype == GRALLOC_FTG340) {
+        const gc_private_handle_t *gc_handle = (const gc_private_handle_t *)layer->handle;
+        width = gc_handle->width;
+        height = gc_handle->height;
+        stride = gc_handle->stride;
+        format = gc_handle->format;
+        prime_fd = gc_handle->prime_fd;
+    }else if (pdev->display->gtype == GRALLOC_X100) {
+        const X100_native_handle_t *x100_handle = (const X100_native_handle_t *)layer->handle;
+        width = x100_handle->iWidth;
+        height = x100_handle->iHeight;
+        stride = pixel_stride * 4;
+        format = x100_handle->iFormat;
+        prime_fd = x100_handle->fd[0];
+   // }else if (pdev->display->gtype == GRALLOC_CROS){
+    }else {
+	const struct cros_gralloc_handle *cros_handle = (const struct cros_gralloc_handle *)layer->handle;
+        width = cros_handle->width;
+        height = cros_handle->height;
+        stride = cros_handle->strides[0];
+        format = cros_handle->droid_format;
+        prime_fd = cros_handle->fds[0];
+    }
+
+	size = stride * height * 4;
+    // Create destination GraphicBuffer for store HAL_PIXEL_FORMAT_BGRA_8888
+    sp<android::GraphicBuffer> dst_gb = new android::GraphicBuffer(
+       width, height, HAL_PIXEL_FORMAT_BGRA_8888,
+       GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_RENDER);
+    if (dst_gb->initCheck() != android::NO_ERROR) {
+	ALOGE("Failed to create destination GraphicBuffer");
+	return ;
+    }
+    if (format != HAL_PIXEL_FORMAT_BGRA_8888) {
+	    sp<android::GraphicBuffer> gb_for_stride = new android::GraphicBuffer(width, height,
+		format, 1, GRALLOC_USAGE_HW_COMPOSER |
+		GRALLOC_USAGE_HW_TEXTURE, std::string("gb_for_stride") + std::to_string(getpid()));
+	    if (gb_for_stride->initCheck() != android::NO_ERROR) {
+		ALOGE("Failed to create gb_for_stride");
+		return;
+	    }
+
+	    int stride_for_src_gb;
+	    switch (format) {
+		case HAL_PIXEL_FORMAT_RGBA_8888:
+		case HAL_PIXEL_FORMAT_RGBX_8888:
+		case HAL_PIXEL_FORMAT_BGRA_8888:
+		    stride_for_src_gb = gb_for_stride->getStride() * 4;
+		    break;
+		case HAL_PIXEL_FORMAT_RGB_888:
+		    stride_for_src_gb = gb_for_stride->getStride() * 3;
+		    break;
+		case HAL_PIXEL_FORMAT_RGB_565:
+		    stride_for_src_gb = gb_for_stride->getStride() * 2;
+		    break;
+		default: //other formats need to test!!!
+		    stride_for_src_gb = gb_for_stride->getStride();
+	    }
+
+	    // Create source GraphicBuffer from existing handle
+	    sp<android::GraphicBuffer> src_gb = new android::GraphicBuffer(
+		(native_handle_t*)layer->handle, android::GraphicBuffer::WRAP_HANDLE,
+		width, height, format, 1, uint64_t(usage), stride_for_src_gb);
+	    if (src_gb->initCheck() != android::NO_ERROR) {
+		ALOGE("Failed to create source GraphicBuffer from handle");
+		return ;
+	    }
+            if (!produce_BGRA_8888(pdev, src_gb, dst_gb)) {
+                ALOGE("produce_BGRA_8888 failed");
+                return ;
+            }
+		const native_handle_t* native_handle = dst_gb->getNativeBuffer()->handle;
+		struct gralloc_handle_t * drm_handle = (struct gralloc_handle_t*)native_handle;
+		prime_fd = drm_handle->prime_fd;
+		size = dst_gb->getStride() * height * 4;
+		stride = dst_gb->getStride() * 4 ;
+    }
+    if (window != NULL ) {
+	//ALOGE("Found  app: %s layer  ,drop %d", window->appID.c_str(), lastlayer);
+        xcb_window_t xcbwindow = window->xcbwindow;
+        int x11_fd = dup(prime_fd);
+        if (x11_fd >= 0) {
+            fcntl(x11_fd, F_SETFD, FD_CLOEXEC);
+        }else {
+            ALOGE("dup fd failed");
+            return ;
+        }
+
+        buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
+        XRenderPictureAttributes pa;
+        pa.repeat = False;
+        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(pdev->display->xcbconnection,
+            buf->xcbpixmap, xcbwindow, size, width, height, stride, 32, 32, x11_fd);
+        xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        if (pixmap_error) {
+           ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
+           free(pixmap_error);
+           close(x11_fd);
+           return ;
+        }
+        buf->xpicture = XRenderCreatePicture(pdev->display->x11display, buf->xcbpixmap,pdev->display->argb_format, CPRepeat, &pa);
+        close(x11_fd);
+    }else{
+        int x11_fd = dup(prime_fd);
+        if (x11_fd >= 0) {
+            fcntl(x11_fd, F_SETFD, FD_CLOEXEC);
+        }else {
+            ALOGE("dup fd failed");
+            return ;
+        }
+
+        buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
+        XRenderPictureAttributes pa;
+        pa.repeat = False;
+        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(pdev->display->xcbconnection,
+            buf->xcbpixmap, pdev->display->xcbscreen->root, size, width, height, stride, 32, 32, x11_fd);
+        xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        if (pixmap_error) {
+           ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
+           free(pixmap_error);
+           close(x11_fd);
+           return ;
+        }
+        buf->xpicture = XRenderCreatePicture(pdev->display->x11display, buf->xcbpixmap,pdev->display->argb_format, CPRepeat, &pa);
+        close(x11_fd);
+    }
+}
+
+static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos, struct window *window)
+{
+    uint32_t format;
+    uint32_t pixel_stride;
+    uint32_t width;
+    uint32_t height;
+    if (layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
+        format = pdev->display->target_layer_handle_ext.format;
+        pixel_stride = pdev->display->target_layer_handle_ext.stride;
+        width = pdev->display->target_layer_handle_ext.width;
+        height = pdev->display->target_layer_handle_ext.height;
+    } else {
+        format = pdev->display->layer_handles_ext[pos].format;
+        pixel_stride = pdev->display->layer_handles_ext[pos].stride;
+        width = pdev->display->layer_handles_ext[pos].width;
+        height = pdev->display->layer_handles_ext[pos].height;
+    }
+
+    if (!width)
+        width = layer->displayFrame.right - layer->displayFrame.left;
+    if (!height)
+        height = layer->displayFrame.bottom - layer->displayFrame.top;
+
+    auto it = pdev->display->buffer_map.find(layer->handle);
+    if (it != pdev->display->buffer_map.end()) {
+        if (it->second->isShm) {
+            if (width != it->second->width || height != it->second->height) {
+                destroy_buffer(pdev->display, it->second);
+                pdev->display->buffer_map.erase(it);
+            } else {
+                update_shm_pixmap(pdev->display, it->second,window);
+                return it->second;
+            }
+        } else {
+            return it->second;
+	}
+    }
+
+    struct buffer *buf;
+    int ret = 0;
+
+    buf = new struct buffer();
+    buf->xcbpixmap = 0;
+    buf->xpicture = 0;
+
+    if (pdev->display->gtype == GRALLOC_GBM) {
+        struct gralloc_handle_t *drm_handle = (struct gralloc_handle_t *)layer->handle;
+        buf->width=drm_handle->width;
+        buf->height=drm_handle->height;
+	buf->pixel_stride = pixel_stride;
+        createDri3XRenderPicture(pdev, layer, window, buf,pixel_stride);
+        if (!buf->xpicture) {
+            delete buf;
+            return NULL;
+        }
+    } else if (pdev->display->gtype == GRALLOC_RANCHU) {
+        struct cb_handle_t* cb_handle = (struct cb_handle_t*)layer->handle;
+        auto width = cb_handle->width;
+        auto height = cb_handle->height;
+        auto hal_format = cb_handle->format;
+	create_shm_buffer(buf, width, height, hal_format,pixel_stride,layer->handle);
+	buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
+	xcb_void_cookie_t create_pixmap_cookie;
+	if (window != NULL){
+		create_pixmap_cookie = xcb_create_pixmap(
+		    pdev->display->xcbconnection, 32, buf->xcbpixmap, window->xcbwindow, width, height);
+	}else {
+		create_pixmap_cookie = xcb_create_pixmap(
+		    pdev->display->xcbconnection, 32, buf->xcbpixmap, pdev->display->xcbscreen->root, width, height);
+	}
+	xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, create_pixmap_cookie);
+	if (pixmap_error) {
+	    ALOGE("XCB error in xcb_create_pixmap: %d\n", pixmap_error->error_code);
+	    free(pixmap_error);
+	    delete buf;
+	    return NULL;
+	}
+	update_shm_pixmap(pdev->display, buf,window);
+        XRenderPictureAttributes pa;
+        pa.repeat = False;
+        buf->xpicture = XRenderCreatePicture(pdev->display->x11display, buf->xcbpixmap,
+            pdev->display->argb_format, CPRepeat, &pa);
+        if (!buf->xpicture) {
+            delete buf;
+            return NULL;
+        }
+    } else if (pdev->display->gtype == GRALLOC_CROS) {
+        const struct cros_gralloc_handle *cros_handle = (const struct cros_gralloc_handle *)layer->handle;
+        buf->width=cros_handle->width;
+        buf->height=cros_handle->height;
+        createDri3XRenderPicture(pdev, layer, window, buf,pixel_stride);
+        if (!buf->xpicture) {
+            delete buf;
+            return NULL;
+        }
+    } else if (pdev->display->gtype == GRALLOC_X100) {
+        const X100_native_handle_t *x100_handle = (const X100_native_handle_t *)layer->handle;
+        buf->width=x100_handle->iWidth;
+        buf->height=x100_handle->iHeight;
+        createDri3XRenderPicture(pdev, layer, window, buf,pixel_stride);
+        if (! buf->xpicture) {
+            delete buf;
+            return NULL;
+        }
+    } else if (pdev->display->gtype == GRALLOC_FTG340) {
+        const gc_private_handle_t *gc_handle = (const gc_private_handle_t *)layer->handle;
+	    buf->width=gc_handle->width;
+	    buf->height=gc_handle->height;
+        createDri3XRenderPicture(pdev, layer, window, buf,pixel_stride);
+        if (!buf->xpicture) {
+            delete buf;
+            return NULL;
+        }
+    } else {
+        ALOGE("unsupport gralloc type %d", pdev->display->gtype);
+        delete buf;
+        return NULL;
+    }
+
+    if (ret) {
+        ALOGE("failed to create a x11 pixcture");
+        return NULL;
+    }
+    pdev->display->buffer_map[layer->handle] = buf;
+    return pdev->display->buffer_map[layer->handle];
+}
+
+
+static int adjust_window_geo(struct openfde_hwc_composer_device_1 * pdev, hwc_layer_1_t * layer, struct buffer *buf, struct window *window, bool use_subsurface){
+    if (!use_subsurface)
+        return  0;
+    hwc_rect_t sourceCrop = layer->sourceCropi;
+
+    if (layer->transform & HWC_TRANSFORM_ROT_90) {
+        sourceCrop.left = layer->sourceCropi.top;
+        sourceCrop.top = layer->sourceCropi.left;
+        sourceCrop.right = layer->sourceCropi.bottom;
+        sourceCrop.bottom = layer->sourceCropi.right;
+    }
+    //ALOGE("frame geo left %d top %d right %d bottom %d lastlayer %d", sourceCrop.left,sourceCrop.top, sourceCrop.right,sourceCrop.bottom, window->lastLayer);
+    xcb_configure_window_value_list_t values;
+    values.x = floor(layer->displayFrame.left / pdev->display->scale);
+    values.y = floor(layer->displayFrame.top / pdev->display->scale);
+    // uint16_t mask = XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y;
+   //xcb_configure_window(pdev->display->xcbconnection, window->xcbwindow, mask, (uint32_t*)&values);
+    // Calculate source crop dimensions
+    int src_x = fmax(0, sourceCrop.left);
+    int src_y = fmax(0, sourceCrop.top);
+    int src_width = fmax(1, sourceCrop.right - sourceCrop.left);
+    int src_height = fmax(1, sourceCrop.bottom - sourceCrop.top);
+
+    // Calculate destination dimensions (scaled)
+    int dst_width = fmax(1, ceil((layer->displayFrame.right - layer->displayFrame.left) / pdev->display->scale));
+    int dst_height = fmax(1, ceil((layer->displayFrame.bottom - layer->displayFrame.top) / pdev->display->scale));
+
+
+     // Check if scaling is needed
+    if (src_width != dst_width || src_height != dst_height) {
+        // Set scale transform for the picture
+        XTransform scale_transform;
+        scale_transform.matrix[0][0] = XDoubleToFixed((double)src_width / dst_width);
+        scale_transform.matrix[0][1] = XDoubleToFixed(0.0);
+        scale_transform.matrix[0][2] = XDoubleToFixed(0.0);
+        scale_transform.matrix[1][0] = XDoubleToFixed(0.0);
+        scale_transform.matrix[1][1] = XDoubleToFixed((double)src_height / dst_height);
+        scale_transform.matrix[1][2] = XDoubleToFixed(0.0);
+        scale_transform.matrix[2][0] = XDoubleToFixed(0.0);
+        scale_transform.matrix[2][1] = XDoubleToFixed(0.0);
+        scale_transform.matrix[2][2] = XDoubleToFixed(1.0);
+        XRenderSetPictureTransform(pdev->display->x11display, buf->xpicture, &scale_transform);
+    }else {
+        // Reset to identity transform when no scaling is needed
+        XTransform identity_transform;
+        identity_transform.matrix[0][0] = XDoubleToFixed(1.0);
+        identity_transform.matrix[0][1] = XDoubleToFixed(0.0);
+        identity_transform.matrix[0][2] = XDoubleToFixed(0.0);
+        identity_transform.matrix[1][0] = XDoubleToFixed(0.0);
+        identity_transform.matrix[1][1] = XDoubleToFixed(1.0);
+        identity_transform.matrix[1][2] = XDoubleToFixed(0.0);
+        identity_transform.matrix[2][0] = XDoubleToFixed(0.0);
+        identity_transform.matrix[2][1] = XDoubleToFixed(0.0);
+        identity_transform.matrix[2][2] = XDoubleToFixed(1.0);
+        XRenderSetPictureTransform(pdev->display->x11display, buf->xpicture, &identity_transform);
+    }
+
+    if (use_subsurface) {
+	if (window->lastLayer == 0) {
+		window->rects.clear();
+		window->crops.clear();
+	}
+        xcb_rectangle_t rect;
+        rect = {static_cast<int16_t>(values.x), static_cast<int16_t>(values.y), static_cast<uint16_t>(dst_width),static_cast<uint16_t>(dst_height)};
+        window->rects.push_back(rect);
+        window->crops.push_back(sourceCrop);
+    }
+
+
+
+    ALOGI("src x %d y%d dst width %d dst height %d values.x %d, values.y %d app %s lastLayer %d  display right%d", src_x,src_y, dst_width, dst_height,
+			values.x,values.y,window->appID.c_str(), window->lastLayer, layer->displayFrame.right);
+    XRenderComposite(pdev->display->x11display, PictOpOver, buf->xpicture, None1, window->backxpicture,
+                  src_x, src_y, 0, 0, values.x, values.y, dst_width, dst_height);
+
+    return 0;
+}
+
+}  // namespace hwc_x11
+
+/*****************************************************************************
+ * X11Backend：HwcBackend 的 X11 协议子类实现
+ *****************************************************************************/
+
+void X11Backend::preInit() {
+    char property[PROPERTY_VALUE_MAX];
+    if (pdev->multi_windows) {
+        if (property_get("openfde.xmodifiers", property, "@im=fcitx") > 0) {
+            setenv("XMODIFIERS", property, 1);
+        }
+        // Init global state for compound text encoding.
+        xcb_compound_text_init();
+    }
+}
+
+bool X11Backend::createDisplay(const char *gralloc) {
+    display = hwc_x11::create_display(gralloc);
+    if (!display) {
+        ALOGE("failed to open x11 connection");
+        return false;
+    }
+    display->x11_windows = &pdev->windows;
+    ALOGE("x11 display %p", display);
+    return true;
+}
+
+void X11Backend::destroyDisplay() {
+    hwc_x11::destroy_display(display);
+}
+
+struct window *X11Backend::createWindow(bool use_subsurfaces, const std::string &appID,
+                                        const std::string &taskID, hwc_color_t color) {
+    return hwc_x11::create_window(display, use_subsurfaces, appID, taskID, color);
+}
+
+void X11Backend::destroyWindow(struct window *window, bool keep) {
+    hwc_x11::destroy_window(window, keep);
+}
+
+struct buffer *X11Backend::getLayerBuffer(hwc_layer_1_t *layer, size_t pos,
+                                          struct window *window) {
+    return hwc_x11::get_wl_buffer(pdev, layer, pos, window);
+}
+
+void X11Backend::destroyBuffer(struct buffer *buf) {
+    hwc_x11::destroy_buffer(display, buf);
+}
+
+bool X11Backend::updateCursorSurface(hwc_layer_1_t *fb_layer, size_t layer) {
+    return hwc_x11::update_cursor_surface(pdev, fb_layer, layer);
+}
+
+void X11Backend::hideCursor() {
+    hwc_x11::x11_set_custom_cursor(pdev, 0, 0, 0);
+    ALOGI("x11 cursor hidden");
+}
+
+std::string X11Backend::getBlacklistApps() {
+    char property[PROPERTY_VALUE_MAX];
+    std::string blacklist_apps = std::string("com.android.launcher3");
+    property_get("openfde.blacklist_apps", property, "");
+    if (strlen(property) > 0 && strncmp(property, "com.android.launcher3", strlen("com.android.launcher3")) != 0) {
+        blacklist_apps = blacklist_apps + ":" + std::string(property);
+    }
+    return blacklist_apps;
+}
+
+bool X11Backend::handleFallbackLayer(const std::string &layerRawName, hwc_layer_1_t *,
+                                     size_t, struct window **out_window) {
+    *out_window = nullptr;
+    if (pdev->multi_windows && ((layerRawName == "Toast")
+        || (layerRawName.find("Application Not Responding:") !=  std::string::npos))) {
+        if (pdev->windows.find(layerRawName) == pdev->windows.end()) {
+            pdev->windows[layerRawName] = createWindow(pdev->use_subsurface, layerRawName, "none", {0, 0, 0, 0});
+            std::string windows_size_str = std::to_string(pdev->windows.size());
+            property_set("openfde.open_windows", windows_size_str.c_str());
+        }
+        if (pdev->windows.find(layerRawName) != pdev->windows.end()) {
+            *out_window = pdev->windows[layerRawName];
+        }
+    }
+    return false;
+}
+
+void X11Backend::presentLayer(struct window *window, struct buffer *buf, hwc_layer_1_t *layer) {
+    XTransform transform;
+    switch (layer->transform) {
+        case HWC_TRANSFORM_FLIP_H:
+            transform.matrix[0][0] = XDoubleToFixed(-1.0); // scale x by -1
+            transform.matrix[0][1] = XDoubleToFixed(0.0);
+            transform.matrix[0][2] = XDoubleToFixed(buf->width);
+            transform.matrix[1][0] = XDoubleToFixed(0.0);
+            transform.matrix[1][1] = XDoubleToFixed(1.0);
+            transform.matrix[1][2] = XDoubleToFixed(0.0);
+            transform.matrix[2][0] = XDoubleToFixed(0.0);
+            transform.matrix[2][1] = XDoubleToFixed(0.0);
+            transform.matrix[2][2] = XDoubleToFixed(1.0);
+            XRenderSetPictureTransform(display->x11display, buf->xpicture, &transform);
+            break;
+        case HWC_TRANSFORM_FLIP_V:
+            transform.matrix[0][0] = XDoubleToFixed(1.0);
+            transform.matrix[0][1] = XDoubleToFixed(0.0);
+            transform.matrix[0][2] = XDoubleToFixed(0.0);
+            transform.matrix[1][0] = XDoubleToFixed(0.0);
+            transform.matrix[1][1] = XDoubleToFixed(-1.0); // scale y by -1
+            transform.matrix[1][2] = XDoubleToFixed(buf->height);
+            transform.matrix[2][0] = XDoubleToFixed(0.0);
+            transform.matrix[2][1] = XDoubleToFixed(0.0);
+            transform.matrix[2][2] = XDoubleToFixed(1.0);
+            XRenderSetPictureTransform(display->x11display, buf->xpicture, &transform);
+            break;
+        case HWC_TRANSFORM_ROT_90:
+            transform.matrix[0][0] = XDoubleToFixed(0.0);
+            transform.matrix[0][1] = XDoubleToFixed(-1.0);
+            transform.matrix[0][2] = XDoubleToFixed(buf->height);
+            transform.matrix[1][0] = XDoubleToFixed(1.0);
+            transform.matrix[1][1] = XDoubleToFixed(0.0);
+            transform.matrix[1][2] = XDoubleToFixed(0.0);
+            transform.matrix[2][0] = XDoubleToFixed(0.0);
+            transform.matrix[2][1] = XDoubleToFixed(0.0);
+            transform.matrix[2][2] = XDoubleToFixed(1.0);
+            XRenderSetPictureTransform(display->x11display, buf->xpicture, &transform);
+            break;
+        case HWC_TRANSFORM_ROT_180:
+            transform.matrix[0][0] = XDoubleToFixed(-1.0);
+            transform.matrix[0][1] = XDoubleToFixed(0.0);
+            transform.matrix[0][2] = XDoubleToFixed(buf->width);
+            transform.matrix[1][0] = XDoubleToFixed(0.0);
+            transform.matrix[1][1] = XDoubleToFixed(-1.0);
+            transform.matrix[1][2] = XDoubleToFixed(buf->height);
+            transform.matrix[2][0] = XDoubleToFixed(0.0);
+            transform.matrix[2][1] = XDoubleToFixed(0.0);
+            transform.matrix[2][2] = XDoubleToFixed(1.0);
+            XRenderSetPictureTransform(display->x11display, buf->xpicture, &transform);
+            break;
+        case HWC_TRANSFORM_ROT_270:
+            transform.matrix[0][0] = XDoubleToFixed(0.0);
+            transform.matrix[0][1] = XDoubleToFixed(1.0);
+            transform.matrix[0][2] = XDoubleToFixed(0.0);
+            transform.matrix[1][0] = XDoubleToFixed(-1.0);
+            transform.matrix[1][1] = XDoubleToFixed(0.0);
+            transform.matrix[1][2] = XDoubleToFixed(buf->width);
+            transform.matrix[2][0] = XDoubleToFixed(0.0);
+            transform.matrix[2][1] = XDoubleToFixed(0.0);
+            transform.matrix[2][2] = XDoubleToFixed(1.0);
+            XRenderSetPictureTransform(display->x11display, buf->xpicture, &transform);
+            break;
+        case HWC_TRANSFORM_FLIP_H_ROT_90:
+            transform.matrix[0][0] = XDoubleToFixed(0.0);
+            transform.matrix[0][1] = XDoubleToFixed(-1.0);
+            transform.matrix[0][2] = XDoubleToFixed(0.0);
+            transform.matrix[1][0] = XDoubleToFixed(1.0);
+            transform.matrix[1][1] = XDoubleToFixed(0.0);
+            transform.matrix[1][2] = XDoubleToFixed(0.0);
+            transform.matrix[2][0] = XDoubleToFixed(0.0);
+            transform.matrix[2][1] = XDoubleToFixed(0.0);
+            transform.matrix[2][2] = XDoubleToFixed(1.0);
+            XRenderSetPictureTransform(display->x11display, buf->xpicture, &transform);
+            break;
+        case HWC_TRANSFORM_FLIP_V_ROT_90:
+            transform.matrix[0][0] = XDoubleToFixed(0.0);
+            transform.matrix[0][1] = XDoubleToFixed(-1.0);
+            transform.matrix[0][2] = XDoubleToFixed(buf->height);
+            transform.matrix[1][0] = XDoubleToFixed(1.0);
+            transform.matrix[1][1] = XDoubleToFixed(0.0);
+            transform.matrix[1][2] = XDoubleToFixed(0.0);
+            transform.matrix[2][0] = XDoubleToFixed(0.0);
+            transform.matrix[2][1] = XDoubleToFixed(0.0);
+            transform.matrix[2][2] = XDoubleToFixed(1.0);
+            XRenderSetPictureTransform(display->x11display, buf->xpicture, &transform);
+            break;
+        default:
+            break;
+    }
+
+    if (pdev->use_subsurface) {
+        hwc_x11::adjust_window_geo(pdev, layer, buf, window, pdev->use_subsurface);
+    } else {
+        XRenderComposite(display->x11display, PictOpOver, buf->xpicture, None1, window->xpicture,
+             0, 0, 0, 0, 0, 0, display->width, display->height);
+    }
+}
+
+void X11Backend::endFrame(const std::string &, const std::string &) {
+    if (pdev->use_subsurface)
+        for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++)
+            if (it->second){
+                if (it->second->rects.size() > 1)
+                {
+                    hwc_x11::set_black_background(pdev, it->second);
+                }
+                XRenderComposite(display->x11display, PictOpSrc, it->second->backxpicture, None1, it->second->xpicture,
+                    0, 0, 0, 0, 0, 0, display->width, display->height);
+                if (!it->second->rects.empty()) {
+                    xcb_shape_rectangles(display->xcbconnection,
+                                        XCB_SHAPE_SO_SET,      // 设置操作
+                                        XCB_SHAPE_SK_INPUT,    // 输入形状
+                                        XCB_CLIP_ORDERING_UNSORTED,
+                                        it->second->xcbwindow,
+                                        0, 0,
+                                        it->second->rects.size(),
+                                        it->second->rects.data());
+                }
+            }
+    XFlush(display->x11display);
+    if (display->geo_changed) {
+        for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
+            if (it->second) {
+                // This window has no changes in layers, leaving it
+                if (!it->second->lastLayer)
+                    continue;
+                // Clear the window's back xpicture
+                if (it->second->backxpicture) {
+                    XRenderColor clear_color = {0, 0, 0, 0}; // Transparent black
+                    XRenderFillRectangle(display->x11display, PictOpClear, it->second->backxpicture, &clear_color,
+                        0, 0, display->width, display->height);
+                }
+            }
+        }
+        display->geo_changed = false;
+    }
+    xcb_flush(display->xcbconnection); // 确保请求发送
+}
+
+bool X11Backend::minimizeWindow(const std::string &packageName,
+                                std::map<std::string, struct window *> *windows) {
+    ALOGE("X11Backend minimizeWindow packageName %s", packageName.c_str());
+
+    if(!windows || windows->size() < 1)
+        return false;
+
+    char property[PROPERTY_VALUE_MAX];
+
+    if (!display->xcbconnection)
+        return false;
+
+    property_get("openfde.active_apps", property, "Openfde");
+    if (!strcmp(property, "Openfde"))
+        return false;
+
+    std::scoped_lock lock(display->windowsMutex);
+    for (auto it = windows->begin(); it != windows->end(); it++) {
+        struct window* window = it->second;
+        if (window && window->appID == packageName) {
+           ALOGE("minimize window->appID: %s ", window->appID.c_str());
+           xcb_intern_atom_cookie_t wm_change_state_cookie = xcb_intern_atom(display->xcbconnection, 0, strlen("WM_CHANGE_STATE"), "WM_CHANGE_STATE");
+            xcb_intern_atom_reply_t *wm_change_state_atom = xcb_intern_atom_reply(display->xcbconnection, wm_change_state_cookie, NULL);
+
+            if (wm_change_state_atom) {
+                xcb_client_message_event_t ev;
+                ev.response_type = XCB_CLIENT_MESSAGE;
+                ev.format = 32;
+                ev.window = window->xcbwindow;
+                ev.type = wm_change_state_atom->atom;
+                ev.data.data32[0] = XCB_ICCCM_WM_STATE_ICONIC;
+                ev.data.data32[1] = 0;
+                ev.data.data32[2] = 0;
+                ev.data.data32[3] = 0;
+                ev.data.data32[4] = 0;
+                xcb_send_event(display->xcbconnection, 0, display->xcbscreen->root,
+                    XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                    (const char *)&ev);
+                free(wm_change_state_atom);
+            }
+
+            xcb_flush(display->xcbconnection);
+            return true;
+        }
+    }
+    return true;
+}
+
+void X11Backend::setPointerCapture(const std::string &packageName, bool enabled) {
+    // X11 后端暂未实现 pointer capture
+    ALOGE("%s %d", packageName.c_str(), enabled);
+}
+
+void X11Backend::setIdleInhibit(const std::string &, bool) {
+    // X11 后端暂未实现 idle inhibit
 }
 
