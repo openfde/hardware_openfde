@@ -898,8 +898,10 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         pdev->windows.clear();
         for (size_t layer = 0; layer < contents->numHwLayers; layer++) {
             hwc_layer_1_t* fb_layer = &contents->hwLayers[layer];
-            if (fb_layer->acquireFenceFd != -1)
+            if (fb_layer->acquireFenceFd != -1) {
                 close(fb_layer->acquireFenceFd);
+                fb_layer->acquireFenceFd = -1;
+            }
         }
 
         property_set("openfde.open_windows", "0");
@@ -955,8 +957,10 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             pdev->windows.clear();
             for (size_t layer = 0; layer < contents->numHwLayers; layer++) {
                 hwc_layer_1_t* fb_layer = &contents->hwLayers[layer];
-                if (fb_layer->acquireFenceFd != -1)
+                if (fb_layer->acquireFenceFd != -1) {
                     close(fb_layer->acquireFenceFd);
+                    fb_layer->acquireFenceFd = -1;
+                }
             }
 
             property_set("openfde.open_windows", "0");
@@ -1046,6 +1050,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             // draw framebuffer target instead of skipped layers
             if (contents->hwLayers[layer].acquireFenceFd != -1) {
                 close(contents->hwLayers[layer].acquireFenceFd);
+                contents->hwLayers[layer].acquireFenceFd = -1;
             }
             layer = fb_target;
         }
@@ -1059,6 +1064,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         if (fb_layer->flags & HWC_SKIP_LAYER) {
             if (fb_layer->acquireFenceFd != -1) {
                 close(fb_layer->acquireFenceFd);
+                fb_layer->acquireFenceFd = -1;
             }
             continue;
         }
@@ -1068,6 +1074,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             // Cursor was already handled separately
             if (fb_layer->acquireFenceFd != -1) {
                 close(fb_layer->acquireFenceFd);
+                fb_layer->acquireFenceFd = -1;
             }
             continue;
         }
@@ -1076,6 +1083,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             (pdev->use_subsurface ? HWC_OVERLAY : HWC_FRAMEBUFFER_TARGET) && layer == l) {
             if (fb_layer->acquireFenceFd != -1) {
                 close(fb_layer->acquireFenceFd);
+                fb_layer->acquireFenceFd = -1;
             }
             continue;
         }
@@ -1083,6 +1091,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         if (!fb_layer->handle) {
             if (fb_layer->acquireFenceFd != -1) {
                 close(fb_layer->acquireFenceFd);
+                fb_layer->acquireFenceFd = -1;
             }
             continue;
         }
@@ -1156,6 +1165,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         if (!window || !window->isActive) {
             if (fb_layer->acquireFenceFd != -1) {
                 close(fb_layer->acquireFenceFd);
+                fb_layer->acquireFenceFd = -1;
             }
             continue;
         }
@@ -1165,6 +1175,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             ALOGE("Failed to get wayland buffer");
             if (fb_layer->acquireFenceFd != -1) {
                close(fb_layer->acquireFenceFd);
+               fb_layer->acquireFenceFd = -1;
             }
             continue;
         }
@@ -1284,6 +1295,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             fb_layer->acquireFenceFd, kAcquireWarningMS);
         }
         close(fb_layer->acquireFenceFd);
+        fb_layer->acquireFenceFd = -1;
     }
 
     // Layers order is changed from SF so we rearrange wayland surfaces

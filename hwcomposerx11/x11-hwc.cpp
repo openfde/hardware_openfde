@@ -312,6 +312,14 @@ destroy_window(struct window *window, bool keep)
 static int
 ensure_pipe(struct display* display, int input_type)
 {
+    // Detect fd that was closed elsewhere (e.g. stray close in hwcomposer.cpp)
+    // and force a reopen instead of writing to a stale descriptor.
+    if (display->input_fd[input_type] >= 0 &&
+        fcntl(display->input_fd[input_type], F_GETFD) == -1 && errno == EBADF) {
+        ALOGE("ensure_pipe: input_fd[%d]=%d was closed elsewhere, reopening %s",
+              input_type, display->input_fd[input_type], INPUT_PIPE_NAME[input_type]);
+        display->input_fd[input_type] = -1;
+    }
     if (display->input_fd[input_type] < 0) {
         display->input_fd[input_type] = open(INPUT_PIPE_NAME[input_type], O_WRONLY | O_NONBLOCK);
         ALOGI("ensure_pipe display->input_fd[%d]: %d", input_type, display->input_fd[input_type]);
@@ -336,7 +344,8 @@ send_key_event(display *data, uint32_t key, x11_keyboard_key_state state)
     struct display* display = (struct display*)data;
     struct input_event event[1];
     struct timespec rt;
-    unsigned int res, n = 0;
+    ssize_t res;
+    unsigned int n = 0;
 
     if (key >= display->keysDown.size()) {
         ALOGE("Invalid key: %u", key);
@@ -362,7 +371,8 @@ send_key_event(display *data, uint32_t key, x11_keyboard_key_state state)
 static void pointer_handle_button_to_touch_down(struct display *display) {
     struct input_event event[6];
     struct timespec rt;
-    unsigned int res, n = 0;
+    ssize_t res;
+    unsigned int n = 0;
 
     if (ensure_pipe(display, INPUT_TOUCH))
         return;
@@ -389,7 +399,8 @@ static void pointer_handle_button_to_touch_down(struct display *display) {
 static void pointer_handle_button_to_touch_up(struct display *display) {
     struct input_event event[3];
     struct timespec rt;
-    unsigned int res, n = 0;
+    ssize_t res;
+    unsigned int n = 0;
 
     if (ensure_pipe(display, INPUT_TOUCH))
         return;
@@ -445,7 +456,8 @@ static void
 pointer_cancel_axis_to_two_finger_touch(struct display *display){
     struct input_event event[6];
     struct timespec rt;
-    unsigned int res, n = 0;
+    ssize_t res;
+    unsigned int n = 0;
 
     if (ensure_pipe(display, INPUT_TOUCH))
         return;
@@ -482,7 +494,8 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
     struct input_event event[12];
     int eventSize = fromAxisStopEvent ? 3 * sizeof(input_event) : sizeof(event);
     struct timespec rt;
-    unsigned int res, n = 0;
+    ssize_t res;
+    unsigned int n = 0;
 
     if (ensure_pipe(display, INPUT_TOUCH))
         return false;
@@ -663,7 +676,8 @@ static void handle_pinch_update(void *data, uint32_t time, wl_fixed_t dx, wl_fix
     struct input_event event[12];
     struct timespec rt;
     int x, y;
-    unsigned int res, n = 0;
+    ssize_t res;
+    unsigned int n = 0;
 
     if (ensure_pipe(display, INPUT_TOUCH))
         return;
@@ -711,7 +725,8 @@ pointer_axis_to_touch(struct display *display, int move, bool verticalScroll)
 {
     struct input_event event[6];
     struct timespec rt;
-    unsigned int res, n = 0;
+    ssize_t res;
+    unsigned int n = 0;
 
     if (ensure_pipe(display, INPUT_TOUCH))
         return;
@@ -787,7 +802,8 @@ x11_pointer_handle_axis(void *data,  uint32_t axis, int value)
 
     struct input_event event[2];
     struct timespec rt;
-    unsigned int move, res, n = 0;
+    ssize_t res;
+    unsigned int move, n = 0;
     double fVal = wl_fixed_to_double(value) / 10.0f;
     double step = 1.0f;
 
@@ -913,7 +929,8 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
     } else {
         struct input_event event[2];
         struct timespec rt;
-        unsigned int res, n = 0;
+        ssize_t res;
+        unsigned int n = 0;
 
         if (ensure_pipe(display, INPUT_POINTER))
             return;
@@ -979,7 +996,8 @@ void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event)
     }else{
         struct input_event event[2];
         struct timespec rt;
-        unsigned int res, n = 0;
+        ssize_t res;
+        unsigned int n = 0;
 
         if (ensure_pipe(display, INPUT_POINTER))
             return;
@@ -1080,7 +1098,8 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
     if (display->pending_move && pointer_cancel_axis_to_touch(display, false, false)) {
         struct input_event event[5];
 
-        unsigned int res, n = 0;
+        ssize_t res;
+        unsigned int n = 0;
 
         ADD_EVENT(EV_ABS, ABS_X, x);
         ADD_EVENT(EV_ABS, ABS_Y, y);
@@ -1349,7 +1368,8 @@ touch_handle_cancel(void *data)
     struct display* display = (struct display*)data;
     struct input_event event[6];
     struct timespec rt;
-    unsigned int res, n;
+    ssize_t res;
+    unsigned int n;
     int i, id;
 
     if (ensure_pipe(display, INPUT_TOUCH))
@@ -2453,6 +2473,7 @@ create_display(const char *gralloc)
             d->touch_id[i] = -1;
 
     d->input_fd[INPUT_KEYBOARD] = -1;
+    d->input_fd[INPUT_TABLET] = -1;
     mkfifo(INPUT_PIPE_NAME[INPUT_KEYBOARD], S_IRWXO | S_IRWXG | S_IRWXU);
     chown(INPUT_PIPE_NAME[INPUT_KEYBOARD], 1000, 1000);
     register_key_press_callback(on_key_press);
