@@ -312,6 +312,14 @@ destroy_window(struct window *window, bool keep)
 static int
 ensure_pipe(struct display* display, int input_type)
 {
+    // Detect fd that was closed elsewhere (e.g. stray close in hwcomposer.cpp)
+    // and force a reopen instead of writing to a stale descriptor.
+    if (display->input_fd[input_type] >= 0 &&
+        fcntl(display->input_fd[input_type], F_GETFD) == -1 && errno == EBADF) {
+        ALOGE("ensure_pipe: input_fd[%d]=%d was closed elsewhere, reopening %s",
+              input_type, display->input_fd[input_type], INPUT_PIPE_NAME[input_type]);
+        display->input_fd[input_type] = -1;
+    }
     if (display->input_fd[input_type] < 0) {
         display->input_fd[input_type] = open(INPUT_PIPE_NAME[input_type], O_WRONLY | O_NONBLOCK);
         ALOGI("ensure_pipe display->input_fd[%d]: %d", input_type, display->input_fd[input_type]);
@@ -336,7 +344,8 @@ send_key_event(display *data, uint32_t key, x11_keyboard_key_state state)
     struct display* display = (struct display*)data;
     struct input_event event[1];
     struct timespec rt;
-    unsigned int res, n = 0;
+    ssize_t res;
+    unsigned int n = 0;
 
     if (key >= display->keysDown.size()) {
         ALOGE("Invalid key: %u", key);
@@ -362,7 +371,8 @@ send_key_event(display *data, uint32_t key, x11_keyboard_key_state state)
 static void pointer_handle_button_to_touch_down(struct display *display) {
     struct input_event event[6];
     struct timespec rt;
-    unsigned int res, n = 0;
+    ssize_t res;
+    unsigned int n = 0;
 
     if (ensure_pipe(display, INPUT_TOUCH))
         return;
@@ -389,7 +399,8 @@ static void pointer_handle_button_to_touch_down(struct display *display) {
 static void pointer_handle_button_to_touch_up(struct display *display) {
     struct input_event event[3];
     struct timespec rt;
-    unsigned int res, n = 0;
+    ssize_t res;
+    unsigned int n = 0;
 
     if (ensure_pipe(display, INPUT_TOUCH))
         return;
@@ -445,7 +456,8 @@ static void
 pointer_cancel_axis_to_two_finger_touch(struct display *display){
     struct input_event event[6];
     struct timespec rt;
-    unsigned int res, n = 0;
+    ssize_t res;
+    unsigned int n = 0;
 
     if (ensure_pipe(display, INPUT_TOUCH))
         return;
@@ -482,7 +494,8 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
     struct input_event event[12];
     int eventSize = fromAxisStopEvent ? 3 * sizeof(input_event) : sizeof(event);
     struct timespec rt;
-    unsigned int res, n = 0;
+    ssize_t res;
+    unsigned int n = 0;
 
     if (ensure_pipe(display, INPUT_TOUCH))
         return false;
@@ -663,7 +676,8 @@ static void handle_pinch_update(void *data, uint32_t time, wl_fixed_t dx, wl_fix
     struct input_event event[12];
     struct timespec rt;
     int x, y;
-    unsigned int res, n = 0;
+    ssize_t res;
+    unsigned int n = 0;
 
     if (ensure_pipe(display, INPUT_TOUCH))
         return;
@@ -711,7 +725,8 @@ pointer_axis_to_touch(struct display *display, int move, bool verticalScroll)
 {
     struct input_event event[6];
     struct timespec rt;
-    unsigned int res, n = 0;
+    ssize_t res;
+    unsigned int n = 0;
 
     if (ensure_pipe(display, INPUT_TOUCH))
         return;
@@ -787,7 +802,8 @@ x11_pointer_handle_axis(void *data,  uint32_t axis, int value)
 
     struct input_event event[2];
     struct timespec rt;
-    unsigned int move, res, n = 0;
+    ssize_t res;
+    unsigned int move, n = 0;
     double fVal = wl_fixed_to_double(value) / 10.0f;
     double step = 1.0f;
 
@@ -913,7 +929,8 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
     } else {
         struct input_event event[2];
         struct timespec rt;
-        unsigned int res, n = 0;
+        ssize_t res;
+        unsigned int n = 0;
 
         if (ensure_pipe(display, INPUT_POINTER))
             return;
@@ -979,7 +996,8 @@ void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event)
     }else{
         struct input_event event[2];
         struct timespec rt;
-        unsigned int res, n = 0;
+        ssize_t res;
+        unsigned int n = 0;
 
         if (ensure_pipe(display, INPUT_POINTER))
             return;
@@ -1038,24 +1056,56 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
         y = int(y * display->scale);
     }
 
+    struct timespec rt;
+    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
+        ALOGE("%s:%d error in touch clock_gettime: %s",
+            __FILE__, __LINE__, strerror(errno));
+        return;
+    }
+
+    nsecs_t now = rt.tv_sec * 1000000000LL + rt.tv_nsec;
+
+    //downclocking and batch processing logic
+    const nsecs_t MIN_INTERVAL = 16 * 1000000LL;
+
+    //Cumulative movement
+    int dx = x - display->ptrPrvX;
+    int dy = y - display->ptrPrvY;
+
+    display->accumulated_relx += dx;
+    display->accumulated_rely += dy;
+    display->pending_move = true;
+
+    // If the time has not yet arrived, the data will be accumulated but not sent.
+    if (now - display->last_mouse_send_time < MIN_INTERVAL) {
+        display->ptrPrvX = x;
+        display->ptrPrvY = y;
+        return;
+    }
+
     if (display->isTouchDown) {
         display->ptrPrvX = x;
         display->ptrPrvY = y;
         pointer_handle_button_to_touch_down(display);
-    } else if (pointer_cancel_axis_to_touch(display, false, false)) {
-        struct input_event event[5];
-        struct timespec rt;
-        unsigned int res, n = 0;
+        // Reset Accumulation
+        display->accumulated_relx = 0;
+        display->accumulated_rely = 0;
+        display->pending_move = false;
+        display->last_mouse_send_time = now;
+        return;
+    }
 
-        if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-            ALOGE("%s:%d error in touch clock_gettime: %s",
-                __FILE__, __LINE__, strerror(errno));
-        }
+    if (display->pending_move && pointer_cancel_axis_to_touch(display, false, false)) {
+        struct input_event event[5];
+
+        ssize_t res;
+        unsigned int n = 0;
 
         ADD_EVENT(EV_ABS, ABS_X, x);
         ADD_EVENT(EV_ABS, ABS_Y, y);
-        if(x - display->ptrPrvX != 0){
-            relx = x - display->ptrPrvX;
+
+        if(display->accumulated_relx != 0){
+            relx = display->accumulated_relx;
         }else if(x > 0 && display->full_width - x > 1){
             relx = 0;
         }else{
@@ -1065,8 +1115,8 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
                 relx = prev_relx > 0 ? 3 : -3;
             }
         }
-        if(y - display->ptrPrvY != 0){
-            rely = y - display->ptrPrvY;
+        if(display->accumulated_rely != 0){
+            rely = display->accumulated_rely;
         }else if(y > 0 && display->full_height - y > 1){
             rely = 0;
         }else{
@@ -1096,6 +1146,12 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
         res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
         if (res < sizeof(event))
             ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
+
+        // Reset Accumulation
+        display->accumulated_relx = 0;
+        display->accumulated_rely = 0;
+        display->pending_move = false;
+        display->last_mouse_send_time = now;
 
     }
 }
@@ -1131,10 +1187,68 @@ void update_spot_location(xcb_xim_t *im, xcb_xic_t ic, xcb_point_t spot) {
     free(nested.data);
 }
 
+static void send_multi_touch_frame(struct display *display)
+{
+    if (ensure_pipe(display, INPUT_TOUCH)) return;
+
+    struct input_event event[128];
+    struct timespec rt;
+    unsigned int n = 0;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
+        ALOGE("%s:%d clock_gettime error", __FILE__, __LINE__);
+        return;
+    }
+
+    int active = 0;
+    for (int i = 0; i < MAX_TOUCHPOINTS; i++) {
+        if (display->touch_id[i] != -1) active++;
+    }
+    ALOGD("send_multi_touch_frame: active=%d", active);
+
+    if(display->need_send_touch_btn_down){
+        ADD_EVENT(EV_KEY, BTN_TOUCH, 1);
+        display->need_send_touch_btn_down = false;
+    }
+
+    for (int i = 0; i < MAX_TOUCHPOINTS; i++) {
+        if (display->touch_changed[i] || display->touch_id[i] != -1) {
+            if(display->touch_id[i] == -1 && display->touch_tracking_id[i] == -1) continue;
+            ADD_EVENT(EV_ABS, ABS_MT_SLOT, i);
+            if (display->touch_id[i] == -1) {
+                ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
+                display->touch_tracking_id[i] = -1;
+            } else {
+                ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, display->touch_tracking_id[i]);
+                ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, display->touch_x[i]);
+                ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, display->touch_y[i]);
+                ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 80);
+            }
+        }
+    }
+
+    if(display->need_send_touch_btn_up){
+        ADD_EVENT(EV_KEY, BTN_TOUCH, 0);
+        display->need_send_touch_btn_up = false;
+    }
+
+    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    size_t bytes = n * sizeof(struct input_event);
+    ALOGD("send_multi_touch_frame write INPUT_TOUCH");
+    write(display->input_fd[INPUT_TOUCH], event, bytes);
+}
 static int
-get_touch_id(struct display *display, int id)
+get_touch_id(struct display *display, uint32_t id)
 {
     int i = 0;
+    int active = 0;
+    for (i = 0; i < MAX_TOUCHPOINTS; i++) {
+        if (display->touch_id[i] != -1) active++;
+    }
+    if (active > MAX_TOUCHPOINTS) {
+        ALOGW("Touch point limit reached (%d), ignore new touch id=%d", MAX_TOUCHPOINTS, id);
+        return -1;
+    }
     for (i = 0; i < MAX_TOUCHPOINTS; i++) {
         if (display->touch_id[i] == id)
             return i;
@@ -1142,6 +1256,16 @@ get_touch_id(struct display *display, int id)
     for (i = 0; i < MAX_TOUCHPOINTS; i++) {
         if (display->touch_id[i] == -1) {
             display->touch_id[i] = id;
+            display->next_tracking_id = (display->next_tracking_id + 1) % 0x7FFFFFFF;
+            if (display->next_tracking_id == 0)
+                display->next_tracking_id = 1;
+            display->touch_tracking_id[i] = display->next_tracking_id;
+            display->active_touch_count++;
+
+            // first finger send BTN_TOUCH DOWN
+            if (display->active_touch_count == 1) {
+                display->need_send_touch_btn_down = true;
+            }
             return i;
         }
     }
@@ -1149,110 +1273,94 @@ get_touch_id(struct display *display, int id)
 }
 
 static int
-flush_touch_id(struct display *display, int id)
+flush_touch_id(struct display *display, uint32_t id)
 {
     for (int i = 0; i < MAX_TOUCHPOINTS; i++) {
         if (display->touch_id[i] == id) {
             display->touch_id[i] = -1;
+            display->touch_changed[i] = true;
+            display->active_touch_count = std::max(0, display->active_touch_count - 1);
+            // last finger send BTN_TOUCH UP
+            if (display->active_touch_count == 0) {
+                ALOGD("flush_touch_id id: %d, display->active_touch_count: %d", id, display->active_touch_count);
+                display->need_send_touch_btn_up = true;
+            }
+            send_multi_touch_frame(display);
             return i;
         }
     }
     return -1;
 }
 
-static void
-touch_handle_down(void *data,
-          int32_t id, int x, int y)
-{
+ static void
+ touch_handle_down(void *data, uint32_t id, int x, int y)
+ {
+     struct display* display = (struct display*)data;
+
+     if (display->scale != 1) {
+         x = int(x * display->scale);
+         y = int(y * display->scale);
+     }
+
+     int slot = get_touch_id(display, id);
+     if (slot < 0) return;
+
+     display->touch_x[slot] = x;
+     display->touch_y[slot] = y;
+     display->touch_changed[slot] = true;
+
+     ALOGI("touch_handle_down slot=%d id=%d x=%d y=%d", slot, id, x, y);
+     send_multi_touch_frame(display);
+ }
+
+ static void
+ touch_handle_motion(void *data, uint32_t id, int x, int y)
+ {
     struct display* display = (struct display*)data;
-    struct input_event event[6];
-    struct timespec rt;
-    unsigned int res, n = 0;
-
-    if (ensure_pipe(display, INPUT_TOUCH))
-        return;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-       ALOGE("%s:%d error in touch clock_gettime: %s",
-            __FILE__, __LINE__, strerror(errno));
-    }
 
     if (display->scale != 1) {
-        x = int(x * display->scale);
-        y = int(y * display->scale);
+     x = int(x * display->scale);
+     y = int(y * display->scale);
     }
 
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, get_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, get_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y);
-    ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-
-    ALOGI("touch_handle_down write INPUT_TOUCH id: %d", get_touch_id(display, id));
-    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-    if (res < sizeof(event))
-        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
-}
-
-static void
-touch_handle_up(void *data, int32_t id)
-{
-    struct display* display = (struct display*)data;
-    struct input_event event[3];
+    int slot = get_touch_id(display, id);
+    if (slot < 0) return;
     struct timespec rt;
-    unsigned int res, n = 0;
-
-    if (ensure_pipe(display, INPUT_TOUCH))
-        return;
-
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
        ALOGE("%s:%d error in touch clock_gettime: %s",
             __FILE__, __LINE__, strerror(errno));
     }
 
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, flush_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    nsecs_t now = rt.tv_sec * 1000000000LL + rt.tv_nsec;
 
-    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-    if (res < sizeof(event))
-        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
-}
+    const nsecs_t MIN_INTERVAL = 8 * 1000000LL;
 
-static void
-touch_handle_motion(void *data,      int32_t id, int x, int y)
-{
-    struct display* display = (struct display*)data;
-    struct input_event event[6];
-    struct timespec rt;
-
-    unsigned int res, n = 0;
-
-    if (ensure_pipe(display, INPUT_TOUCH))
+    if (now - display->last_touch_frame_time < MIN_INTERVAL) {
+        display->touch_x[slot] = x;
+        display->touch_y[slot] = y;
+        display->touch_changed[slot] = true;
         return;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-       ALOGE("%s:%d error in touch clock_gettime: %s",
-            __FILE__, __LINE__, strerror(errno));
     }
 
-    if (display->scale != 1) {
-        x = int(x * display->scale);
-        y = int(y * display->scale);
-    }
+    display->touch_x[slot] = x;
+    display->touch_y[slot] = y;
+    display->touch_changed[slot] = true;
 
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, get_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, get_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y);
-    ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    display->last_touch_frame_time = now;
 
-    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-    if (res < sizeof(event))
-        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
-}
+    ALOGD("touch_handle_motion slot=%d id=%d x=%d y=%d", slot, id, x, y);
+    send_multi_touch_frame(display);
+ }
+
+ static void
+ touch_handle_up(void *data, uint32_t id)
+ {
+     struct display* display = (struct display*)data;
+     int slot = flush_touch_id(display, id);
+     if (slot < 0) return;
+
+     ALOGI("touch_handle_up slot=%d id=%d", slot, id);
+ }
 
 static void
 touch_handle_cancel(void *data)
@@ -1260,7 +1368,8 @@ touch_handle_cancel(void *data)
     struct display* display = (struct display*)data;
     struct input_event event[6];
     struct timespec rt;
-    unsigned int res, n;
+    ssize_t res;
+    unsigned int n;
     int i, id;
 
     if (ensure_pipe(display, INPUT_TOUCH))
@@ -1620,7 +1729,7 @@ void *event_loop_thread(void *arg) {
                             xcb_input_touch_update_event_t *tu = (xcb_input_touch_update_event_t *)ge;
                             double x = XI_FP1616_TO_DOUBLE(tu->event_x);
                             double y = XI_FP1616_TO_DOUBLE(tu->event_y);
-                            //ALOGD("Touch Update: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", tu->detail, x, y, tu->deviceid);
+                            ALOGD("Touch Update: touchid=%" PRIu32 ", x=%.2f, y=%.2f, deviceid=%d\n", tu->detail, x, y, tu->deviceid);
                             touch_handle_motion(display, tu->detail, (int)x, (int)y);
                             break;
                         }
@@ -2230,6 +2339,39 @@ cleanup:
     return success;
 }
 
+ScreenConfig screenConfigs[ConfigCount] = {
+    {0,0,0}, // the default config
+    {1920, 1080, 160}, // Config 0: Full HD
+    {2560, 1440, 256} // Config 1: 2K
+};
+
+
+int screen_config_get_index(int width, int height){
+    int index = -1;
+    for(int i = 0; i < ConfigCount; i++){
+        if(screenConfigs[i].Width == width && screenConfigs[i].Height == height){
+            index = i;
+            break;
+        }
+    }
+    return index;
+}
+
+int screen_config_set_and_get_index(int width, int height) {
+    int index = screen_config_get_index(width, height);
+    if(index >= 0){
+        return index;
+    }else{
+        screenConfigs[defaultConfigIndex].Width = width;
+        screenConfigs[defaultConfigIndex].Height = height;
+        if (width >= 2560) {
+            screenConfigs[defaultConfigIndex].Density = 256;
+        } else if (width <= 1920) {
+            screenConfigs[defaultConfigIndex].Density = 160;
+        } 
+        return defaultConfigIndex;
+    }
+}
 
 
 struct display *
@@ -2311,7 +2453,7 @@ create_display(const char *gralloc)
         display->primary_y = 0;
         ALOGI("fallback to root window size: %dx%d", display->full_width, display->full_height);
     }
-
+    display->active_config = screen_config_set_and_get_index(display->full_width, display->full_height);
     display->width = display->full_width /display->scale;
     display->height = display->full_height /display->scale;
     ALOGI("final display size: %dx%d (scale=%f), primary offset (%d,%d)",
@@ -2331,6 +2473,7 @@ create_display(const char *gralloc)
             d->touch_id[i] = -1;
 
     d->input_fd[INPUT_KEYBOARD] = -1;
+    d->input_fd[INPUT_TABLET] = -1;
     mkfifo(INPUT_PIPE_NAME[INPUT_KEYBOARD], S_IRWXO | S_IRWXG | S_IRWXU);
     chown(INPUT_PIPE_NAME[INPUT_KEYBOARD], 1000, 1000);
     register_key_press_callback(on_key_press);
@@ -2345,7 +2488,21 @@ create_display(const char *gralloc)
 
     display->argb_format = XRenderFindStandardFormat(display->x11display, PictStandardARGB32);
 
+    display->last_mouse_send_time = 0;
+    display->accumulated_relx = 0;
+    display->accumulated_rely = 0;
+    display->pending_move = false;
 
+    display->next_tracking_id = 0;
+    display->active_touch_count = 0;
+    display->need_send_touch_btn_down = false;
+    display->need_send_touch_btn_up = false;
+    for (int i = 0; i < MAX_TOUCHPOINTS; i++) {
+        display->touch_x[i] = 0;
+        display->touch_y[i] = 0;
+        display->touch_changed[i] = false;
+        display->touch_tracking_id[i] = -1;
+    }
     pthread_t event_thread;
     if (pthread_create(&event_thread, NULL, event_loop_thread, display) != 0) {
         ALOGE("Unable to create event processing thread\n");
