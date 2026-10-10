@@ -102,7 +102,7 @@ static bool update_cursor_surface(openfde_hwc_composer_device_1* pdev, hwc_layer
 
     std::string layer_name = pdev->display->layer_names[layer];
 
-    if (layer_name.substr(0, 6) != "Sprite" || fb_layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
+    if (layer_name.length() < 12 || layer_name.substr(0, 12) != "[BBQ] Sprite" || fb_layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
         return false;
     }
 

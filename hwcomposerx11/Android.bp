@@ -30,6 +30,7 @@ cc_prebuilt_library_shared {
             srcs: ["lib/libXrender.so"],
         },
     },
+    ignore_max_page_size: true,
 
     shared_libs: [
         "libX11",
@@ -57,6 +58,7 @@ cc_prebuilt_library_shared {
             srcs: ["lib/libX11-xcb.so"],
         },
     },
+    ignore_max_page_size: true,
 
     shared_libs: [
         "libxcb",
@@ -83,6 +85,7 @@ cc_prebuilt_library_shared {
             srcs: ["lib/libxcb-shape.so"],
         },
     },
+    ignore_max_page_size: true,
 
     shared_libs: [
         "libxcb",
@@ -109,6 +112,7 @@ cc_prebuilt_library_shared {
             srcs: ["lib/libX11.so"],
         },
     },
+    ignore_max_page_size: true,
 
     shared_libs: [
         "libxcb",
@@ -136,6 +140,7 @@ cc_prebuilt_library_shared {
             srcs: ["lib/libxcb-dri3.so"],
         },
     },
+    ignore_max_page_size: true,
     shared_libs: [
         "libXau",
         "libXdmcp",
@@ -162,6 +167,7 @@ cc_prebuilt_library_shared {
             srcs: ["lib/libandroid-support.so"],
         },
     },
+    ignore_max_page_size: true,
     proprietary : true,
     vendor: false,
     visibility: ["//hardware/openfde/hwcomposerx11"],
@@ -183,6 +189,7 @@ cc_prebuilt_library_shared {
             srcs: ["lib/libXau.so"],
         },
     },
+    ignore_max_page_size: true,
     proprietary: true,
     vendor: false,
 }
@@ -203,6 +210,7 @@ cc_prebuilt_library_shared {
             srcs: ["lib/libXdmcp.so"],
         },
     },
+    ignore_max_page_size: true,
     proprietary: true,
     vendor: false,
 }
@@ -223,6 +231,7 @@ cc_prebuilt_library_shared {
             srcs: ["lib/libxcb.so"],
         },
     },
+    ignore_max_page_size: true,
     shared_libs: [
         "libXau",
         "libXdmcp",
@@ -247,6 +256,7 @@ cc_prebuilt_library_shared {
             srcs: ["lib/libxcb-util.so"],
         },
     },
+    ignore_max_page_size: true,
     shared_libs: [
         "libXau",
         "libXdmcp",
@@ -272,6 +282,7 @@ cc_prebuilt_library_shared {
             srcs: ["lib/libxcb-imdkit.so"],
         },
     },
+    ignore_max_page_size: true,
     shared_libs: [
         "libXau",
         "libXdmcp",
@@ -298,6 +309,7 @@ cc_prebuilt_library_shared {
             srcs: ["lib/libxcb-xinput.so"],
         },
     },
+    ignore_max_page_size: true,
     shared_libs: [
         "libXau",
         "libXdmcp",
@@ -324,6 +336,7 @@ cc_prebuilt_library_shared {
             srcs: ["lib/libxcb-randr.so"],
         },
     },
+    ignore_max_page_size: true,
     shared_libs: [
         "libXau",
         "libXdmcp",
@@ -389,9 +402,7 @@ cc_library_shared {
         "system/core",
         "system/core/libsync",
         "system/core/libsync/include",
-        "device/generic/goldfish-opengl/shared/gralloc_cb/include",
-        "device/generic/goldfish-opengl/shared/qemupipe/include",
-        "device/generic/goldfish-opengl/shared/qemupipe/include-types",
+
     ],
 
     local_include_dirs: [
