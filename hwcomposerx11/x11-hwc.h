@@ -314,9 +314,14 @@ struct ScreenConfig {
     int Density;
 };
 
-const int ConfigCount = 3;
 const int defaultConfigIndex = 0;
-extern ScreenConfig screenConfigs[];
+extern int gScreenConfigCount;
+extern ScreenConfig *screenConfigs;
+
+// Builds screenConfigs dynamically: slot 0 holds the real resolution,
+// followed by the presets that neither duplicate it nor exceed it.
+void screen_configs_init(int realWidth, int realHeight);
+void screen_configs_destroy();
 
 void
 handle_relative_motion(void *data, struct zwp_relative_pointer_v1*,

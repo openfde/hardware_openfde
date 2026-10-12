@@ -1444,8 +1444,8 @@ static void hwc_dump(hwc_composer_device_1* dev , char* buff ,
             window_count,
             buffer_count,
             pdev->next_sync_point,
-            screenConfigs[0].Width,
-            screenConfigs[0].Height);
+            screenConfigs ? screenConfigs[0].Width : 0,
+            screenConfigs ? screenConfigs[0].Height : 0);
 
     if (written < 0 && buff_len > 0) {
         buff[0] = '\0';
@@ -1455,7 +1455,7 @@ static void hwc_dump(hwc_composer_device_1* dev , char* buff ,
 
 static int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
                                    int disp, uint32_t* configs, size_t* numConfigs) {
-   size_t supportedConfigCount = ConfigCount;
+   size_t supportedConfigCount = gScreenConfigCount;
     if (*numConfigs == 0) {
         *numConfigs = supportedConfigCount;
         return 0;
@@ -1551,7 +1551,7 @@ static int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, in
         return -EINVAL;
     }
 
-    if (config > ConfigCount -1) {
+    if (config < 0 || config >= gScreenConfigCount) {
         ALOGE("unsupported active config %u for display %d", config, disp);
         return -EINVAL;
     }
@@ -1561,8 +1561,8 @@ static int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, in
     }
     int target_width = 0;
     int target_height = 0;
-    // 定义不同的分辨率
-    if (config <= ConfigCount -1 ) { // 假设 config 1 是 2K
+    // config 0 为真实分辨率，其余为去重后的预设分辨率
+    if (config < gScreenConfigCount) {
         if (screenConfigs[config].Width == 0 || screenConfigs[config].Height == 0 ){
             return -EINVAL;
         }
@@ -1611,7 +1611,7 @@ static int32_t hwc_attribute(struct waydroid_hwc_composer_device_1* pdev,
     int height = floor(pdev->display->height * pdev->display->scale);
     int density = 160;
     // 定义不同的分辨率
-    if (config > 0 && config <= ConfigCount -1 ) { 
+    if (config > 0 && config < (uint32_t)gScreenConfigCount ) { 
         width = screenConfigs[config].Width;
         height = screenConfigs[config].Height;
         density = screenConfigs[config].Density;

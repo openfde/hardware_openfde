@@ -50,6 +50,7 @@
 #include <syscall.h>
 #include <cmath>
 #include <algorithm>
+#include <new>
 
 #include <libsync/sw_sync.h>
 #include <sync/sync.h>
@@ -2339,16 +2340,83 @@ cleanup:
     return success;
 }
 
-ScreenConfig screenConfigs[ConfigCount] = {
-    {0,0,0}, // the default config
-    {1920, 1080, 160}, // Config 0: Full HD
-    {2560, 1440, 256} // Config 1: 2K
+// Preset resolutions offered in addition to the real one.
+static const ScreenConfig presetScreenConfigs[] = {
+    {1280,720,160},
+    {1920,1080,160}, // Full HD
+    {2560,1440,256},  // 2K
+    {2560,1600,256}
 };
+static const int presetScreenConfigCount =
+    sizeof(presetScreenConfigs) / sizeof(presetScreenConfigs[0]);
 
+ScreenConfig *screenConfigs = nullptr;
+int gScreenConfigCount = 0;
+
+static int screen_config_density_for_width(int width) {
+    if (width >= 2560) {
+        return 256;
+    } else if (width <= 1920) {
+        return 160;
+    }
+    return 0;
+}
+
+void screen_configs_init(int realWidth, int realHeight) {
+    screen_configs_destroy();
+
+    int count = 1; // slot 0 is always the real resolution
+    for (int i = 0; i < presetScreenConfigCount; i++) {
+        if (presetScreenConfigs[i].Width <= realWidth &&
+            presetScreenConfigs[i].Height <= realHeight &&
+            (presetScreenConfigs[i].Width != realWidth ||
+             presetScreenConfigs[i].Height != realHeight)) {
+            count++;
+        }
+    }
+
+    screenConfigs = new (std::nothrow) ScreenConfig[count];
+    if (!screenConfigs) {
+        ALOGE("failed to allocate screen configs");
+        return;
+    }
+
+    screenConfigs[defaultConfigIndex] = {realWidth, realHeight,
+                                         screen_config_density_for_width(realWidth)};
+
+    int slot = 1;
+    for (int i = 0; i < presetScreenConfigCount; i++) {
+        if (presetScreenConfigs[i].Width == realWidth &&
+            presetScreenConfigs[i].Height == realHeight) {
+            ALOGI("skip preset %dx%d: same as real resolution",
+                  presetScreenConfigs[i].Width, presetScreenConfigs[i].Height);
+            continue;
+        }
+        if (presetScreenConfigs[i].Width > realWidth ||
+            presetScreenConfigs[i].Height > realHeight) {
+            ALOGI("skip preset %dx%d: exceeds real resolution %dx%d",
+                  presetScreenConfigs[i].Width, presetScreenConfigs[i].Height,
+                  realWidth, realHeight);
+            continue;
+        }
+        screenConfigs[slot++] = presetScreenConfigs[i];
+    }
+    gScreenConfigCount = count;
+    ALOGI("screen configs initialized: count=%d real=%dx%d",
+          gScreenConfigCount, realWidth, realHeight);
+}
+
+void screen_configs_destroy() {
+    if (screenConfigs) {
+        delete[] screenConfigs;
+        screenConfigs = nullptr;
+    }
+    gScreenConfigCount = 0;
+}
 
 int screen_config_get_index(int width, int height){
     int index = -1;
-    for(int i = 0; i < ConfigCount; i++){
+    for(int i = 0; i < gScreenConfigCount; i++){
         if(screenConfigs[i].Width == width && screenConfigs[i].Height == height){
             index = i;
             break;
@@ -2362,13 +2430,13 @@ int screen_config_set_and_get_index(int width, int height) {
     if(index >= 0){
         return index;
     }else{
+        if (gScreenConfigCount <= 0) {
+            ALOGE("screen configs not initialized");
+            return -1;
+        }
         screenConfigs[defaultConfigIndex].Width = width;
         screenConfigs[defaultConfigIndex].Height = height;
-        if (width >= 2560) {
-            screenConfigs[defaultConfigIndex].Density = 256;
-        } else if (width <= 1920) {
-            screenConfigs[defaultConfigIndex].Density = 160;
-        } 
+        screenConfigs[defaultConfigIndex].Density = screen_config_density_for_width(width);
         return defaultConfigIndex;
     }
 }
@@ -2453,6 +2521,7 @@ create_display(const char *gralloc)
         display->primary_y = 0;
         ALOGI("fallback to root window size: %dx%d", display->full_width, display->full_height);
     }
+    screen_configs_init(display->full_width, display->full_height);
     display->active_config = screen_config_set_and_get_index(display->full_width, display->full_height);
     display->width = display->full_width /display->scale;
     display->height = display->full_height /display->scale;
@@ -2548,6 +2617,8 @@ destroy_display(struct display *display)
         XCloseDisplay(display->x11display);
         display->x11display = NULL;
     }
+
+    screen_configs_destroy();
 
     delete display;
 }
