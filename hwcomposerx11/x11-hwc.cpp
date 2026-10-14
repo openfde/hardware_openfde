@@ -93,7 +93,14 @@ int mTouchMove;
 bool mVerticalScroll = true;
 int timer_active = 0;
 struct itimerval timer;
-#define SCROLL_END_TIMEOUT_MS 150
+// Period of the timer that drips out pending wheel scroll distance.
+#define SCROLL_TICK_MS 16
+// Idle time (counted from the last wheel event) before the simulated touch
+// is lifted, per scroll gear. The slow gear waits longer so a slow scroll
+// glides to a stop instead of snapping.
+#define SCROLL_END_TIMEOUT_SLOW_MS 260
+#define SCROLL_END_TIMEOUT_MEDIUM_MS 160
+#define SCROLL_END_TIMEOUT_FAST_MS 120
 // Scroll speed gears: decided by how many wheel events arrive within a time window.
 #define SCROLL_GEAR_WINDOW_NS (200 * 1000 * 1000LL)
 #define SCROLL_GEAR_FAST_COUNT 5
@@ -116,6 +123,51 @@ int wheel_event_count = 0;
 int wheel_event_next = 0;
 int scroll_session_event_count = 0;
 enum ScrollGear scroll_gear = SCROLL_GEAR_MEDIUM;
+
+// Pending wheel distance that still has to be dripped out as touch moves.
+static int pending_wheel_move = 0;
+static bool pending_wheel_vertical = true;
+// Timestamp of the most recent wheel event, used to detect the scroll end.
+static int64_t last_wheel_event_ns = 0;
+
+static int64_t scroll_now_ns() {
+    struct timespec rt;
+    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1)
+        return 0;
+    return rt.tv_sec * 1000000000LL + rt.tv_nsec;
+}
+
+static int scroll_end_timeout_ms() {
+    switch (scroll_gear) {
+        case SCROLL_GEAR_SLOW:
+            return SCROLL_END_TIMEOUT_SLOW_MS;
+        case SCROLL_GEAR_FAST:
+            return SCROLL_END_TIMEOUT_FAST_MS;
+        case SCROLL_GEAR_MEDIUM:
+        default:
+            return SCROLL_END_TIMEOUT_MEDIUM_MS;
+    }
+}
+
+// Fraction of the remaining pending distance applied per tick. A larger
+// divisor spreads the same distance over more frames: slower and smoother.
+static int scroll_drip_divisor() {
+    switch (scroll_gear) {
+        case SCROLL_GEAR_SLOW:
+            return 6;
+        case SCROLL_GEAR_FAST:
+            return 2;
+        case SCROLL_GEAR_MEDIUM:
+        default:
+            return 3;
+    }
+}
+
+void stop_scroll_timer() {
+    memset(&timer, 0, sizeof(timer));
+    setitimer(ITIMER_REAL, &timer, NULL);
+    timer_active = 0;
+}
 #define GESTURE_SCALING_DOWN_STRIDE 22
 #define GESTURE_SCALING_UP_STRIDE 720
 #define GESTURE_SCALING_DOWN_START_DISTANCE 340.0
@@ -538,6 +590,11 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
         return false;
     }
 
+    // The scroll session is being terminated: drop any wheel distance that is
+    // still pending and stop the drip timer so it cannot restart the touch.
+    pending_wheel_move = 0;
+    stop_scroll_timer();
+
     // Guarantee the simulated scroll moves at least the touch slop distance, otherwise
     // the system interprets the short down/up sequence as a click instead of a scroll.
     {
@@ -637,23 +694,49 @@ static int scroll_gear_multiplier() {
     }
 }
 
+// A single periodic timer drives the whole scroll session: each tick drips
+// out a fraction of the pending wheel distance; once the distance is drained
+// and the gear-specific idle timeout has elapsed, the simulated touch is lifted.
 void timer_handler(int sig) {
-    if (sig == SIGALRM) {
+    if (sig != SIGALRM)
+        return;
+    if (!mDisplay) {
+        stop_scroll_timer();
+        return;
+    }
+
+    if (mDisplay->axis_simulation_two_finger_started) {
         ALOGD("pointer axis stopped.");
-        if(mDisplay){
-            if(mDisplay->axis_simulation_two_finger_started){
-                pointer_cancel_axis_to_two_finger_touch(mDisplay);
-            }else{
-                if(scroll_session_event_count < 2){
-                    pointer_axis_to_touch(mDisplay, mTouchMove, mVerticalScroll);
-                }
-                pointer_cancel_axis_to_touch(mDisplay, true, true);
-            }
-        }
-        timer_active = 0;
+        pointer_cancel_axis_to_two_finger_touch(mDisplay);
+        pending_wheel_move = 0;
         scroll_session_event_count = 0;
         scroll_gear = SCROLL_GEAR_MEDIUM;
+        stop_scroll_timer();
+        return;
     }
+
+    // Drip out the pending wheel distance a bit per tick so the simulated
+    // touch move glides instead of jumping.
+    if (pending_wheel_move != 0) {
+        int step = pending_wheel_move / scroll_drip_divisor();
+        if (step == 0)
+            step = pending_wheel_move > 0 ? 1 : -1;
+        pending_wheel_move -= step;
+        pointer_axis_to_touch(mDisplay, step, pending_wheel_vertical);
+        return;
+    }
+
+    // Nothing left to drip: lift the touch once the gear-specific idle
+    // timeout has elapsed. The slow gear waits longer, extending the glide.
+    if (scroll_now_ns() - last_wheel_event_ns <
+        (int64_t)scroll_end_timeout_ms() * 1000000LL)
+        return;
+
+    ALOGD("pointer axis stopped.");
+    pointer_cancel_axis_to_touch(mDisplay, true, true);
+    scroll_session_event_count = 0;
+    scroll_gear = SCROLL_GEAR_MEDIUM;
+    stop_scroll_timer();
 }
 
 void reset_timer() {
@@ -662,10 +745,13 @@ void reset_timer() {
     memset(&timer, 0, sizeof(timer));
 
     timer.it_value.tv_sec = 0;
-    timer.it_value.tv_usec = SCROLL_END_TIMEOUT_MS * 1000;
+    timer.it_value.tv_usec = SCROLL_TICK_MS * 1000;
+    timer.it_interval.tv_sec = 0;
+    timer.it_interval.tv_usec = SCROLL_TICK_MS * 1000;
 
     setitimer(ITIMER_REAL, &timer, NULL);
     timer_active = 1;
+    last_wheel_event_ns = scroll_now_ns();
 }
 
 void init_timer() {
@@ -830,10 +916,11 @@ pointer_axis_to_touch(struct display *display, int move, bool verticalScroll)
     }
 
     int64_t nanoSeconds = rt.tv_sec * 1000 * 1000 * 1000 + rt.tv_nsec;
+    // move is already scaled by the scroll gear multiplier at accumulation time.
     if(verticalScroll){
-        display->axisY += move*scroll_gear_multiplier();
+        display->axisY += move;
     }else{
-        display->axisX += move*scroll_gear_multiplier();
+        display->axisX += move;
     }
 
     // if ((nanoSeconds - display->lastAxisEventNanoSeconds) < 20 * 1000 * 1000) {
@@ -952,9 +1039,15 @@ x11_pointer_handle_axis(void *data,  uint32_t axis, int value)
                 pointer_cancel_axis_to_two_finger_touch(display);
             }
             update_scroll_gear();
-            pointer_axis_to_touch(display, touchMove, axis == WL_POINTER_AXIS_VERTICAL_SCROLL);
             mTouchMove = touchMove;
             mVerticalScroll = (axis == WL_POINTER_AXIS_VERTICAL_SCROLL);
+            // Accumulate the scaled wheel distance; the periodic timer drips
+            // it out over several frames so the simulated scroll glides.
+            pending_wheel_move += touchMove * scroll_gear_multiplier();
+            pending_wheel_vertical = mVerticalScroll;
+            // Apply the first step right away to keep the scroll responsive.
+            timer_handler(SIGALRM);
+            reset_timer();
         }
     }else{
         if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
