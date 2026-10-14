@@ -86,8 +86,27 @@ int mTouchMove;
 bool mVerticalScroll = true;
 int timer_active = 0;
 struct itimerval timer;
-int scroll_speed = 0;
 #define SCROLL_END_TIMEOUT_MS 150
+// Scroll speed gears: decided by how many wheel events arrive within a time window.
+#define SCROLL_GEAR_WINDOW_NS (200 * 1000 * 1000LL)
+#define SCROLL_GEAR_FAST_COUNT 5
+#define SCROLL_GEAR_MEDIUM_COUNT 2
+#define SCROLL_GEAR_SLOW_MULTIPLIER 1
+#define SCROLL_GEAR_MEDIUM_MULTIPLIER 2
+#define SCROLL_GEAR_FAST_MULTIPLIER 3
+#define WHEEL_EVENT_TIMESTAMP_MAX 64
+
+enum ScrollGear {
+    SCROLL_GEAR_SLOW = 0,
+    SCROLL_GEAR_MEDIUM,
+    SCROLL_GEAR_FAST,
+};
+
+int64_t wheel_event_timestamps[WHEEL_EVENT_TIMESTAMP_MAX];
+int wheel_event_count = 0;
+int wheel_event_next = 0;
+int scroll_session_event_count = 0;
+enum ScrollGear scroll_gear = SCROLL_GEAR_MEDIUM;
 #define GESTURE_SCALING_DOWN_STRIDE 30
 #define GESTURE_SCALING_UP_STRIDE 480
 #define GESTURE_SCALING_DOWN_START_DISTANCE 180.0
@@ -1086,6 +1105,43 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
     return true;
 }
 
+static void update_scroll_gear() {
+    struct timespec rt;
+    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1)
+        return;
+    int64_t now = rt.tv_sec * 1000000000LL + rt.tv_nsec;
+
+    wheel_event_timestamps[wheel_event_next] = now;
+    wheel_event_next = (wheel_event_next + 1) % WHEEL_EVENT_TIMESTAMP_MAX;
+    if (wheel_event_count < WHEEL_EVENT_TIMESTAMP_MAX)
+        wheel_event_count++;
+    scroll_session_event_count++;
+
+    int recent_events = 0;
+    for (int i = 0; i < wheel_event_count; i++) {
+        if (now - wheel_event_timestamps[i] <= SCROLL_GEAR_WINDOW_NS)
+            recent_events++;
+    }
+    if (recent_events >= SCROLL_GEAR_FAST_COUNT)
+        scroll_gear = SCROLL_GEAR_FAST;
+    else if (recent_events >= SCROLL_GEAR_MEDIUM_COUNT)
+        scroll_gear = SCROLL_GEAR_MEDIUM;
+    else
+        scroll_gear = SCROLL_GEAR_SLOW;
+}
+
+static int scroll_gear_multiplier() {
+    switch (scroll_gear) {
+        case SCROLL_GEAR_SLOW:
+            return SCROLL_GEAR_SLOW_MULTIPLIER;
+        case SCROLL_GEAR_FAST:
+            return SCROLL_GEAR_FAST_MULTIPLIER;
+        case SCROLL_GEAR_MEDIUM:
+        default:
+            return SCROLL_GEAR_MEDIUM_MULTIPLIER;
+    }
+}
+
 void timer_handler(int sig) {
     if (sig == SIGALRM) {
         if(mDisplay){
@@ -1094,14 +1150,15 @@ void timer_handler(int sig) {
                 pointer_cancel_axis_to_two_finger_touch(mDisplay);
             }else{
                 ALOGD("pointer axis stopped, called pointer_cancel_axis_to_touch");
-                if(scroll_speed < 2){
+                if(scroll_session_event_count < 2){
                     pointer_axis_to_touch(mDisplay, mTouchMove, mVerticalScroll);
                 }
                 pointer_cancel_axis_to_touch(mDisplay, true, true);
             }
         }
         timer_active = 0;
-        scroll_speed = 0;
+        scroll_session_event_count = 0;
+        scroll_gear = SCROLL_GEAR_MEDIUM;
     }
 }
 
@@ -1115,9 +1172,6 @@ void reset_timer() {
 
     setitimer(ITIMER_REAL, &timer, NULL);
     timer_active = 1;
-    if(scroll_speed < 3){
-        scroll_speed += 1;
-    }
 }
 
 void init_timer() {
@@ -1301,9 +1355,9 @@ pointer_axis_to_touch(struct display *display, int move, bool verticalScroll)
 
     int64_t nanoSeconds = rt.tv_sec * 1000 * 1000 * 1000 + rt.tv_nsec;
     if(verticalScroll){
-        display->axisY += move*scroll_speed;
+        display->axisY += move*scroll_gear_multiplier();
     }else{
-        display->axisX += move*scroll_speed;
+        display->axisX += move*scroll_gear_multiplier();
     }
 
     // if ((nanoSeconds - display->lastAxisEventNanoSeconds) < 20 * 1000 * 1000) {
@@ -1423,6 +1477,7 @@ pointer_handle_axis(void *data, struct wl_pointer *,
             if(display->axis_simulation_two_finger_started){
                 pointer_cancel_axis_to_two_finger_touch(display);
             }
+            update_scroll_gear();
             pointer_axis_to_touch(display, touchMove, axis == WL_POINTER_AXIS_VERTICAL_SCROLL);
             mTouchMove = touchMove;
             mVerticalScroll = (axis == WL_POINTER_AXIS_VERTICAL_SCROLL);
