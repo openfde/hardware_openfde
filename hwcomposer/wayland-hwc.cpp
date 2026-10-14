@@ -91,7 +91,7 @@ struct itimerval timer;
 // Idle time (counted from the last wheel event) before the simulated touch
 // is lifted, per scroll gear. The slow gear waits longer so a slow scroll
 // glides to a stop instead of snapping.
-#define SCROLL_END_TIMEOUT_SLOW_MS 260
+#define SCROLL_END_TIMEOUT_SLOW_MS 280
 #define SCROLL_END_TIMEOUT_MEDIUM_MS 160
 #define SCROLL_END_TIMEOUT_FAST_MS 120
 // Scroll speed gears: decided by how many wheel events arrive within a time window.
@@ -147,7 +147,7 @@ static int scroll_end_timeout_ms() {
 static int scroll_drip_divisor() {
     switch (scroll_gear) {
         case SCROLL_GEAR_SLOW:
-            return 6;
+            return 8;
         case SCROLL_GEAR_FAST:
             return 2;
         case SCROLL_GEAR_MEDIUM:
