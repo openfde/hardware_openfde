@@ -22,18 +22,24 @@ namespace display {
 namespace V1_1 {
 namespace implementation {
 
-OpenfdeDisplay::OpenfdeDisplay(struct display *display)
-    : mDisplay(display)
+OpenfdeDisplay::OpenfdeDisplay(struct display *display , struct display *secondary_display)
+    : mDisplay(display), msecondary_Display(secondary_display)
 {
 }
 
 // Methods from ::vendor::openfde::display::V1_0::IOpenfdeDisplay follow.
 Return<Error> OpenfdeDisplay::setLayerName(uint32_t layer, const hidl_string &name) {
     mDisplay->layer_names[layer] = std::string(name);
+    msecondary_Display->layer_names[layer] = std::string(name);
     return Error::NONE;
 }
 Return<Error> OpenfdeDisplay::setLayerHandleInfo(uint32_t layer, uint32_t format, uint32_t stride) {
     mDisplay->layer_handles_ext[layer] = 
+    {
+        .format = format,
+        .stride = stride
+    };
+    msecondary_Display->layer_handles_ext[layer] = 
     {
         .format = format,
         .stride = stride
@@ -46,6 +52,11 @@ Return<Error> OpenfdeDisplay::setTargetLayerHandleInfo(uint32_t format, uint32_t
         .format = format,
         .stride = stride
     };
+    msecondary_Display->target_layer_handle_ext = 
+    {
+        .format = format,
+        .stride = stride
+    };
     return Error::NONE;
 }
 
@@ -53,12 +64,16 @@ Return<Error> OpenfdeDisplay::setTargetLayerHandleInfo(uint32_t format, uint32_t
 Return<Error> OpenfdeDisplay::setLayerSize(uint32_t layer, uint32_t width, uint32_t height) {
     mDisplay->layer_handles_ext[layer].width = width;
     mDisplay->layer_handles_ext[layer].height = height;
+    msecondary_Display->layer_handles_ext[layer].width = width;
+    msecondary_Display->layer_handles_ext[layer].height = height;
     return Error::NONE;
 }
 
 Return<Error> OpenfdeDisplay::setTargetLayerSize(uint32_t width, uint32_t height) {
     mDisplay->target_layer_handle_ext.width = width;
     mDisplay->target_layer_handle_ext.height = height;
+    msecondary_Display->target_layer_handle_ext.width = width;
+    msecondary_Display->target_layer_handle_ext.height = height;
     return Error::NONE;
 }
 
