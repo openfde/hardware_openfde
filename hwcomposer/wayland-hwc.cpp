@@ -95,6 +95,8 @@ struct itimerval timer;
 #define SCROLL_GEAR_MEDIUM_MULTIPLIER 2
 #define SCROLL_GEAR_FAST_MULTIPLIER 3
 #define WHEEL_EVENT_TIMESTAMP_MAX 64
+// Extra pixels on top of the touch slop to make sure a scroll is never taken as a click.
+#define SCROLL_MIN_DISTANCE_MARGIN 4
 
 enum ScrollGear {
     SCROLL_GEAR_SLOW = 0,
@@ -1047,6 +1049,13 @@ pointer_cancel_axis_to_two_finger_touch(struct display *display){
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
 }
 
+// Android treats a touch down/up sequence as a click when the pointer never moved
+// further than the touch slop (ViewConfiguration, 8dp). Convert it to pixels.
+static int min_scroll_distance(struct display *display) {
+    int density = property_get_int32("ro.sf.lcd_density", int(180 * display->scale));
+    return 8 * density / 160 + SCROLL_MIN_DISTANCE_MARGIN;
+}
+
 static bool
 pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bool force)
 {
@@ -1056,8 +1065,7 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
         return true;
     }
 
-    struct input_event event[12];
-    int eventSize = fromAxisStopEvent ? 3 * sizeof(input_event) : sizeof(event);
+    struct input_event event[18];
     struct timespec rt;
     unsigned int res, n = 0;
 
@@ -1072,6 +1080,36 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
     // Prevent minor mouse movements from interrupting the touch scrolling process while scrolling the wheel.
     if (!force && ((rt.tv_sec * 1000 * 1000 * 1000 + rt.tv_nsec - display->lastAxisEventNanoSeconds) < 300 * 1000 * 1000)) {
         return false;
+    }
+
+    // Guarantee the simulated scroll moves at least the touch slop distance, otherwise
+    // the system interprets the short down/up sequence as a click instead of a scroll.
+    {
+        int moved = mVerticalScroll ? display->axisY - display->ptrPrvY
+                                    : display->axisX - display->ptrPrvX;
+        int minDistance = min_scroll_distance(display);
+        if (std::abs(moved) < minDistance) {
+            int direction;
+            if (moved != 0)
+                direction = moved > 0 ? 1 : -1;
+            else
+                direction = mTouchMove >= 0 ? 1 : -1;
+            if (mVerticalScroll)
+                display->axisY += direction * (minDistance - std::abs(moved));
+            else
+                display->axisX += direction * (minDistance - std::abs(moved));
+            ADD_EVENT(EV_ABS, ABS_MT_SLOT, AXIS_TOUCH_SLOT_ID);
+            ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, AXIS_TOUCH_TRACKING_ID);
+            if (mVerticalScroll) {
+                ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, display->ptrPrvX);
+                ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, display->axisY);
+            } else {
+                ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, display->axisX);
+                ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, display->ptrPrvY);
+            }
+            ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
+            ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+        }
     }
 
     display->axisY = display->ptrPrvY;
@@ -1096,8 +1134,8 @@ pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bo
         ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
         ADD_EVENT(EV_SYN, SYN_REPORT, 0);
     }
-    res = write(display->input_fd[INPUT_TOUCH], &event, eventSize);
-    if (res < sizeof(event)) {
+    res = write(display->input_fd[INPUT_TOUCH], &event, n * sizeof(struct input_event));
+    if (res < n * sizeof(struct input_event)) {
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
         return false;
     }
