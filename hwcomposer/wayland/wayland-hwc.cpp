@@ -28,6 +28,7 @@
 
 #include "wayland-hwc.h"
 #include "egl-tools.h"
+#include "../common/scroll_touch_sim.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -79,88 +80,10 @@
 
 using ::android::hardware::hidl_string;
 
-const int AXIS_TOUCH_SLOT_ID = 8;
-const int AXIS_TOUCH_TRACKING_ID = AXIS_TOUCH_SLOT_ID;
-struct display *mDisplay;
-int mTouchMove;
-bool mVerticalScroll = true;
-int timer_active = 0;
-struct itimerval timer;
-// Period of the timer that drips out pending wheel scroll distance.
-#define SCROLL_TICK_MS 16
-// Idle time (counted from the last wheel event) before the simulated touch
-// is lifted, per scroll gear. The slow gear waits longer so a slow scroll
-// glides to a stop instead of snapping.
-#define SCROLL_END_TIMEOUT_SLOW_MS 280
-#define SCROLL_END_TIMEOUT_MEDIUM_MS 160
-#define SCROLL_END_TIMEOUT_FAST_MS 120
-// Scroll speed gears: decided by how many wheel events arrive within a time window.
-#define SCROLL_GEAR_WINDOW_NS (200 * 1000 * 1000LL)
-#define SCROLL_GEAR_FAST_COUNT 5
-#define SCROLL_GEAR_MEDIUM_COUNT 2
-#define SCROLL_GEAR_SLOW_MULTIPLIER 1
-#define SCROLL_GEAR_MEDIUM_MULTIPLIER 2
-#define SCROLL_GEAR_FAST_MULTIPLIER 3
-#define WHEEL_EVENT_TIMESTAMP_MAX 64
-// Extra pixels on top of the touch slop to make sure a scroll is never taken as a click.
-#define SCROLL_MIN_DISTANCE_MARGIN 4
-
-enum ScrollGear {
-    SCROLL_GEAR_SLOW = 0,
-    SCROLL_GEAR_MEDIUM,
-    SCROLL_GEAR_FAST,
-};
-
-int64_t wheel_event_timestamps[WHEEL_EVENT_TIMESTAMP_MAX];
-int wheel_event_count = 0;
-int wheel_event_next = 0;
-int scroll_session_event_count = 0;
-enum ScrollGear scroll_gear = SCROLL_GEAR_MEDIUM;
-
-// Pending wheel distance that still has to be dripped out as touch moves.
-static int pending_wheel_move = 0;
-static bool pending_wheel_vertical = true;
-// Timestamp of the most recent wheel event, used to detect the scroll end.
-static int64_t last_wheel_event_ns = 0;
-
-static int64_t scroll_now_ns() {
-    struct timespec rt;
-    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1)
-        return 0;
-    return rt.tv_sec * 1000000000LL + rt.tv_nsec;
-}
-
-static int scroll_end_timeout_ms() {
-    switch (scroll_gear) {
-        case SCROLL_GEAR_SLOW:
-            return SCROLL_END_TIMEOUT_SLOW_MS;
-        case SCROLL_GEAR_FAST:
-            return SCROLL_END_TIMEOUT_FAST_MS;
-        case SCROLL_GEAR_MEDIUM:
-        default:
-            return SCROLL_END_TIMEOUT_MEDIUM_MS;
-    }
-}
-
-// Fraction of the remaining pending distance applied per tick. A larger
-// divisor spreads the same distance over more frames: slower and smoother.
-static int scroll_drip_divisor() {
-    switch (scroll_gear) {
-        case SCROLL_GEAR_SLOW:
-            return 8;
-        case SCROLL_GEAR_FAST:
-            return 2;
-        case SCROLL_GEAR_MEDIUM:
-        default:
-            return 3;
-    }
-}
-
-void stop_scroll_timer() {
-    memset(&timer, 0, sizeof(timer));
-    setitimer(ITIMER_REAL, &timer, NULL);
-    timer_active = 0;
-}
+// Gesture-scaling start distance / stride are platform-specific (wayland vs
+// x11 use different step sizes) so they live here, not in the common
+// scroll_touch_sim module. The pinch update handler reads
+// gesture_scaling_start_distance directly.
 #define GESTURE_SCALING_DOWN_STRIDE 30
 #define GESTURE_SCALING_UP_STRIDE 480
 #define GESTURE_SCALING_DOWN_START_DISTANCE 180.0
@@ -171,7 +94,6 @@ static int gesture_scaling_stride;
 struct buffer;
 static void handle_pinch_update(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t time, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t scale, wl_fixed_t rotation);
 static void handle_pinch_end(void *data, struct zwp_pointer_gesture_pinch_v1 *gesture, uint32_t serial, uint32_t time, int cancelled);
-static void pointer_axis_to_touch(struct display *display, int move, bool verticalScroll);
 
 void find_primary(struct display *d) {
     d->primary = NULL;
@@ -562,8 +484,7 @@ xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *,
     }*/
 }
 
-static void
-send_key_event(display *data, uint32_t key, wl_keyboard_key_state state);
+// sim_send_key_event is declared in ../common/scroll_touch_sim.h
 
 static void
 xdg_toplevel_handle_close(void *data, struct xdg_toplevel *)
@@ -571,8 +492,8 @@ xdg_toplevel_handle_close(void *data, struct xdg_toplevel *)
     struct window *window = (struct window *)data;
 
     // simulate user input to restart idle timeout (TODO: find a better way)
-    send_key_event(window->display, 0, WL_KEYBOARD_KEY_STATE_PRESSED);
-    send_key_event(window->display, 0, WL_KEYBOARD_KEY_STATE_RELEASED);
+    sim_send_key_event(window->display, 0, SIM_KEY_PRESSED);
+    sim_send_key_event(window->display, 0, SIM_KEY_RELEASED);
 
     if (window->display->task != nullptr) {
         if (window->taskID != "none") {
@@ -847,55 +768,8 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
     return window;
 }
 
-static int
-ensure_pipe(struct display* display, int input_type)
-{
-    if (display->input_fd[input_type] == -1) {
-        display->input_fd[input_type] = open(INPUT_PIPE_NAME[input_type], O_WRONLY | O_NONBLOCK);
-        if (display->input_fd[input_type] == -1) {
-            ALOGE("Failed to open pipe to InputFlinger: %s", strerror(errno));
-            return -1;
-        }
-    }
-    return 0;
-}
-
-#define ADD_EVENT(type_, code_, value_)            \
-    event[n].time.tv_sec = rt.tv_sec;              \
-    event[n].time.tv_usec = rt.tv_nsec / 1000;     \
-    event[n].type = type_;                         \
-    event[n].code = code_;                         \
-    event[n].value = value_;                       \
-    n++;
-
-static void
-send_key_event(display *data, uint32_t key, wl_keyboard_key_state state)
-{
-    struct display* display = (struct display*)data;
-    struct input_event event[1];
-    struct timespec rt;
-    unsigned int res, n = 0;
-
-    if (key >= display->keysDown.size()) {
-        ALOGE("Invalid key: %u", key);
-        return;
-    }
-
-    if (ensure_pipe(display, INPUT_KEYBOARD))
-        return;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-        ALOGE("%s:%d error in touch clock_gettime: %s",
-              __FILE__, __LINE__, strerror(errno));
-    }
-    ADD_EVENT(EV_KEY, key, state);
-
-    ALOGE("send_key_event write INPUT_KEYBOARD key: %d, state: %d", key, state);
-    res = write(display->input_fd[INPUT_KEYBOARD], &event, sizeof(event));
-    if (res < sizeof(event))
-        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
-    display->keysDown[(uint8_t)key] = state;
-}
+// send_key_event / ADD_EVENT macro / ensure_pipe are now provided by
+// ../common/scroll_touch_sim.{h,cpp}.
 
 static void
 keyboard_handle_keymap(void *, struct wl_keyboard *,
@@ -951,8 +825,8 @@ keyboard_handle_leave(void *data, struct wl_keyboard *,
 {
     struct display *display = (struct display *)data;
     for (size_t i = 0; i < display->keysDown.size(); i++) {
-        if (display->keysDown[i] == WL_KEYBOARD_KEY_STATE_PRESSED) {
-            send_key_event(display, i, WL_KEYBOARD_KEY_STATE_RELEASED);
+        if (display->keysDown[i] == SIM_KEY_PRESSED) {
+            sim_send_key_event(display, i, SIM_KEY_RELEASED);
         }
     }
     ALOGD("keyboard_handle_leave");
@@ -970,7 +844,7 @@ keyboard_handle_key(void *data, struct wl_keyboard *,
     if (key == KEY_LEFTCTRL || key == KEY_RIGHTCTRL){
         display->ctrl_key_pressed = state;
     }
-    send_key_event((struct display*)data, key, (enum wl_keyboard_key_state)state);
+    sim_send_key_event(display, key, (uint32_t)state);
 }
 
 static void
@@ -994,54 +868,8 @@ static const struct wl_keyboard_listener keyboard_listener = {
     keyboard_handle_repeat_info,
 };
 
-static void pointer_handle_button_to_touch_down(struct display *display) {
-    struct input_event event[6];
-    struct timespec rt;
-    unsigned int res, n = 0;
-
-    if (ensure_pipe(display, INPUT_TOUCH))
-        return;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-        ALOGE("%s:%d error in touch clock_gettime: %s",
-              __FILE__, __LINE__, strerror(errno));
-    }
-
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, 0);
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, 0);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, display->ptrPrvX);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, display->ptrPrvY);
-    ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-    display->isTouchDown = true;
-    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-
-    if (res < sizeof(event))
-        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
-}
-
-static void pointer_handle_button_to_touch_up(struct display *display) {
-    struct input_event event[3];
-    struct timespec rt;
-    unsigned int res, n = 0;
-
-    if (ensure_pipe(display, INPUT_TOUCH))
-        return;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-        ALOGE("%s:%d error in touch clock_gettime: %s",
-              __FILE__, __LINE__, strerror(errno));
-    }
-
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, 0);
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-    display->isTouchDown = false;
-    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-
-    if (res < sizeof(event))
-        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
-}
+// sim_pointer_button_to_touch_down / _up are now provided by
+// ../common/scroll_touch_sim.{h,cpp} as sim_pointer_button_to_touch_{down,up}.
 
 static void
 pointer_handle_enter(void *data, struct wl_pointer *pointer,
@@ -1074,238 +902,6 @@ pointer_handle_leave(void *data, struct wl_pointer *pointer,
 }
 
 static void
-pointer_cancel_axis_to_two_finger_touch(struct display *display){
-    struct input_event event[6];
-    struct timespec rt;
-    unsigned int res, n = 0;
-
-    if (ensure_pipe(display, INPUT_TOUCH))
-        return;
-
-    display->axis_simulation_two_finger_started = false;
-    display->gesture_scale = 160;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-       ALOGE("%s:%d error in touch clock_gettime: %s",
-            __FILE__, __LINE__, strerror(errno));
-    }
-
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, 0);
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, 1);
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-    if (res < sizeof(event))
-        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
-}
-
-// Android treats a touch down/up sequence as a click when the pointer never moved
-// further than the touch slop (ViewConfiguration, 8dp). Convert it to pixels.
-static int min_scroll_distance(struct display *display) {
-    int density = property_get_int32("ro.sf.lcd_density", int(180 * display->scale));
-    return 8 * density / 160 + SCROLL_MIN_DISTANCE_MARGIN;
-}
-
-static bool
-pointer_cancel_axis_to_touch(struct display *display, bool fromAxisStopEvent, bool force)
-{
-    display->wheelEvtIsDiscrete = false;
-    // Check if the scroll wheel event has started.
-    if (display->lastAxisEventNanoSeconds == 0) {
-        return true;
-    }
-
-    struct input_event event[18];
-    struct timespec rt;
-    unsigned int res, n = 0;
-
-    if (ensure_pipe(display, INPUT_TOUCH))
-        return false;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-        ALOGE("%s:%d error in touch clock_gettime: %s",
-              __FILE__, __LINE__, strerror(errno));
-    }
-
-    // Prevent minor mouse movements from interrupting the touch scrolling process while scrolling the wheel.
-    if (!force && ((rt.tv_sec * 1000 * 1000 * 1000 + rt.tv_nsec - display->lastAxisEventNanoSeconds) < 300 * 1000 * 1000)) {
-        return false;
-    }
-
-    // The scroll session is being terminated: drop any wheel distance that is
-    // still pending and stop the drip timer so it cannot restart the touch.
-    pending_wheel_move = 0;
-    stop_scroll_timer();
-
-    // Guarantee the simulated scroll moves at least the touch slop distance, otherwise
-    // the system interprets the short down/up sequence as a click instead of a scroll.
-    {
-        int moved = mVerticalScroll ? display->axisY - display->ptrPrvY
-                                    : display->axisX - display->ptrPrvX;
-        int minDistance = min_scroll_distance(display);
-        if (std::abs(moved) < minDistance) {
-            int direction;
-            if (moved != 0)
-                direction = moved > 0 ? 1 : -1;
-            else
-                direction = mTouchMove >= 0 ? 1 : -1;
-            if (mVerticalScroll)
-                display->axisY += direction * (minDistance - std::abs(moved));
-            else
-                display->axisX += direction * (minDistance - std::abs(moved));
-            ADD_EVENT(EV_ABS, ABS_MT_SLOT, AXIS_TOUCH_SLOT_ID);
-            ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, AXIS_TOUCH_TRACKING_ID);
-            if (mVerticalScroll) {
-                ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, display->ptrPrvX);
-                ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, display->axisY);
-            } else {
-                ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, display->axisX);
-                ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, display->ptrPrvY);
-            }
-            ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
-            ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-        }
-    }
-
-    display->axisY = display->ptrPrvY;
-    display->lastAxisEventNanoSeconds = 0;
-
-    if (!fromAxisStopEvent) {
-        // Use the second touch click to prevent inertial scrolling
-        ADD_EVENT(EV_ABS, ABS_MT_SLOT, AXIS_TOUCH_SLOT_ID + 1);
-        ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, AXIS_TOUCH_TRACKING_ID + 1);
-        ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, -1);
-        ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, -1);
-        ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
-        ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-    }
-
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, AXIS_TOUCH_SLOT_ID);
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-
-    if (!fromAxisStopEvent) {
-        ADD_EVENT(EV_ABS, ABS_MT_SLOT, AXIS_TOUCH_SLOT_ID + 1);
-        ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
-        ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-    }
-    res = write(display->input_fd[INPUT_TOUCH], &event, n * sizeof(struct input_event));
-    if (res < n * sizeof(struct input_event)) {
-        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
-        return false;
-    }
-
-    return true;
-}
-
-static void update_scroll_gear() {
-    struct timespec rt;
-    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1)
-        return;
-    int64_t now = rt.tv_sec * 1000000000LL + rt.tv_nsec;
-
-    wheel_event_timestamps[wheel_event_next] = now;
-    wheel_event_next = (wheel_event_next + 1) % WHEEL_EVENT_TIMESTAMP_MAX;
-    if (wheel_event_count < WHEEL_EVENT_TIMESTAMP_MAX)
-        wheel_event_count++;
-    scroll_session_event_count++;
-
-    int recent_events = 0;
-    for (int i = 0; i < wheel_event_count; i++) {
-        if (now - wheel_event_timestamps[i] <= SCROLL_GEAR_WINDOW_NS)
-            recent_events++;
-    }
-    if (recent_events >= SCROLL_GEAR_FAST_COUNT)
-        scroll_gear = SCROLL_GEAR_FAST;
-    else if (recent_events >= SCROLL_GEAR_MEDIUM_COUNT)
-        scroll_gear = SCROLL_GEAR_MEDIUM;
-    else
-        scroll_gear = SCROLL_GEAR_SLOW;
-}
-
-static int scroll_gear_multiplier() {
-    switch (scroll_gear) {
-        case SCROLL_GEAR_SLOW:
-            return SCROLL_GEAR_SLOW_MULTIPLIER;
-        case SCROLL_GEAR_FAST:
-            return SCROLL_GEAR_FAST_MULTIPLIER;
-        case SCROLL_GEAR_MEDIUM:
-        default:
-            return SCROLL_GEAR_MEDIUM_MULTIPLIER;
-    }
-}
-
-// A single periodic timer drives the whole scroll session: each tick drips
-// out a fraction of the pending wheel distance; once the distance is drained
-// and the gear-specific idle timeout has elapsed, the simulated touch is lifted.
-void timer_handler(int sig) {
-    if (sig != SIGALRM)
-        return;
-    if (!mDisplay) {
-        stop_scroll_timer();
-        return;
-    }
-
-    if (mDisplay->axis_simulation_two_finger_started) {
-        ALOGD("pointer axis stopped.");
-        pointer_cancel_axis_to_two_finger_touch(mDisplay);
-        pending_wheel_move = 0;
-        scroll_session_event_count = 0;
-        scroll_gear = SCROLL_GEAR_MEDIUM;
-        stop_scroll_timer();
-        return;
-    }
-
-    // Drip out the pending wheel distance a bit per tick so the simulated
-    // touch move glides instead of jumping.
-    if (pending_wheel_move != 0) {
-        int step = pending_wheel_move / scroll_drip_divisor();
-        if (step == 0)
-            step = pending_wheel_move > 0 ? 1 : -1;
-        pending_wheel_move -= step;
-        pointer_axis_to_touch(mDisplay, step, pending_wheel_vertical);
-        return;
-    }
-
-    // Nothing left to drip: lift the touch once the gear-specific idle
-    // timeout has elapsed. The slow gear waits longer, extending the glide.
-    if (scroll_now_ns() - last_wheel_event_ns <
-        (int64_t)scroll_end_timeout_ms() * 1000000LL)
-        return;
-
-    ALOGD("pointer axis stopped.");
-    pointer_cancel_axis_to_touch(mDisplay, true, true);
-    scroll_session_event_count = 0;
-    scroll_gear = SCROLL_GEAR_MEDIUM;
-    stop_scroll_timer();
-}
-
-void reset_timer() {
-    property_set("fde.axis_converting_touch", "true");
-
-    memset(&timer, 0, sizeof(timer));
-
-    timer.it_value.tv_sec = 0;
-    timer.it_value.tv_usec = SCROLL_TICK_MS * 1000;
-    timer.it_interval.tv_sec = 0;
-    timer.it_interval.tv_usec = SCROLL_TICK_MS * 1000;
-
-    setitimer(ITIMER_REAL, &timer, NULL);
-    timer_active = 1;
-    last_wheel_event_ns = scroll_now_ns();
-}
-
-void init_timer() {
-    struct sigaction sa;
-
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = timer_handler;
-    sigaction(SIGALRM, &sa, NULL);
-}
-
-static void
 pointer_handle_motion(void *data, struct wl_pointer *,
                       uint32_t, wl_fixed_t sx, wl_fixed_t sy)
 {
@@ -1332,8 +928,8 @@ pointer_handle_motion(void *data, struct wl_pointer *,
     if (display->isTouchDown) {
         display->ptrPrvX = x;
         display->ptrPrvY = y;
-        pointer_handle_button_to_touch_down(display);
-    } else if (pointer_cancel_axis_to_touch(display, false, false)) {
+        sim_pointer_button_to_touch_down(display);
+    } else if (sim_pointer_cancel_axis_to_touch(display, false, false)) {
         struct input_event event[5];
         struct timespec rt;
         unsigned int res, n = 0;
@@ -1386,7 +982,7 @@ handle_relative_motion(void *data, struct zwp_relative_pointer_v1*,
     if (abs(acc_x) < 1 && abs(acc_y) < 1)
         return;
 
-    if(!display->isTouchDown && pointer_cancel_axis_to_touch(display, false, false)){
+    if(!display->isTouchDown && sim_pointer_cancel_axis_to_touch(display, false, false)){
         struct input_event event[3];
         struct timespec rt;
         unsigned int res, n = 0;
@@ -1416,9 +1012,9 @@ pointer_handle_button(void *data, struct wl_pointer *,
                       uint32_t state)
 {
     struct display* display = (struct display*)data;
-    pointer_cancel_axis_to_touch(display, false, true);
+    sim_pointer_cancel_axis_to_touch(display, false, true);
     if(display->axis_simulation_two_finger_started){
-        pointer_cancel_axis_to_two_finger_touch(display);
+        sim_pointer_cancel_axis_to_two_finger_touch(display);
     }
 
     if(button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED){
@@ -1429,9 +1025,9 @@ pointer_handle_button(void *data, struct wl_pointer *,
     if(((button == BTN_LEFT && property_get_bool("fde.click_as_touch", false)) || display->isTouchDown) && !display->isMouseLeftDown) {
         // convert pointer event to touch event
         if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
-            pointer_handle_button_to_touch_down(display);
+            sim_pointer_button_to_touch_down(display);
         } else {
-            pointer_handle_button_to_touch_up(display);
+            sim_pointer_button_to_touch_up(display);
         }
     }else{
         struct input_event event[2];
@@ -1459,75 +1055,6 @@ pointer_handle_button(void *data, struct wl_pointer *,
         ADD_EVENT(EV_SYN, SYN_REPORT, 0);
         res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
     }
-}
-
-static void
-pointer_axis_to_touch(struct display *display, int move, bool verticalScroll)
-{
-    struct input_event event[6];
-    struct timespec rt;
-    unsigned int res, n = 0;
-
-    if (ensure_pipe(display, INPUT_TOUCH))
-        return;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-        ALOGE("%s:%d error in touch clock_gettime: %s",
-              __FILE__, __LINE__, strerror(errno));
-    }
-
-    int64_t nanoSeconds = rt.tv_sec * 1000 * 1000 * 1000 + rt.tv_nsec;
-    // move is already scaled by the scroll gear multiplier at accumulation time.
-    if(verticalScroll){
-        display->axisY += move;
-    }else{
-        display->axisX += move;
-    }
-
-    // if ((nanoSeconds - display->lastAxisEventNanoSeconds) < 20 * 1000 * 1000) {
-    //     return;
-    // }
-
-    if (display->lastAxisEventNanoSeconds == 0) {
-        display->axisY = display->ptrPrvY;
-        display->axisX = display->ptrPrvX;
-        ADD_EVENT(EV_ABS, ABS_MT_SLOT, AXIS_TOUCH_SLOT_ID);
-        ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, AXIS_TOUCH_TRACKING_ID);
-        if(verticalScroll){
-            ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, display->ptrPrvX);
-            ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, display->axisY);
-        }else{
-            ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, display->axisX);
-            ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, display->ptrPrvY);
-        }
-        ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
-        ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-        res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-        if (res < sizeof(event)) {
-            ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
-            return;
-        }
-
-        n = 0;
-        display->axisY += move;
-    }
-
-    display->lastAxisEventNanoSeconds = nanoSeconds;
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, AXIS_TOUCH_SLOT_ID);
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, AXIS_TOUCH_TRACKING_ID);
-    if(verticalScroll){
-        ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, display->ptrPrvX);
-        ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, display->axisY);
-    }else{
-        ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, display->axisX);
-        ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, display->ptrPrvY);
-    }
-    ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-
-    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-    if (res < sizeof(event))
-        ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
 }
 
 static void
@@ -1573,7 +1100,7 @@ pointer_handle_axis(void *data, struct wl_pointer *,
     }
 
     if(property_get_bool("fde.click_as_touch", false)){
-        reset_timer();
+        sim_reset_timer();
         if(display->ctrl_key_pressed){
             if(!display->axis_simulation_two_finger_started){
                 display->axis_simulation_two_finger_started = true;
@@ -1594,23 +1121,17 @@ pointer_handle_axis(void *data, struct wl_pointer *,
                 }
             }
             if(display->lastAxisEventNanoSeconds != 0){
-                pointer_cancel_axis_to_touch(display, true, true);
+                sim_pointer_cancel_axis_to_touch(display, true, true);
             }
             handle_pinch_update(data, NULL,0,0,0,display->gesture_scale,0);
         }else{
             if(display->axis_simulation_two_finger_started){
-                pointer_cancel_axis_to_two_finger_touch(display);
+                sim_pointer_cancel_axis_to_two_finger_touch(display);
             }
-            update_scroll_gear();
-            mTouchMove = touchMove;
-            mVerticalScroll = (axis == WL_POINTER_AXIS_VERTICAL_SCROLL);
-            // Accumulate the scaled wheel distance; the periodic timer drips
-            // it out over several frames so the simulated scroll glides.
-            pending_wheel_move += touchMove * scroll_gear_multiplier();
-            pending_wheel_vertical = mVerticalScroll;
-            // Apply the first step right away to keep the scroll responsive.
-            timer_handler(SIGALRM);
-            reset_timer();
+            // The common module handles gear detection, scaled accumulation,
+            // and arms the drip-timer.
+            sim_record_wheel_event(
+                axis == WL_POINTER_AXIS_VERTICAL_SCROLL, touchMove);
         }
     }else{
         if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -1639,9 +1160,9 @@ pointer_handle_axis_stop(void *data, struct wl_pointer *, uint32_t, uint32_t)
 {
     struct display* display = (struct display*)data;
     if(display->axis_simulation_two_finger_started){
-        pointer_cancel_axis_to_two_finger_touch(display);
+        sim_pointer_cancel_axis_to_two_finger_touch(display);
     }
-    pointer_cancel_axis_to_touch(display, true, true);
+    sim_pointer_cancel_axis_to_touch(display, true, true);
 }
 
 static void
@@ -1668,111 +1189,8 @@ static const struct wl_pointer_listener pointer_listener = {
     pointer_handle_axis_discrete,
 };
 
-static void send_multi_touch_frame(struct display *display)
-{
-    if (ensure_pipe(display, INPUT_TOUCH)) return;
-
-    struct input_event event[128];
-    struct timespec rt;
-    unsigned int n = 0;
-
-    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-        ALOGE("%s:%d clock_gettime error", __FILE__, __LINE__);
-        return;
-    }
-
-    int active = 0;
-    for (int i = 0; i < MAX_TOUCHPOINTS; i++) {
-        if (display->touch_id[i] != -1) active++;
-    }
-    ALOGD("send_multi_touch_frame: active=%d", active);
-
-    if(display->need_send_touch_btn_down){
-        ADD_EVENT(EV_KEY, BTN_TOUCH, 1);
-        display->need_send_touch_btn_down = false;
-    }
-
-    for (int i = 0; i < MAX_TOUCHPOINTS; i++) {
-        if (display->touch_changed[i] || display->touch_id[i] != -1) {
-            if(display->touch_id[i] == -1 && display->touch_tracking_id[i] == -1) continue;
-            ADD_EVENT(EV_ABS, ABS_MT_SLOT, i);
-            if (display->touch_id[i] == -1) {
-                ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
-                display->touch_tracking_id[i] = -1;
-            } else {
-                ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, display->touch_tracking_id[i]);
-                ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, display->touch_x[i]);
-                ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, display->touch_y[i]);
-                ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 80);
-            }
-        }
-    }
-
-    if(display->need_send_touch_btn_up){
-        ADD_EVENT(EV_KEY, BTN_TOUCH, 0);
-        display->need_send_touch_btn_up = false;
-    }
-
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-    size_t bytes = n * sizeof(struct input_event);
-    ALOGD("send_multi_touch_frame write INPUT_TOUCH");
-    write(display->input_fd[INPUT_TOUCH], event, bytes);
-}
-static int
-get_touch_id(struct display *display, uint32_t id)
-{
-    int i = 0;
-    int active = 0;
-    for (i = 0; i < MAX_TOUCHPOINTS; i++) {
-        if (display->touch_id[i] != -1) active++;
-    }
-    if (active > MAX_TOUCHPOINTS) {
-        ALOGW("Touch point limit reached (%d), ignore new touch id=%d", MAX_TOUCHPOINTS, id);
-        return -1;
-    }
-    for (i = 0; i < MAX_TOUCHPOINTS; i++) {
-        if (display->touch_id[i] == id)
-            return i;
-    }
-    for (i = 0; i < MAX_TOUCHPOINTS; i++) {
-        if (display->touch_id[i] == -1) {
-            display->touch_id[i] = id;
-            display->next_tracking_id = (display->next_tracking_id + 1) % 0x7FFFFFFF;
-            if (display->next_tracking_id == 0)
-                display->next_tracking_id = 1;
-            display->touch_tracking_id[i] = display->next_tracking_id;
-            display->active_touch_count++;
-
-            // first finger send BTN_TOUCH DOWN
-            if (display->active_touch_count == 1) {
-                display->need_send_touch_btn_down = true;
-            }
-            return i;
-        }
-    }
-    return -1;
-}
-
-static int
-flush_touch_id(struct display *display, uint32_t id)
-{
-    for (int i = 0; i < MAX_TOUCHPOINTS; i++) {
-        if (display->touch_id[i] == id) {
-            display->touch_id[i] = -1;
-            display->touch_changed[i] = true;
-            display->active_touch_count = std::max(0, display->active_touch_count - 1);
-            // last finger send BTN_TOUCH UP
-            if (display->active_touch_count == 0) {
-                ALOGD("flush_touch_id id: %d, display->active_touch_count: %d", id, display->active_touch_count);
-                display->need_send_touch_btn_up = true;
-            }
-            send_multi_touch_frame(display);
-            return i;
-        }
-    }
-    return -1;
-}
-
+// send_multi_touch_frame / get_touch_id / flush_touch_id all live in
+// ../common/scroll_touch_sim.{h,cpp}.
 
 static void
 touch_handle_down(void *data, struct wl_touch *,
@@ -1803,13 +1221,13 @@ touch_handle_down(void *data, struct wl_touch *,
     x += display->layers[surface].x;
     y += display->layers[surface].y;
 
-    int slot = get_touch_id(display, id);
+    int slot = sim_get_touch_id(display, id);
     if (slot < 0) return;
     display->touch_x[slot] = x;
     display->touch_y[slot] = y;
     display->touch_changed[slot] = true;
     ALOGI("touch_handle_down slot=%d id=%d x=%d y=%d", slot, id, x, y);
-    send_multi_touch_frame(display);
+    sim_send_multi_touch_frame(display);
 }
 
 static void
@@ -1819,7 +1237,7 @@ touch_handle_up(void *data, struct wl_touch *,
 
     struct display* display = (struct display*)data;
     display->touch_surfaces[id] = NULL;
-    int slot = flush_touch_id(display, id);
+    int slot = sim_release_touch_id(display, id);
     if (slot < 0) return;
 
     ALOGI("touch_handle_up slot=%d id=%d", slot, id);
@@ -1837,7 +1255,7 @@ touch_handle_motion(void *data, struct wl_touch *,
 
     if (ensure_pipe(display, INPUT_TOUCH))
         return;
-    int slot = get_touch_id(display, id);
+    int slot = sim_get_touch_id(display, id);
     if (slot < 0) return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -1871,7 +1289,7 @@ touch_handle_motion(void *data, struct wl_touch *,
     display->last_touch_frame_time = now;
 
     ALOGD("touch_handle_motion slot=%d id=%d x=%d y=%d", slot, id, x, y);
-    send_multi_touch_frame(display);
+    sim_send_multi_touch_frame(display);
 }
 
 static void
@@ -1935,8 +1353,8 @@ touch_handle_shape(void *data, struct wl_touch *, int32_t id, wl_fixed_t major, 
        ALOGE("%s:%d error in touch clock_gettime: %s",
             __FILE__, __LINE__, strerror(errno));
     }
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, get_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, get_touch_id(display, id));
+    ADD_EVENT(EV_ABS, ABS_MT_SLOT, sim_get_touch_id(display, id));
+    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, sim_get_touch_id(display, id));
     ADD_EVENT(EV_ABS, ABS_MT_TOUCH_MAJOR, wl_fixed_to_int(major));
     ADD_EVENT(EV_ABS, ABS_MT_TOUCH_MINOR, wl_fixed_to_int(minor));
     ADD_EVENT(EV_SYN, SYN_REPORT, 0);
@@ -1999,8 +1417,8 @@ static void handle_swipe_update(void *data, struct zwp_pointer_gesture_swipe_v1 
         if (distance > 5.0) {
             display->four_finger_app_launcher_triggered = true;
             ALOGD("four-finger gesture moves a distance of %f, triggering the application list.", distance);
-            send_key_event(display, KEY_LEFTMETA, WL_KEYBOARD_KEY_STATE_PRESSED);
-            send_key_event(display, KEY_LEFTMETA, WL_KEYBOARD_KEY_STATE_RELEASED);
+            sim_send_key_event(display, KEY_LEFTMETA, SIM_KEY_PRESSED);
+            sim_send_key_event(display, KEY_LEFTMETA, SIM_KEY_RELEASED);
         }
     }
 }
@@ -2981,8 +2399,8 @@ create_display(const char *gralloc)
     display->isTouchDown = false;
     display->lastAxisEventNanoSeconds = 0;
     display->gesture_scale = 160;
-    init_timer();
-    mDisplay = display;
+    sim_init_timer();
+    sim_set_display(display);
     return display;
 }
 
