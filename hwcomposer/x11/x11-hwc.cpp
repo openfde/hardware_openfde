@@ -303,31 +303,10 @@ destroy_window(struct window *window, bool keep)
 
 
 
-static int
-ensure_pipe(struct display* display, int input_type)
-{
-    // Detect fd that was closed elsewhere (e.g. stray close in hwcomposer.cpp)
-    // and force a reopen instead of writing to a stale descriptor.
-    if (display->input_fd[input_type] >= 0 &&
-        fcntl(display->input_fd[input_type], F_GETFD) == -1 && errno == EBADF) {
-        ALOGE("ensure_pipe: input_fd[%d]=%d was closed elsewhere, reopening %s",
-              input_type, display->input_fd[input_type], INPUT_PIPE_NAME[input_type]);
-        display->input_fd[input_type] = -1;
-    }
-    if (display->input_fd[input_type] < 0) {
-        display->input_fd[input_type] = open(INPUT_PIPE_NAME[input_type], O_WRONLY | O_NONBLOCK);
-        ALOGI("ensure_pipe display->input_fd[%d]: %d", input_type, display->input_fd[input_type]);
-        if (display->input_fd[input_type] < 0) {
-            ALOGE("Failed to open pipe to InputFlinger: %s", strerror(errno));
-            return -1;
-        }
-    }
-    return 0;
-}
-
-// send_key_event / ADD_EVENT macro / ensure_pipe are now provided by
-// ../common/scroll_touch_sim.{h,cpp}.
-// sim_pointer_button_to_touch_down / _up are now sim_pointer_button_to_touch_{down,up}.
+// The robust ensure_pipe (with EBADF reopen) lives in
+// ../common/scroll_touch_sim.{h,cpp} as sim_ensure_pipe.
+// send_key_event / ADD_EVENT macro are also in the common module.
+// sim_pointer_button_to_touch_down / _up are also in the common module.
 
 /*static void
 pointer_handle_enter(void *data, struct wl_pointer *pointer,
@@ -366,7 +345,7 @@ pointer_handle_leave(void *data, struct wl_pointer *pointer,
 
 // min_scroll_distance / sim_pointer_cancel_axis_to_touch live in
 // ../common/scroll_touch_sim.{h,cpp} as sim_min_scroll_distance /
-// sim_sim_pointer_cancel_axis_to_touch.
+// sim_pointer_cancel_axis_to_touch.
 
 // update_scroll_gear / scroll_gear_multiplier / timer_handler / reset_timer /
 // init_timer / pointer_axis_to_touch / sim_pointer_cancel_axis_to_touch all live in
@@ -468,7 +447,7 @@ static void handle_pinch_update(void *data, uint32_t time, wl_fixed_t dx, wl_fix
     ssize_t res;
     unsigned int n = 0;
 
-    if (ensure_pipe(display, INPUT_TOUCH))
+    if (sim_ensure_pipe(display, INPUT_TOUCH))
         return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -487,18 +466,18 @@ static void handle_pinch_update(void *data, uint32_t time, wl_fixed_t dx, wl_fix
     int x1 = x + (gesture_scaling_start_distance * iscale * cos(irotation));
     int y1 = y + (gesture_scaling_start_distance * iscale * sin(irotation));
 
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, 0);
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, 0);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x0);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y0);
-    ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, 1);
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, 1);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x1);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y1);
-    ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_SLOT, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_SLOT, 1);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, 1);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x1);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y1);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
     ALOGI("on_button_release write INPUT_TOUCH");
     res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
@@ -529,7 +508,7 @@ x11_pointer_handle_axis(void *data,  uint32_t axis, int value)
     double fVal = wl_fixed_to_double(value) / 10.0f;
     double step = 1.0f;
 
-    if (ensure_pipe(display, INPUT_POINTER))
+    if (sim_ensure_pipe(display, INPUT_POINTER))
         return;
 
     if (!display->reverseScroll) {
@@ -590,9 +569,9 @@ x11_pointer_handle_axis(void *data,  uint32_t axis, int value)
             ALOGE("%s:%d error in touch clock_gettime: %s",
                   __FILE__, __LINE__, strerror(errno));
         }
-        ADD_EVENT(EV_REL, (axis == WL_POINTER_AXIS_VERTICAL_SCROLL)
+        SIM_ADD_EVENT(EV_REL, (axis == WL_POINTER_AXIS_VERTICAL_SCROLL)
               ? REL_WHEEL : REL_HWHEEL, move);
-        ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+        SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
         ALOGE("x11_pointer_handle_axis write INPUT_POINTER");
         res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
@@ -655,7 +634,7 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
         ssize_t res;
         unsigned int n = 0;
 
-        if (ensure_pipe(display, INPUT_POINTER))
+        if (sim_ensure_pipe(display, INPUT_POINTER))
             return;
 
         if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -680,8 +659,8 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
                 break;
         }
         if(button != 0){
-            ADD_EVENT(EV_KEY, button, 1);
-            ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+            SIM_ADD_EVENT(EV_KEY, button, 1);
+            SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
             ALOGE("on_button_press write INPUT_POINTER");
             res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
         }
@@ -722,7 +701,7 @@ void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event)
         ssize_t res;
         unsigned int n = 0;
 
-        if (ensure_pipe(display, INPUT_POINTER))
+        if (sim_ensure_pipe(display, INPUT_POINTER))
             return;
 
         //if (!display->pointer_surface)
@@ -749,8 +728,8 @@ void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event)
                 break;
         }
         if(button != 0){
-            ADD_EVENT(EV_KEY, button, 0);
-            ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+            SIM_ADD_EVENT(EV_KEY, button, 0);
+            SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
             res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
         }
     }
@@ -767,7 +746,7 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
     }
     int x, y;
 
-    if (ensure_pipe(display, INPUT_POINTER)){
+    if (sim_ensure_pipe(display, INPUT_POINTER)){
         return;
     }
 
@@ -824,8 +803,8 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
         ssize_t res;
         unsigned int n = 0;
 
-        ADD_EVENT(EV_ABS, ABS_X, x);
-        ADD_EVENT(EV_ABS, ABS_Y, y);
+        SIM_ADD_EVENT(EV_ABS, ABS_X, x);
+        SIM_ADD_EVENT(EV_ABS, ABS_Y, y);
 
         if(display->accumulated_relx != 0){
             relx = display->accumulated_relx;
@@ -849,9 +828,9 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
                 rely = prev_rely > 0 ? 3 : -3;
             }
         }
-        ADD_EVENT(EV_REL, REL_X, relx);
-        ADD_EVENT(EV_REL, REL_Y, rely);
-        ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+        SIM_ADD_EVENT(EV_REL, REL_X, relx);
+        SIM_ADD_EVENT(EV_REL, REL_Y, rely);
+        SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
         if(relx != 0){
             prev_relx = relx;
@@ -993,7 +972,7 @@ touch_handle_cancel(void *data)
     unsigned int n;
     int i, id;
 
-    if (ensure_pipe(display, INPUT_TOUCH))
+    if (sim_ensure_pipe(display, INPUT_TOUCH))
         return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -1009,13 +988,13 @@ touch_handle_cancel(void *data)
 
             n = 0;
             // Turn finger into palm.
-            ADD_EVENT(EV_ABS, ABS_MT_SLOT, i);
-            ADD_EVENT(EV_ABS, ABS_MT_TOOL_TYPE, MT_TOOL_PALM);
-            ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+            SIM_ADD_EVENT(EV_ABS, ABS_MT_SLOT, i);
+            SIM_ADD_EVENT(EV_ABS, ABS_MT_TOOL_TYPE, MT_TOOL_PALM);
+            SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
             // Lift off.
-            ADD_EVENT(EV_ABS, ABS_MT_TOOL_TYPE, MT_TOOL_FINGER);
-            ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
-            ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+            SIM_ADD_EVENT(EV_ABS, ABS_MT_TOOL_TYPE, MT_TOOL_FINGER);
+            SIM_ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
+            SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
             res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
             if (res < sizeof(event))

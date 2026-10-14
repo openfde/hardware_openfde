@@ -137,11 +137,21 @@ static int sim_drip_divisor(void) {
     }
 }
 
-static int sim_ensure_pipe(struct display *display, int input_type) {
-    if (display->input_fd[input_type] == -1) {
+static int sim_ensure_pipe_impl(struct display *display, int input_type) {
+    // Detect fd that was closed elsewhere (e.g. stray close in hwcomposer.cpp)
+    // and force a reopen instead of writing to a stale descriptor.
+    if (display->input_fd[input_type] >= 0 &&
+        fcntl(display->input_fd[input_type], F_GETFD) == -1 && errno == EBADF) {
+        ALOGE("ensure_pipe: input_fd[%d]=%d was closed elsewhere, reopening %s",
+              input_type, display->input_fd[input_type], INPUT_PIPE_NAME[input_type]);
+        display->input_fd[input_type] = -1;
+    }
+    if (display->input_fd[input_type] < 0) {
         display->input_fd[input_type] = open(INPUT_PIPE_NAME[input_type],
                                             O_WRONLY | O_NONBLOCK);
-        if (display->input_fd[input_type] == -1) {
+        ALOGI("ensure_pipe display->input_fd[%d]: %d",
+              input_type, display->input_fd[input_type]);
+        if (display->input_fd[input_type] < 0) {
             ALOGE("Failed to open pipe to InputFlinger: %s", strerror(errno));
             return -1;
         }
@@ -149,13 +159,13 @@ static int sim_ensure_pipe(struct display *display, int input_type) {
     return 0;
 }
 
-#define SIM_ADD_EVENT(type_, code_, value_)            \
-    event[n].time.tv_sec = rt.tv_sec;                  \
-    event[n].time.tv_usec = rt.tv_nsec / 1000;         \
-    event[n].type = type_;                             \
-    event[n].code = code_;                             \
-    event[n].value = value_;                           \
-    n++;
+extern "C" int sim_ensure_pipe(struct display *display, int input_type) {
+    return sim_ensure_pipe_impl(display, input_type);
+}
+
+// SIM_ADD_EVENT is defined in the public header so the wayland/x11
+// backends can also use it for the non-scroll paths (mouse motion,
+// button press, native wl_touch dispatch, etc.).
 
 // ---------------------------------------------------------------------------
 // Lifecycle

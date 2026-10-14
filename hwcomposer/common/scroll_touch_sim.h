@@ -150,6 +150,26 @@ int sim_scroll_gear_multiplier(void);
 
 // ---- Helpers ------------------------------------------------------------
 
+// Lazy-open the input pipe for a given INPUT_* type. Returns 0 on success,
+// -1 on failure. The backend reuses this to write touch / pointer / keyboard
+// events in the non-scroll paths (mouse motion, button press, native wl_touch
+// dispatch, etc.).
+int sim_ensure_pipe(struct display *display, int input_type);
+
+// Append one input_event to the local `event[]` array / `n` counter that
+// backends use to build a multi-event write into the input pipe. The macro
+// reads the locally-declared `rt` (struct timespec) and `n` (unsigned int).
+// It does NOT call write() -- the caller does that once the buffer is full.
+// This is the public replacement for the legacy ADD_EVENT macro so the same
+// helper is available to scroll_touch_sim.cpp and the backend sources.
+#define SIM_ADD_EVENT(type_, code_, value_)            \
+    event[n].time.tv_sec = rt.tv_sec;                  \
+    event[n].time.tv_usec = rt.tv_nsec / 1000;         \
+    event[n].type = type_;                             \
+    event[n].code = code_;                             \
+    event[n].value = value_;                           \
+    n++;
+
 // Convert the 8dp touch-slop distance to pixels for the current density.
 int sim_min_scroll_distance(struct display *display);
 

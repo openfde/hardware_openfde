@@ -911,7 +911,7 @@ pointer_handle_motion(void *data, struct wl_pointer *,
     }
     int x, y;
 
-    if (ensure_pipe(display, INPUT_POINTER))
+    if (sim_ensure_pipe(display, INPUT_POINTER))
         return;
 
     if (!display->pointer_surface)
@@ -939,11 +939,11 @@ pointer_handle_motion(void *data, struct wl_pointer *,
                 __FILE__, __LINE__, strerror(errno));
         }
 
-        ADD_EVENT(EV_ABS, ABS_X, x);
-        ADD_EVENT(EV_ABS, ABS_Y, y);
-        ADD_EVENT(EV_REL, REL_X, x - display->ptrPrvX);
-        ADD_EVENT(EV_REL, REL_Y, y - display->ptrPrvY);
-        ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+        SIM_ADD_EVENT(EV_ABS, ABS_X, x);
+        SIM_ADD_EVENT(EV_ABS, ABS_Y, y);
+        SIM_ADD_EVENT(EV_REL, REL_X, x - display->ptrPrvX);
+        SIM_ADD_EVENT(EV_REL, REL_Y, y - display->ptrPrvY);
+        SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
         display->ptrPrvX = x;
         display->ptrPrvY = y;
         bool near_bord = x <= 10 || y <= 10 || x >= display->width - 10 || y >= display->height - 10;
@@ -973,7 +973,7 @@ handle_relative_motion(void *data, struct zwp_relative_pointer_v1*,
     static double acc_x = 0;
     static double acc_y = 0;
 
-    if (ensure_pipe(display, INPUT_POINTER))
+    if (sim_ensure_pipe(display, INPUT_POINTER))
         return;
 
     acc_x += wl_fixed_to_double(dx);
@@ -990,9 +990,9 @@ handle_relative_motion(void *data, struct zwp_relative_pointer_v1*,
             ALOGE("%s:%d error in touch clock_gettime: %s",
                   __FILE__, __LINE__, strerror(errno));
         }
-        ADD_EVENT(EV_REL, REL_X, (int)acc_x);
-        ADD_EVENT(EV_REL, REL_Y, (int)acc_y);
-        ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+        SIM_ADD_EVENT(EV_REL, REL_X, (int)acc_x);
+        SIM_ADD_EVENT(EV_REL, REL_Y, (int)acc_y);
+        SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
         acc_x -= (int)acc_x;
         acc_y -= (int)acc_y;
@@ -1034,7 +1034,7 @@ pointer_handle_button(void *data, struct wl_pointer *,
         struct timespec rt;
         unsigned int res, n = 0;
 
-        if (ensure_pipe(display, INPUT_POINTER))
+        if (sim_ensure_pipe(display, INPUT_POINTER))
             return;
 
         if (!display->pointer_surface)
@@ -1051,8 +1051,8 @@ pointer_handle_button(void *data, struct wl_pointer *,
                 display->isMouseLeftDown = false;
             }
         }
-        ADD_EVENT(EV_KEY, button, state);
-        ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+        SIM_ADD_EVENT(EV_KEY, button, state);
+        SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
         res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
     }
 }
@@ -1073,7 +1073,7 @@ pointer_handle_axis(void *data, struct wl_pointer *,
     double fVal = wl_fixed_to_double(value) / 10.0f;
     double step = 1.0f;
 
-    if (ensure_pipe(display, INPUT_POINTER))
+    if (sim_ensure_pipe(display, INPUT_POINTER))
         return;
 
     if (!display->pointer_surface)
@@ -1138,9 +1138,9 @@ pointer_handle_axis(void *data, struct wl_pointer *,
             ALOGE("%s:%d error in touch clock_gettime: %s",
                   __FILE__, __LINE__, strerror(errno));
         }
-        ADD_EVENT(EV_REL, (axis == WL_POINTER_AXIS_VERTICAL_SCROLL)
+        SIM_ADD_EVENT(EV_REL, (axis == WL_POINTER_AXIS_VERTICAL_SCROLL)
               ? REL_WHEEL : REL_HWHEEL, move);
-        ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+        SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
         res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
         if (res < sizeof(event))
@@ -1203,7 +1203,7 @@ touch_handle_down(void *data, struct wl_touch *,
     int x, y;
     unsigned int res, n = 0;
 
-    if (ensure_pipe(display, INPUT_TOUCH))
+    if (sim_ensure_pipe(display, INPUT_TOUCH))
         return;
 
     display->touch_surfaces[id] = surface;
@@ -1253,7 +1253,7 @@ touch_handle_motion(void *data, struct wl_touch *,
     int x, y;
     unsigned int res, n = 0;
 
-    if (ensure_pipe(display, INPUT_TOUCH))
+    if (sim_ensure_pipe(display, INPUT_TOUCH))
         return;
     int slot = sim_get_touch_id(display, id);
     if (slot < 0) return;
@@ -1306,7 +1306,7 @@ touch_handle_cancel(void *data, struct wl_touch *)
     unsigned int res, n;
     int i, id;
 
-    if (ensure_pipe(display, INPUT_TOUCH))
+    if (sim_ensure_pipe(display, INPUT_TOUCH))
         return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -1323,13 +1323,13 @@ touch_handle_cancel(void *data, struct wl_touch *)
 
             n = 0;
             // Turn finger into palm.
-            ADD_EVENT(EV_ABS, ABS_MT_SLOT, i);
-            ADD_EVENT(EV_ABS, ABS_MT_TOOL_TYPE, MT_TOOL_PALM);
-            ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+            SIM_ADD_EVENT(EV_ABS, ABS_MT_SLOT, i);
+            SIM_ADD_EVENT(EV_ABS, ABS_MT_TOOL_TYPE, MT_TOOL_PALM);
+            SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
             // Lift off.
-            ADD_EVENT(EV_ABS, ABS_MT_TOOL_TYPE, MT_TOOL_FINGER);
-            ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
-            ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+            SIM_ADD_EVENT(EV_ABS, ABS_MT_TOOL_TYPE, MT_TOOL_FINGER);
+            SIM_ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
+            SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
             res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
             if (res < sizeof(event))
@@ -1346,18 +1346,18 @@ touch_handle_shape(void *data, struct wl_touch *, int32_t id, wl_fixed_t major, 
     struct timespec rt;
     unsigned int res, n = 0;
 
-    if (ensure_pipe(display, INPUT_TOUCH))
+    if (sim_ensure_pipe(display, INPUT_TOUCH))
         return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
        ALOGE("%s:%d error in touch clock_gettime: %s",
             __FILE__, __LINE__, strerror(errno));
     }
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, sim_get_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, sim_get_touch_id(display, id));
-    ADD_EVENT(EV_ABS, ABS_MT_TOUCH_MAJOR, wl_fixed_to_int(major));
-    ADD_EVENT(EV_ABS, ABS_MT_TOUCH_MINOR, wl_fixed_to_int(minor));
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_SLOT, sim_get_touch_id(display, id));
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, sim_get_touch_id(display, id));
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_TOUCH_MAJOR, wl_fixed_to_int(major));
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_TOUCH_MINOR, wl_fixed_to_int(minor));
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
     res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
     if (res < sizeof(event))
@@ -1464,7 +1464,7 @@ static void handle_pinch_update(void *data, struct zwp_pointer_gesture_pinch_v1 
     int x, y;
     unsigned int res, n = 0;
 
-    if (ensure_pipe(display, INPUT_TOUCH))
+    if (sim_ensure_pipe(display, INPUT_TOUCH))
         return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -1483,18 +1483,18 @@ static void handle_pinch_update(void *data, struct zwp_pointer_gesture_pinch_v1 
     int x1 = x + (gesture_scaling_start_distance * iscale * cos(irotation));
     int y1 = y + (gesture_scaling_start_distance * iscale * sin(irotation));
 
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, 0);
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, 0);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x0);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y0);
-    ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, 1);
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, 1);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x1);
-    ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y1);
-    ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_SLOT, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_SLOT, 1);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, 1);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_POSITION_X, x1);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_POSITION_Y, y1);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
     res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
 
@@ -1515,7 +1515,7 @@ static void handle_pinch_end(void *data, struct zwp_pointer_gesture_pinch_v1 *ge
     struct timespec rt;
     unsigned int res, n = 0;
 
-    if (ensure_pipe(display, INPUT_TOUCH))
+    if (sim_ensure_pipe(display, INPUT_TOUCH))
         return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -1523,12 +1523,12 @@ static void handle_pinch_end(void *data, struct zwp_pointer_gesture_pinch_v1 *ge
             __FILE__, __LINE__, strerror(errno));
     }
 
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, 0);
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-    ADD_EVENT(EV_ABS, ABS_MT_SLOT, 1);
-    ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_SLOT, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_SLOT, 1);
+    SIM_ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
     res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
     if (res < sizeof(event))
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -1845,7 +1845,7 @@ tablet_tool_proximity_in(void *data, struct zwp_tablet_tool_v2 *tool,
     struct timespec rt;
     unsigned int res, n = 0;
 
-    if (ensure_pipe(display, INPUT_TABLET))
+    if (sim_ensure_pipe(display, INPUT_TABLET))
         return;
 
     display->tablet_surface = surface;
@@ -1855,8 +1855,8 @@ tablet_tool_proximity_in(void *data, struct zwp_tablet_tool_v2 *tool,
               __FILE__, __LINE__, strerror(errno));
     }
 
-    ADD_EVENT(EV_KEY, display->tablet_tools_evt[tool], 1);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_KEY, display->tablet_tools_evt[tool], 1);
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
     res = write(display->input_fd[INPUT_TABLET], &event, sizeof(event));
     if (res < sizeof(event))
@@ -1871,7 +1871,7 @@ tablet_tool_proximity_out(void *data, struct zwp_tablet_tool_v2 *tool)
     struct timespec rt;
     unsigned int res, n = 0;
 
-    if (ensure_pipe(display, INPUT_TABLET))
+    if (sim_ensure_pipe(display, INPUT_TABLET))
         return;
 
     display->tablet_surface = NULL;
@@ -1881,8 +1881,8 @@ tablet_tool_proximity_out(void *data, struct zwp_tablet_tool_v2 *tool)
               __FILE__, __LINE__, strerror(errno));
     }
 
-    ADD_EVENT(EV_KEY, display->tablet_tools_evt[tool], 0);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_KEY, display->tablet_tools_evt[tool], 0);
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
     res = write(display->input_fd[INPUT_TABLET], &event, sizeof(event));
     if (res < sizeof(event))
@@ -1897,7 +1897,7 @@ tablet_tool_down(void *data, struct zwp_tablet_tool_v2 *, uint32_t)
     struct timespec rt;
     unsigned int res, n = 0;
 
-    if (ensure_pipe(display, INPUT_TABLET))
+    if (sim_ensure_pipe(display, INPUT_TABLET))
         return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -1905,8 +1905,8 @@ tablet_tool_down(void *data, struct zwp_tablet_tool_v2 *, uint32_t)
               __FILE__, __LINE__, strerror(errno));
     }
 
-    ADD_EVENT(EV_KEY, BTN_TOUCH, 1);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_KEY, BTN_TOUCH, 1);
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
     res = write(display->input_fd[INPUT_TABLET], &event, sizeof(event));
     if (res < sizeof(event))
@@ -1921,7 +1921,7 @@ tablet_tool_up(void *data, struct zwp_tablet_tool_v2 *)
     struct timespec rt;
     unsigned int res, n = 0;
 
-    if (ensure_pipe(display, INPUT_TABLET))
+    if (sim_ensure_pipe(display, INPUT_TABLET))
         return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -1929,8 +1929,8 @@ tablet_tool_up(void *data, struct zwp_tablet_tool_v2 *)
               __FILE__, __LINE__, strerror(errno));
     }
 
-    ADD_EVENT(EV_KEY, BTN_TOUCH, 0);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_KEY, BTN_TOUCH, 0);
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
     res = write(display->input_fd[INPUT_TABLET], &event, sizeof(event));
     if (res < sizeof(event))
@@ -1947,7 +1947,7 @@ tablet_tool_motion(void *data, struct zwp_tablet_tool_v2 *,
     int x, y;
     unsigned int res, n = 0;
 
-    if (ensure_pipe(display, INPUT_TABLET))
+    if (sim_ensure_pipe(display, INPUT_TABLET))
         return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -1963,9 +1963,9 @@ tablet_tool_motion(void *data, struct zwp_tablet_tool_v2 *,
     x += display->layers[display->tablet_surface].x;
     y += display->layers[display->tablet_surface].y;
 
-    ADD_EVENT(EV_ABS, ABS_X, x);
-    ADD_EVENT(EV_ABS, ABS_Y, y);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_X, x);
+    SIM_ADD_EVENT(EV_ABS, ABS_Y, y);
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
     res = write(display->input_fd[INPUT_TABLET], &event, sizeof(event));
     if (res < sizeof(event))
@@ -1981,7 +1981,7 @@ tablet_tool_pressure(void *data, struct zwp_tablet_tool_v2 *,
     struct timespec rt;
     unsigned int res, n = 0;
 
-    if (ensure_pipe(display, INPUT_TABLET))
+    if (sim_ensure_pipe(display, INPUT_TABLET))
         return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -1992,8 +1992,8 @@ tablet_tool_pressure(void *data, struct zwp_tablet_tool_v2 *,
     // wayland value is 16 bits. android expects 8 bits max.
     pressure >>= 8;
 
-    ADD_EVENT(EV_ABS, ABS_PRESSURE, pressure);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_PRESSURE, pressure);
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
     res = write(display->input_fd[INPUT_TABLET], &event, sizeof(event));
     if (res < sizeof(event))
@@ -2009,7 +2009,7 @@ tablet_tool_distance(void *data, struct zwp_tablet_tool_v2 *,
     struct timespec rt;
     unsigned int res, n = 0;
 
-    if (ensure_pipe(display, INPUT_TABLET))
+    if (sim_ensure_pipe(display, INPUT_TABLET))
         return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -2017,8 +2017,8 @@ tablet_tool_distance(void *data, struct zwp_tablet_tool_v2 *,
               __FILE__, __LINE__, strerror(errno));
     }
 
-    ADD_EVENT(EV_ABS, ABS_DISTANCE, distance_raw);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_DISTANCE, distance_raw);
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
     res = write(display->input_fd[INPUT_TABLET], &event, sizeof(event));
     if (res < sizeof(event))
@@ -2034,7 +2034,7 @@ tablet_tool_tilt(void *data, struct zwp_tablet_tool_v2 *,
     struct timespec rt;
     unsigned int res, n = 0;
 
-    if (ensure_pipe(display, INPUT_TABLET))
+    if (sim_ensure_pipe(display, INPUT_TABLET))
         return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -2042,9 +2042,9 @@ tablet_tool_tilt(void *data, struct zwp_tablet_tool_v2 *,
             __FILE__, __LINE__, strerror(errno));
     }
 
-    ADD_EVENT(EV_ABS, ABS_TILT_X, wl_fixed_to_int(tilt_x));
-    ADD_EVENT(EV_ABS, ABS_TILT_Y, wl_fixed_to_int(tilt_y));
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_ABS, ABS_TILT_X, wl_fixed_to_int(tilt_x));
+    SIM_ADD_EVENT(EV_ABS, ABS_TILT_Y, wl_fixed_to_int(tilt_y));
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
     res = write(display->input_fd[INPUT_TABLET], &event, sizeof(event));
     if (res < sizeof(event))
@@ -2075,7 +2075,7 @@ tablet_tool_button_state(void *data, struct zwp_tablet_tool_v2 *,
     struct timespec rt;
     unsigned int res, n = 0;
 
-    if (ensure_pipe(display, INPUT_TABLET))
+    if (sim_ensure_pipe(display, INPUT_TABLET))
         return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -2083,8 +2083,8 @@ tablet_tool_button_state(void *data, struct zwp_tablet_tool_v2 *,
               __FILE__, __LINE__, strerror(errno));
     }
 
-    ADD_EVENT(EV_KEY, button, state);
-    ADD_EVENT(EV_SYN, SYN_REPORT, 0);
+    SIM_ADD_EVENT(EV_KEY, button, state);
+    SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
     res = write(display->input_fd[INPUT_TABLET], &event, sizeof(event));
     if (res < sizeof(event))
