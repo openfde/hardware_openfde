@@ -100,16 +100,8 @@ enum {
     GRALLOC_FTG340
 };
 
-enum x11_keyboard_key_state {
-        /**
-         * key is not pressed
-         */
-        X11_KEYBOARD_KEY_STATE_RELEASED = 0,
-        /**
-         * key is pressed
-         */
-        X11_KEYBOARD_KEY_STATE_PRESSED = 1,
-};
+// Key up/down state for sim_send_key_event() now lives in the common
+// scroll_touch_sim.h header as enum SimKeyState.
 
 
 #define MAX_TOUCHPOINTS 10
