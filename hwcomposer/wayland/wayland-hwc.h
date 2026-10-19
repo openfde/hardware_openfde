@@ -226,6 +226,10 @@ struct display {
     bool need_send_touch_btn_down;
     bool need_send_touch_btn_up;
     long touch_tracking_id[MAX_TOUCHPOINTS];
+
+    // HWC 1.4: index of the currently active screen configuration
+    // (0 == the real/native resolution).
+    int active_config;
 };
 
 struct buffer {
@@ -269,6 +273,24 @@ struct window {
     bool isActive;
     struct wp_fractional_scale_v1 *fractional_scale;
 };
+
+// HWC 1.4 screen configurations. Slot 0 is always the real (native)
+// resolution; the remaining slots are the presets that neither duplicate
+// nor exceed it.
+struct ScreenConfig {
+    int Width;
+    int Height;
+    int Density;
+};
+
+const int defaultConfigIndex = 0;
+extern int gScreenConfigCount;
+extern ScreenConfig *screenConfigs;
+
+void screen_configs_init(int realWidth, int realHeight);
+void screen_configs_destroy();
+int screen_config_get_index(int width, int height);
+int screen_config_set_and_get_index(int width, int height);
 
 typedef struct
 {

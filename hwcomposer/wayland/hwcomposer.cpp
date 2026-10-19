@@ -1085,13 +1085,23 @@ static void hwc_dump(hwc_composer_device_1* dev __unused, char* buff __unused,
 
 static int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
                                    int disp, uint32_t* configs, size_t* numConfigs) {
-    if (*numConfigs == 0) {
-        return 0;
-    }
-
     if (disp == HWC_DISPLAY_PRIMARY) {
-        configs[0] = 0;
-        *numConfigs = 1;
+        // 主屏支持多分辨率：config 0 为真实分辨率，其余为去重后的预设分辨率
+        size_t supportedConfigCount = gScreenConfigCount;
+        if (*numConfigs == 0) {
+            *numConfigs = supportedConfigCount;
+            return 0;
+        }
+        if (configs == NULL) {
+            return -EINVAL;
+        }
+        size_t i;
+        for (i = 0; i < *numConfigs && i < supportedConfigCount; i++) {
+            configs[i] = (uint32_t)i;
+        }
+
+        // 更新实际写入的数量
+        *numConfigs = i;
         return 0;
     }
 
@@ -1099,12 +1109,133 @@ static int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
 }
 
 
+static void hwc_resize_wayland_windows(struct openfde_hwc_composer_device_1* pdev,
+                                       int target_width, int target_height) {
+    if (!pdev || !pdev->display) {
+        return;
+    }
+
+    struct window_snapshot {
+        std::string key;
+        std::string app_id;
+        std::string task_id;
+        bool is_active;
+        hwc_color_t color;
+    };
+
+    std::vector<window_snapshot> snapshots;
+    snapshots.reserve(pdev->windows.size());
+
+    for (auto it = pdev->windows.begin(); it != pdev->windows.end(); ++it) {
+        struct window* window = it->second;
+        if (!window) {
+            continue;
+        }
+
+        uint8_t alpha = (window->appID == "Openfde" || !pdev->multi_windows) ? 255 : 0;
+        snapshots.push_back(window_snapshot{
+                it->first,
+                window->appID,
+                window->taskID,
+                window->isActive,
+                {0, 0, 0, alpha}});
+    }
+
+    for (auto it = pdev->windows.begin(); it != pdev->windows.end(); ++it) {
+        if (it->second) {
+            destroy_window(it->second);
+        }
+    }
+    pdev->windows.clear();
+
+    // create_window() picks up display->width/height for the viewport
+    // destination, so recreating the windows applies the new resolution.
+    for (const auto& snapshot : snapshots) {
+        struct window* new_window = create_window(
+                pdev->display,
+                pdev->use_subsurface,
+                snapshot.app_id,
+                snapshot.task_id,
+                snapshot.color);
+        if (!new_window) {
+            ALOGE("failed to recreate window for key=%s app=%s task=%s size=%dx%d",
+                  snapshot.key.c_str(),
+                  snapshot.app_id.c_str(),
+                  snapshot.task_id.c_str(),
+                  target_width,
+                  target_height);
+            continue;
+        }
+        new_window->isActive = snapshot.is_active;
+        pdev->windows[snapshot.key] = new_window;
+    }
+}
+
+
+static int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, int config) {
+    struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
+
+    if (disp != HWC_DISPLAY_PRIMARY) {
+        return -EINVAL;
+    }
+
+    if (config < 0 || config >= gScreenConfigCount) {
+        ALOGE("unsupported active config %u for display %d", config, disp);
+        return -EINVAL;
+    }
+
+    if (pdev->display->active_config == config) {
+        return 0;
+    }
+    int target_width = 0;
+    int target_height = 0;
+    // config 0 为真实分辨率，其余为去重后的预设分辨率
+    if (config < gScreenConfigCount) {
+        if (screenConfigs[config].Width == 0 || screenConfigs[config].Height == 0 ){
+            return -EINVAL;
+        }
+        target_width = screenConfigs[config].Width;
+        target_height = screenConfigs[config].Height;
+    }
+
+    pdev->display->full_width = target_width;
+    pdev->display->full_height = target_height;
+    double scale = pdev->display->scale > 0 ? pdev->display->scale : 1.0;
+    pdev->display->width = target_width / scale;
+    pdev->display->height = target_height / scale;
+
+    hwc_resize_wayland_windows(pdev, target_width, target_height);
+
+    ALOGE("setActiveConfig: config=%d resized windows to %dx%d", config, target_width, target_height);
+    pdev->display->active_config = config;
+
+    return 0;
+}
+
+
+static int hwc_get_active_config(struct hwc_composer_device_1* dev, int disp ) {
+    struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
+
+    if (disp != HWC_DISPLAY_PRIMARY) {
+        return -EINVAL;
+    }
+
+    return  pdev->display->active_config;
+}
+
+
 static int32_t hwc_attribute(struct openfde_hwc_composer_device_1* pdev,
-                             const uint32_t attribute) {
+                             const uint32_t attribute, uint32_t config) {
     char property[PROPERTY_VALUE_MAX];
     int width = floor(pdev->display->width * pdev->display->scale);
     int height = floor(pdev->display->height * pdev->display->scale);
     int density = 180;
+    // config > 0 表示选中了非默认（预设）分辨率，按 screenConfigs 覆盖宽高与密度
+    if (config > 0 && config < (uint32_t)gScreenConfigCount) {
+        width = screenConfigs[config].Width;
+        height = screenConfigs[config].Height;
+        density = screenConfigs[config].Density;
+    }
 
     switch(attribute) {
         case HWC_DISPLAY_VSYNC_PERIOD:
@@ -1137,12 +1268,12 @@ static int32_t hwc_attribute(struct openfde_hwc_composer_device_1* pdev,
 }
 
 static int hwc_get_display_attributes(struct hwc_composer_device_1* dev __unused,
-                                      int disp, uint32_t config __unused,
+                                      int disp, uint32_t config,
                                       const uint32_t* attributes, int32_t* values) {
     struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
     for (int i = 0; attributes[i] != HWC_DISPLAY_NO_ATTRIBUTE; i++) {
         if (disp == HWC_DISPLAY_PRIMARY) {
-            values[i] = hwc_attribute(pdev, attributes[i]);
+            values[i] = hwc_attribute(pdev, attributes[i], config);
             if (values[i] == -EINVAL) {
                 return -EINVAL;
             }
@@ -1280,6 +1411,8 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     pdev->base.registerProcs = hwc_register_procs;
     pdev->base.dump = hwc_dump;
     pdev->base.getDisplayConfigs = hwc_get_display_configs;
+    pdev->base.getActiveConfig = hwc_get_active_config;
+    pdev->base.setActiveConfig = hwc_set_active_config;
     pdev->base.getDisplayAttributes = hwc_get_display_attributes;
 
     pdev->vsync_period_ns = 1000*1000*1000/60; // vsync is 60 hz
