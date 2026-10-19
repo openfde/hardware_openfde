@@ -1429,7 +1429,7 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
         setenv("WAYLAND_DISPLAY", property, 1);
     }
     if (property_get("ro.hardware.gralloc", property, "default") > 0) {
-        pdev->display = create_display(property);
+        pdev->display = create_display(property, HWC_DISPLAY_PRIMARY);
     }
     if (!pdev->display) {
         ALOGE("failed to open wayland connection");
