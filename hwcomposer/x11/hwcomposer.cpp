@@ -1712,7 +1712,7 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     }
 
     pdev->base.common.tag = HARDWARE_DEVICE_TAG;
-    pdev->base.common.version = HWC_DEVICE_API_VERSION_1_1;
+    pdev->base.common.version = HWC_DEVICE_API_VERSION_1_4;
     pdev->base.common.module = const_cast<hw_module_t *>(module);
     pdev->base.common.close = hwc_close;
 
