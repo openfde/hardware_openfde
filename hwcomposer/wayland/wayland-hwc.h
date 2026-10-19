@@ -65,6 +65,7 @@ using ::vendor::openfde::task::V1_0::IOpenfdeTask;
 
 enum {
     INPUT_TOUCH,
+    INPUT_TOUCH_EXTERNAL,
     INPUT_KEYBOARD,
     INPUT_POINTER,
     INPUT_TABLET,
@@ -73,6 +74,7 @@ enum {
 
 static const char *INPUT_PIPE_NAME[INPUT_TOTAL] = {
     "/dev/input/wl_touch_events",
+    "/dev/input/wl_touch_external_events",
     "/dev/input/wl_keyboard_events",
     "/dev/input/wl_pointer_events",
     "/dev/input/wl_tablet_events"
