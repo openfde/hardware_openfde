@@ -117,6 +117,11 @@ static double prev_rely = 0;
 
 static int find_argb_visual(struct display *display) ;
 
+static int get_primary_monitor_index(struct display *display);
+static void set_fullscreen_on_monitor(struct display *display, xcb_window_t win, int monitor_index);
+static bool get_monitor_info(struct display *display, int monitor_index);
+static void warp_cursor_back(struct display *display, int back_x, int last_root_y);
+
 void
 destroy_buffer(struct display * display ,struct buffer* buf) {
     if (buf->xcbpixmap) {
