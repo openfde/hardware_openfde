@@ -141,13 +141,9 @@ static int sim_ensure_pipe_impl(struct display *display, int input_type) {
     // The external display delivers simulated touch/scroll events to its own
     // dedicated pipe, so resolve the actual pipe name up front. The fd is still
     // cached in input_fd[input_type] so every sim_* write targets the right one.
-    // (x11-only: the wayland backend has no external display and neither the
-    // display_type member nor the INPUT_TOUCH_EXTERNAL pipe.)
     int pipe_index = input_type;
-#ifdef USE_X11_BACKEND
     if (input_type == INPUT_TOUCH && display->display_type == HWC_DISPLAY_EXTERNAL)
         pipe_index = INPUT_TOUCH_EXTERNAL;
-#endif
 
     // Detect fd that was closed elsewhere (e.g. stray close in hwcomposer.cpp)
     // and force a reopen instead of writing to a stale descriptor.

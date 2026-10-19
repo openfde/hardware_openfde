@@ -2421,7 +2421,7 @@ int screen_config_set_and_get_index(int width, int height) {
 }
 
 struct display *
-create_display(const char *gralloc)
+create_display(const char *gralloc, int target)
 {
     struct display *display = new struct display();
     if (display == NULL) {
@@ -2432,6 +2432,7 @@ create_display(const char *gralloc)
     display->gtype = get_gralloc_type(gralloc);
     display->refresh = 0;
     display->isMaximized = true;
+    display->display_type = target;
     display->display = wl_display_connect(NULL);
     display->multi_windows = property_get_bool("persist.openfde.multi_windows", false);
     ALOGI("WAYLAND_DISPLAY: %s", getenv("WAYLAND_DISPLAY"));
