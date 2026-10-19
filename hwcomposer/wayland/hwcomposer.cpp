@@ -48,6 +48,7 @@
 #include "extension.h"
 #include "OpenfdeWindow.h"
 #include "egl-tools.h"
+#include "../common/hwc_composer.h"
 #include "xdg-shell-client-protocol.h"
 
 using ::android::hardware::configureRpcThreadpool;
@@ -60,29 +61,6 @@ using ::vendor::openfde::window::implementation::OpenfdeWindow;
 
 using ::android::OK;
 using ::android::status_t;
-
-struct openfde_hwc_composer_device_1 {
-    hwc_composer_device_1_t base; // constant after init
-    const hwc_procs_t *procs;     // constant after init
-    pthread_t wayland_thread;     // constant after init
-    pthread_t vsync_thread;       // constant after init
-    pthread_t extension_thread;   // constant after init
-    pthread_t window_service_thread; // constant after init
-    pthread_t egl_worker_thread;  // constant after init
-    int32_t vsync_period_ns;      // constant after init
-    struct display *display;      // constant after init
-    std::map<std::string, struct window *> windows;
-    struct window *calib_window;
-
-    pthread_mutex_t vsync_lock;
-    bool vsync_callback_enabled; // protected by this->vsync_lock
-    uint64_t last_vsync_ns;
-
-    int timeline_fd;
-    int next_sync_point;
-    bool use_subsurface;
-    bool multi_windows;
-};
 
 static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos);
 static void setup_viewport_destination(wp_viewport *viewport, hwc_rect_t frame, struct display *display);
@@ -436,71 +414,6 @@ static struct wl_surface *get_surface(struct openfde_hwc_composer_device_1 *pdev
         .x = layer->displayFrame.left,
         .y = layer->displayFrame.top };
     return window->surfaces[window->lastLayer];
-}
-
-static long time_to_sleep_to_next_vsync(struct timespec *rt, uint64_t last_vsync_ns, unsigned vsync_period_ns)
-{
-    uint64_t now = (uint64_t)rt->tv_sec * 1e9 + rt->tv_nsec;
-    uint64_t frames_since_last_vsync = (now - last_vsync_ns) / vsync_period_ns + 1;
-    uint64_t next_vsync = last_vsync_ns + frames_since_last_vsync * vsync_period_ns;
-
-    return next_vsync - now;
-}
-
-static void* hwc_vsync_thread(void* data) {
-    struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)data;
-    setpriority(PRIO_PROCESS, 0, HAL_PRIORITY_URGENT_DISPLAY);
-
-    struct timespec rt;
-    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-        ALOGE("%s:%d error in vsync thread clock_gettime: %s",
-              __FILE__, __LINE__, strerror(errno));
-    }
-    bool vsync_enabled = false;
-
-    struct timespec wait_time;
-    wait_time.tv_sec = 0;
-
-    pthread_mutex_lock(&pdev->vsync_lock);
-    wait_time.tv_nsec = time_to_sleep_to_next_vsync(&rt, pdev->last_vsync_ns, pdev->vsync_period_ns);
-    pthread_mutex_unlock(&pdev->vsync_lock);
-
-    while (true) {
-        ATRACE_BEGIN("hwc_vsync_thread");
-        int err = nanosleep(&wait_time, NULL);
-        if (err == -1) {
-            if (errno == EINTR) {
-                break;
-            }
-            ATRACE_END();
-            ALOGE("error in vsync thread: %s", strerror(errno));
-            continue;
-        }
-
-        pthread_mutex_lock(&pdev->vsync_lock);
-        vsync_enabled = pdev->vsync_callback_enabled;
-        pthread_mutex_unlock(&pdev->vsync_lock);
-
-        if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-            ALOGE("%s:%d error in vsync thread clock_gettime: %s",
-                  __FILE__, __LINE__, strerror(errno));
-        }
-
-        pthread_mutex_lock(&pdev->vsync_lock);
-        wait_time.tv_nsec = time_to_sleep_to_next_vsync(&rt, pdev->last_vsync_ns, pdev->vsync_period_ns);
-        pthread_mutex_unlock(&pdev->vsync_lock);
-
-        if (!vsync_enabled || !pdev->procs || !pdev->procs->vsync) {
-            ATRACE_END();
-            continue;
-        }
-
-        int64_t timestamp = (uint64_t)rt.tv_sec * 1e9 + rt.tv_nsec;
-        pdev->procs->vsync(pdev->procs, 0, timestamp);
-        ATRACE_END();
-    }
-
-    return NULL;
 }
 
 static void
@@ -1037,45 +950,6 @@ sync:
     return err;
 }
 
-static int hwc_query(struct hwc_composer_device_1* dev, int what, int* value) {
-    struct openfde_hwc_composer_device_1* pdev =
-            (struct openfde_hwc_composer_device_1*)dev;
-
-    switch (what) {
-        case HWC_VSYNC_PERIOD:
-            value[0] = pdev->vsync_period_ns;
-            break;
-        default:
-            // unsupported query
-            ALOGE("%s badness unsupported query what=%d", __FUNCTION__, what);
-            return -EINVAL;
-    }
-    return 0;
-}
-
-static int hwc_event_control(struct hwc_composer_device_1* dev, int dpy __unused,
-                             int event, int enabled) {
-    struct openfde_hwc_composer_device_1* pdev =
-            (struct openfde_hwc_composer_device_1*)dev;
-    int ret = -EINVAL;
-
-    // enabled can only be 0 or 1
-    if (!(enabled & ~1)) {
-        if (event == HWC_EVENT_VSYNC) {
-            pthread_mutex_lock(&pdev->vsync_lock);
-            pdev->vsync_callback_enabled = enabled;
-            pthread_mutex_unlock(&pdev->vsync_lock);
-            ret = 0;
-        }
-    }
-    return ret;
-}
-
-static int hwc_blank(struct hwc_composer_device_1* dev __unused, int disp __unused,
-                     int blank __unused) {
-    return 0;
-}
-
 static void hwc_dump(hwc_composer_device_1* dev __unused, char* buff __unused,
                      int buff_len __unused) {
     // This is run when running dumpsys.
@@ -1084,33 +958,7 @@ static void hwc_dump(hwc_composer_device_1* dev __unused, char* buff __unused,
 
 
 
-static int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
-                                   int disp, uint32_t* configs, size_t* numConfigs) {
-   size_t supportedConfigCount = gScreenConfigCount;
-    if (*numConfigs == 0) {
-        *numConfigs = supportedConfigCount;
-        return 0;
-    }
-
-    if (disp == HWC_DISPLAY_PRIMARY && *numConfigs > 0) {
-        if (configs == NULL ){
-            return -EINVAL;
-        }
-        size_t i;
-        for (i = 0; i < *numConfigs && i < supportedConfigCount; i++) {
-            configs[i] = (uint32_t)i;
-        }
-
-        // 更新实际写入的数量
-        *numConfigs = i;
-        return 0;
-    }
-
-    return -EINVAL;
-}
-
-
-static void hwc_resize_wayland_windows(struct openfde_hwc_composer_device_1* pdev,
+void hwc_resize_windows(struct openfde_hwc_composer_device_1* pdev,
                                        int target_width, int target_height) {
     if (!pdev || !pdev->display) {
         return;
@@ -1172,138 +1020,6 @@ static void hwc_resize_wayland_windows(struct openfde_hwc_composer_device_1* pde
     }
 }
 
-
-static int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, int config) {
-    struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
-
-    if (disp != HWC_DISPLAY_PRIMARY) {
-        return -EINVAL;
-    }
-
-    if (config < 0 || config >= gScreenConfigCount) {
-        ALOGE("unsupported active config %u for display %d", config, disp);
-        return -EINVAL;
-    }
-
-    if (pdev->display->active_config == config) {
-        return 0;
-    }
-    int target_width = 0;
-    int target_height = 0;
-    // config 0 为真实分辨率，其余为去重后的预设分辨率
-    if (config < gScreenConfigCount) {
-        if (screenConfigs[config].Width == 0 || screenConfigs[config].Height == 0 ){
-            return -EINVAL;
-        }
-        target_width = screenConfigs[config].Width;
-        target_height = screenConfigs[config].Height;
-    }
-
-    pdev->display->full_width = target_width;
-    pdev->display->full_height = target_height;
-    double scale = pdev->display->scale > 0 ? pdev->display->scale : 1.0;
-    pdev->display->width = target_width / scale;
-    pdev->display->height = target_height / scale;
-
-    hwc_resize_wayland_windows(pdev, target_width, target_height);
-
-    ALOGE("setActiveConfig: config=%d resized windows to %dx%d", config, target_width, target_height);
-    pdev->display->active_config = config;
-
-    return 0;
-}
-
-
-static int hwc_get_active_config(struct hwc_composer_device_1* dev, int disp ) {
-    struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
-
-    if (disp != HWC_DISPLAY_PRIMARY) {
-        return -EINVAL;
-    }
-
-    return  pdev->display->active_config;
-}
-
-
-static int32_t hwc_attribute(struct openfde_hwc_composer_device_1* pdev,
-                             const uint32_t attribute, uint32_t config) {
-    char property[PROPERTY_VALUE_MAX];
-    int width = floor(pdev->display->width * pdev->display->scale);
-    int height = floor(pdev->display->height * pdev->display->scale);
-    int density = 180;
-    // config > 0 表示选中了非默认（预设）分辨率，按 screenConfigs 覆盖宽高与密度
-    if (config > 0 && config < (uint32_t)gScreenConfigCount) {
-        width = screenConfigs[config].Width;
-        height = screenConfigs[config].Height;
-        density = screenConfigs[config].Density;
-    }
-
-    switch(attribute) {
-        case HWC_DISPLAY_VSYNC_PERIOD:
-            return pdev->vsync_period_ns;
-        case HWC_DISPLAY_WIDTH: {
-            if (property_get("persist.openfde.width_padding", property, nullptr) > 0)
-                width -= atoi(property);
-            std::string width_str = std::to_string(width);
-            property_set("openfde.display_width", width_str.c_str());
-            return width;
-        }
-        case HWC_DISPLAY_HEIGHT: {
-            if (property_get("persist.openfde.height_padding", property, nullptr) > 0)
-                height -= atoi(property);
-            std::string height_str = std::to_string(height);
-            property_set("openfde.display_height", height_str.c_str());
-            return height;
-        }
-        case HWC_DISPLAY_DPI_X:
-        case HWC_DISPLAY_DPI_Y:
-            if (property_get("ro.sf.lcd_density", property, nullptr) > 0)
-                density = atoi(property);
-            return density * 1000;
-        case HWC_DISPLAY_COLOR_TRANSFORM:
-            return HAL_COLOR_TRANSFORM_IDENTITY;
-        default:
-            ALOGE("unknown display attribute %u", attribute);
-            return -EINVAL;
-    }
-}
-
-static int hwc_get_display_attributes(struct hwc_composer_device_1* dev __unused,
-                                      int disp, uint32_t config,
-                                      const uint32_t* attributes, int32_t* values) {
-    struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
-    for (int i = 0; attributes[i] != HWC_DISPLAY_NO_ATTRIBUTE; i++) {
-        if (disp == HWC_DISPLAY_PRIMARY) {
-            values[i] = hwc_attribute(pdev, attributes[i], config);
-            if (values[i] == -EINVAL) {
-                return -EINVAL;
-            }
-        } else {
-            ALOGE("unknown display type %u", disp);
-            return -EINVAL;
-        }
-    }
-
-    return 0;
-}
-
-static int hwc_close(hw_device_t* dev) {
-    struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
-
-    for (std::map<buffer_handle_t, struct buffer *>::iterator it = pdev->display->buffer_map.begin(); it != pdev->display->buffer_map.end(); it++)
-    {
-        destroy_buffer(it->second);
-    }
-    pdev->display->buffer_map.clear();
-
-    destroy_display(pdev->display);
-
-    pthread_kill(pdev->wayland_thread, SIGTERM);
-    pthread_join(pdev->wayland_thread, NULL);
-
-    delete dev;
-    return 0;
-}
 
 static void* hwc_wayland_thread(void* data) {
     struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)data;
@@ -1375,12 +1091,6 @@ shutdown:
     // In normal operation, we don't expect the thread pool to shutdown
     ALOGE("Openfde Window HAL service is shutting down.");
     return NULL;
-}
-
-static void hwc_register_procs(struct hwc_composer_device_1* dev,
-                               hwc_procs_t const* procs) {
-    struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
-    pdev->procs = procs;
 }
 
 static int hwc_open(const struct hw_module_t* module, const char* name,

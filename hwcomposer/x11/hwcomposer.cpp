@@ -59,6 +59,7 @@
 #include "extension.h"
 #include "WaydroidWindow.h"
 #include "egl-tools.h"
+#include "../common/hwc_composer.h"
 
 //using ::android::hardware::configureRpcThreadpool;
 using ::android::hardware::joinRpcThreadpool;
@@ -71,33 +72,10 @@ using ::vendor::openfde::window::implementation::OpenfdeWindow;
 using ::android::OK;
 using ::android::status_t;
 
-struct waydroid_hwc_composer_device_1 {
-    hwc_composer_device_1_t base; // constant after init
-    const hwc_procs_t *procs;     // constant after init
-    pthread_t vsync_thread;       // constant after init
-    pthread_t extension_thread;   // constant after init
-    pthread_t window_service_thread; // constant after init
-    pthread_t egl_worker_thread;  // constant after init
-    int32_t vsync_period_ns;      // constant after init
-    struct display *display;      // constant after init
-    std::map<std::string, struct window *> windows;
-    struct window *calib_window;
-
-    pthread_mutex_t vsync_lock;
-    bool vsync_callback_enabled; // protected by this->vsync_lock
-    uint64_t last_vsync_ns;
-
-    int timeline_fd;
-    int next_sync_point;
-    bool use_subsurface;
-    bool multi_windows;
-    int32_t aosp_version;
-};
-
 int cancel_maximum(xcb_connection_t *conn,xcb_screen_t * screen, xcb_window_t main_win);
-static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos,struct window *window);
+static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos,struct window *window);
 
-static void erase_cursor_layer_buffer(waydroid_hwc_composer_device_1* pdev, buffer_handle_t handle){
+static void erase_cursor_layer_buffer(openfde_hwc_composer_device_1* pdev, buffer_handle_t handle){
     auto it = pdev->display->buffer_map.find(handle);
     if (it != pdev->display->buffer_map.end()) {
         destroy_buffer(pdev->display,it->second);
@@ -134,7 +112,7 @@ Cursor create_empty_cursor(Display *display, Window root) {
     return cursor;
 }
 
-static void x11_set_custom_cursor(waydroid_hwc_composer_device_1* pdev, Picture xpicture, int hot_x, int hot_y) {
+static void x11_set_custom_cursor(openfde_hwc_composer_device_1* pdev, Picture xpicture, int hot_x, int hot_y) {
     ALOGD("x11_set_custom_cursor hot_x: %d, hot_y: %d", hot_x, hot_y);
     struct display *display = pdev->display;
 
@@ -167,7 +145,7 @@ static void x11_set_custom_cursor(waydroid_hwc_composer_device_1* pdev, Picture 
 
 }
 
-static bool update_cursor_surface(waydroid_hwc_composer_device_1* pdev, hwc_layer_1_t* fb_layer, size_t layer) {
+static bool update_cursor_surface(openfde_hwc_composer_device_1* pdev, hwc_layer_1_t* fb_layer, size_t layer) {
     std::string layer_name = pdev->display->layer_names[layer];
 
     if (layer_name.length() < 12 || layer_name.substr(0, 12) != "[BBQ] Sprite" || fb_layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
@@ -201,7 +179,7 @@ static bool update_cursor_surface(waydroid_hwc_composer_device_1* pdev, hwc_laye
 }
 
 
-static int set_black_background(struct waydroid_hwc_composer_device_1 * pdev, struct window * win){
+static int set_black_background(struct openfde_hwc_composer_device_1 * pdev, struct window * win){
 	if (win->rects.size() <= 1) {
 		return 0;
 	}
@@ -269,7 +247,7 @@ static int set_black_background(struct waydroid_hwc_composer_device_1 * pdev, st
 
 static int hwc_prepare(hwc_composer_device_1_t* dev,
                        size_t numDisplays, hwc_display_contents_1_t** displays) {
-    struct waydroid_hwc_composer_device_1 *pdev = (struct waydroid_hwc_composer_device_1 *)dev;
+    struct openfde_hwc_composer_device_1 *pdev = (struct openfde_hwc_composer_device_1 *)dev;
 
     if (!numDisplays || !displays) return 0;
 
@@ -378,14 +356,14 @@ static int update_shm_pixmap(struct display * display, struct buffer *buffer, st
 }
 
 
-static void * produce_BGRA_8888(struct waydroid_hwc_composer_device_1 *pdev, sp<android::GraphicBuffer> src_gb, sp<android::GraphicBuffer> dst_gb) {
+static void * produce_BGRA_8888(struct openfde_hwc_composer_device_1 *pdev, sp<android::GraphicBuffer> src_gb, sp<android::GraphicBuffer> dst_gb) {
     pdev->display->egl_work_queue.push_back(std::bind(egl_convert_buffer_to_BGRA_8888, pdev->display, src_gb,dst_gb));
 	sem_post(&pdev->display->egl_go);
 	sem_wait(&pdev->display->egl_done);
 	return (void *)dst_gb->getNativeBuffer()->handle;
 }
 
-static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, struct window *window, struct buffer *buf, int pixel_stride) {
+static void createDri3XRenderPicture (struct openfde_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, struct window *window, struct buffer *buf, int pixel_stride) {
 	int width,height, stride, format, prime_fd, size;
 	int usage = GRALLOC_USAGE_HW_TEXTURE;
     if (pdev->display->gtype == GRALLOC_GBM) {
@@ -524,7 +502,7 @@ static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pde
     }
 }
 
-static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos,struct window *window)
+static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos,struct window *window)
 {
     uint32_t format;
     uint32_t pixel_stride;
@@ -652,7 +630,7 @@ static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev,
 }
 
 
-static int adjust_window_geo(struct waydroid_hwc_composer_device_1 * pdev, hwc_layer_1_t * layer, struct buffer *buf, struct window *window, bool use_subsurface){
+static int adjust_window_geo(struct openfde_hwc_composer_device_1 * pdev, hwc_layer_1_t * layer, struct buffer *buf, struct window *window, bool use_subsurface){
     if (!use_subsurface)
         return  0;
     hwc_rect_t sourceCrop = layer->sourceCropi;
@@ -730,71 +708,6 @@ static int adjust_window_geo(struct waydroid_hwc_composer_device_1 * pdev, hwc_l
     return 0;
 }
 
-static long time_to_sleep_to_next_vsync(struct timespec *rt, uint64_t last_vsync_ns, unsigned vsync_period_ns)
-{
-    uint64_t now = (uint64_t)rt->tv_sec * 1e9 + rt->tv_nsec;
-    uint64_t frames_since_last_vsync = (now - last_vsync_ns) / vsync_period_ns + 1;
-    uint64_t next_vsync = last_vsync_ns + frames_since_last_vsync * vsync_period_ns;
-
-    return next_vsync - now;
-}
-
-static void* hwc_vsync_thread(void* data) {
-    struct waydroid_hwc_composer_device_1* pdev = (struct waydroid_hwc_composer_device_1*)data;
-    setpriority(PRIO_PROCESS, 0, HAL_PRIORITY_URGENT_DISPLAY);
-
-    struct timespec rt;
-    if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-        ALOGE("%s:%d error in vsync thread clock_gettime: %s",
-              __FILE__, __LINE__, strerror(errno));
-    }
-    bool vsync_enabled = false;
-
-    struct timespec wait_time;
-    wait_time.tv_sec = 0;
-
-    pthread_mutex_lock(&pdev->vsync_lock);
-    wait_time.tv_nsec = time_to_sleep_to_next_vsync(&rt, pdev->last_vsync_ns, pdev->vsync_period_ns);
-    pthread_mutex_unlock(&pdev->vsync_lock);
-
-    while (true) {
-        ATRACE_BEGIN("hwc_vsync_thread");
-        int err = nanosleep(&wait_time, NULL);
-        if (err == -1) {
-            if (errno == EINTR) {
-                break;
-            }
-            ATRACE_END();
-            ALOGE("error in vsync thread: %s", strerror(errno));
-            continue;
-        }
-
-        pthread_mutex_lock(&pdev->vsync_lock);
-        vsync_enabled = pdev->vsync_callback_enabled;
-        pthread_mutex_unlock(&pdev->vsync_lock);
-
-        if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
-            ALOGE("%s:%d error in vsync thread clock_gettime: %s",
-                  __FILE__, __LINE__, strerror(errno));
-        }
-
-        pthread_mutex_lock(&pdev->vsync_lock);
-        wait_time.tv_nsec = time_to_sleep_to_next_vsync(&rt, pdev->last_vsync_ns, pdev->vsync_period_ns);
-        pthread_mutex_unlock(&pdev->vsync_lock);
-
-        if (!vsync_enabled || !pdev->procs || !pdev->procs->vsync) {
-            ATRACE_END();
-            continue;
-        }
-
-        int64_t timestamp = (uint64_t)rt.tv_sec * 1e9 + rt.tv_nsec;
-        pdev->procs->vsync(pdev->procs, 0, timestamp);
-        ATRACE_END();
-    }
-
-    return NULL;
-}
-
 void get_input_shape(xcb_connection_t *conn, xcb_window_t window) {
     if (!xcb_get_extension_data(conn, &xcb_shape_id)->present) {
         ALOGE("Shape extension not available\n");
@@ -822,7 +735,7 @@ void get_input_shape(xcb_connection_t *conn, xcb_window_t window) {
 static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                    hwc_display_contents_1_t** displays) {
     char property[PROPERTY_VALUE_MAX];
-    struct waydroid_hwc_composer_device_1* pdev = (struct waydroid_hwc_composer_device_1*)dev;
+    struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
 
     if (!numDisplays || !displays) {
         return 0;
@@ -1345,53 +1258,14 @@ sync:
     return err;
 }
 
-static int hwc_query(struct hwc_composer_device_1* dev, int what, int* value) {
-    struct waydroid_hwc_composer_device_1* pdev =
-            (struct waydroid_hwc_composer_device_1*)dev;
-
-    switch (what) {
-        case HWC_VSYNC_PERIOD:
-            value[0] = pdev->vsync_period_ns;
-            break;
-        default:
-            // unsupported query
-            ALOGE("%s badness unsupported query what=%d", __FUNCTION__, what);
-            return -EINVAL;
-    }
-    return 0;
-}
-
-static int hwc_event_control(struct hwc_composer_device_1* dev, int dpy __unused,
-                             int event, int enabled) {
-    struct waydroid_hwc_composer_device_1* pdev =
-            (struct waydroid_hwc_composer_device_1*)dev;
-    int ret = -EINVAL;
-
-    // enabled can only be 0 or 1
-    if (!(enabled & ~1)) {
-        if (event == HWC_EVENT_VSYNC) {
-            pthread_mutex_lock(&pdev->vsync_lock);
-            pdev->vsync_callback_enabled = enabled;
-            pthread_mutex_unlock(&pdev->vsync_lock);
-            ret = 0;
-        }
-    }
-    return ret;
-}
-
-static int hwc_blank(struct hwc_composer_device_1* dev __unused, int disp __unused,
-                     int blank __unused) {
-    return 0;
-}
-
 static void hwc_dump(hwc_composer_device_1* dev , char* buff ,
                      int buff_len ) {
     if (!buff || buff_len <= 0) {
         return;
     }
 
-    struct waydroid_hwc_composer_device_1* pdev =
-            (struct waydroid_hwc_composer_device_1*)dev;
+    struct openfde_hwc_composer_device_1* pdev =
+            (struct openfde_hwc_composer_device_1*)dev;
     if (!pdev || !pdev->display) {
         snprintf(buff, buff_len, "hwcomposerx11: invalid device or display\n");
         return;
@@ -1453,33 +1327,9 @@ static void hwc_dump(hwc_composer_device_1* dev , char* buff ,
 }
 
 
-static int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
-                                   int disp, uint32_t* configs, size_t* numConfigs) {
-   size_t supportedConfigCount = gScreenConfigCount;
-    if (*numConfigs == 0) {
-        *numConfigs = supportedConfigCount;
-        return 0;
-    }
-
-    if (disp == HWC_DISPLAY_PRIMARY && *numConfigs > 0) {
-        if (configs == NULL ){
-            return -EINVAL;
-        }
-        size_t i;
-        for (i = 0; i < *numConfigs && i < supportedConfigCount; i++) {
-            configs[i] = (uint32_t)i;
-        }
-
-        // 更新实际写入的数量
-        *numConfigs = i;
-        return 0;
-    }
-
-    return -EINVAL;
-}
-
-
-static void hwc_resize_x11_windows(struct waydroid_hwc_composer_device_1* pdev,
+// Backend hook called by the shared hwc_set_active_config() in
+// ../common/hwc_composer.cpp. Recreates every window at the new resolution.
+void hwc_resize_windows(struct openfde_hwc_composer_device_1* pdev,
                                    int target_width, int target_height) {
     if (!pdev || !pdev->display) {
         return;
@@ -1544,150 +1394,8 @@ static void hwc_resize_x11_windows(struct waydroid_hwc_composer_device_1* pdev,
 }
 
 
-static int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, int config) {
-    struct waydroid_hwc_composer_device_1* pdev = (struct waydroid_hwc_composer_device_1*)dev;
-
-    if (disp != HWC_DISPLAY_PRIMARY) {
-        return -EINVAL;
-    }
-
-    if (config < 0 || config >= gScreenConfigCount) {
-        ALOGE("unsupported active config %u for display %d", config, disp);
-        return -EINVAL;
-    }
-
-    if (pdev->display->active_config == config) {
-        return 0;
-    }
-    int target_width = 0;
-    int target_height = 0;
-    // config 0 为真实分辨率，其余为去重后的预设分辨率
-    if (config < gScreenConfigCount) {
-        if (screenConfigs[config].Width == 0 || screenConfigs[config].Height == 0 ){
-            return -EINVAL;
-        }
-        target_width = screenConfigs[config].Width;
-        target_height = screenConfigs[config].Height;
-        //density = screenConfigs[config].Density;
-    }
-    pdev->display->geo_changed = true;
-    pdev->display->active_config = config;
-    pdev->display->width = target_width;
-    pdev->display->height = target_height;
-    pdev->display->full_width = target_width;
-    pdev->display->full_height = target_height;
-    pdev->display->primary_x = 0;
-    pdev->display->primary_y = 0;
-
-    {
-        std::scoped_lock lock(pdev->display->windowsMutex);
-        hwc_resize_x11_windows(pdev, target_width, target_height);
-    }
-
-    ALOGE("setActiveConfig: config=%u resized windows to %dx%d", config, target_width, target_height);
-    pdev->display->active_config = config;
-
-    return 0;
-}
-
-
-static int hwc_get_active_config(struct hwc_composer_device_1* dev, int disp ) {
-    struct waydroid_hwc_composer_device_1* pdev = (struct waydroid_hwc_composer_device_1*)dev;
-
-    if (disp != HWC_DISPLAY_PRIMARY) {
-        return -EINVAL;
-    }
-
-    return  pdev->display->active_config;
-}
-
-
-
-
-static int32_t hwc_attribute(struct waydroid_hwc_composer_device_1* pdev,
-                             const uint32_t attribute, uint32_t config) {
-    char property[PROPERTY_VALUE_MAX];
-    int width = floor(pdev->display->width * pdev->display->scale);
-    int height = floor(pdev->display->height * pdev->display->scale);
-    int density = 160;
-    // 定义不同的分辨率
-    if (config > 0 && config < (uint32_t)gScreenConfigCount ) { 
-        width = screenConfigs[config].Width;
-        height = screenConfigs[config].Height;
-        density = screenConfigs[config].Density;
-    }
-    ALOGE("gy hwc attribute : config=%u ", config);
-
-    switch(attribute) {
-        case HWC_DISPLAY_VSYNC_PERIOD:
-            return pdev->vsync_period_ns;
-        case HWC_DISPLAY_WIDTH: {
-            if (property_get("persist.openfde.width_padding", property, nullptr) > 0)
-                width -= atoi(property);
-            std::string width_str = std::to_string(width);
-            property_set("openfde.display_width", width_str.c_str());
-            return width;
-        }
-        case HWC_DISPLAY_HEIGHT: {
-            if (property_get("persist.openfde.height_padding", property, nullptr) > 0)
-                height -= atoi(property);
-            std::string height_str = std::to_string(height);
-            property_set("openfde.display_height", height_str.c_str());
-            return height;
-        }
-        case HWC_DISPLAY_DPI_X:
-        case HWC_DISPLAY_DPI_Y:
-            if (property_get("ro.sf.lcd_density", property, nullptr) > 0)
-                density = atoi(property);
-            return density * 1000;
-        case HWC_DISPLAY_COLOR_TRANSFORM:
-            return HAL_COLOR_TRANSFORM_IDENTITY;
-        default:
-            ALOGE("unknown display attribute %u", attribute);
-            return -EINVAL;
-    }
-}
-
-
-
-
-static int hwc_get_display_attributes(struct hwc_composer_device_1* dev __unused,
-                                      int disp, uint32_t config ,
-                                      const uint32_t* attributes, int32_t* values) {
-    struct waydroid_hwc_composer_device_1* pdev = (struct waydroid_hwc_composer_device_1*)dev;
-    for (int i = 0; attributes[i] != HWC_DISPLAY_NO_ATTRIBUTE; i++) {
-        if (disp == HWC_DISPLAY_PRIMARY) {
-            values[i] = hwc_attribute(pdev, attributes[i],config);
-            if (values[i] == -EINVAL) {
-                return -EINVAL;
-            }
-        } else {
-            ALOGE("unknown display type %u", disp);
-            return -EINVAL;
-        }
-    }
-
-    return 0;
-}
-
-static int hwc_close(hw_device_t* dev) {
-    struct waydroid_hwc_composer_device_1* pdev = (struct waydroid_hwc_composer_device_1*)dev;
-
-    for (std::map<buffer_handle_t, struct buffer *>::iterator it = pdev->display->buffer_map.begin(); it != pdev->display->buffer_map.end(); it++)
-    {
-        destroy_buffer(pdev->display,it->second);
-    }
-    pdev->display->buffer_map.clear();
-
-    destroy_display(pdev->display);
-
-    delete dev;
-    return 0;
-}
-
-
 static void* hwc_extension_thread(void* data) {
-    struct waydroid_hwc_composer_device_1* pdev = (struct waydroid_hwc_composer_device_1*)data;
+    struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)data;
     sp<IOpenfdeDisplay> waydroidDisplay;
     status_t status;
 
@@ -1717,7 +1425,7 @@ shutdown:
 }
 
 static void* hwc_window_service_thread(void* data) {
-    struct waydroid_hwc_composer_device_1* pdev = (struct waydroid_hwc_composer_device_1*)data;
+    struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)data;
     sp<IOpenfdeWindow> waydroidWindow;
     status_t status;
 
@@ -1750,12 +1458,6 @@ static int hwc_set_power_mode(struct hwc_composer_device_1* dev __unused, int di
     return 0;
 }
 
-static void hwc_register_procs(struct hwc_composer_device_1* dev,
-                               hwc_procs_t const* procs) {
-    struct waydroid_hwc_composer_device_1* pdev = (struct waydroid_hwc_composer_device_1*)dev;
-    pdev->procs = procs;
-}
-
 static int hwc_open(const struct hw_module_t* module, const char* name,
                     struct hw_device_t** device) {
     int ret = 0;
@@ -1766,7 +1468,7 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
         return -EINVAL;
     }
 
-    waydroid_hwc_composer_device_1 *pdev = new waydroid_hwc_composer_device_1();
+    openfde_hwc_composer_device_1 *pdev = new openfde_hwc_composer_device_1();
     if (!pdev) {
         ALOGE("%s failed to allocate dev", __FUNCTION__);
         return -ENOMEM;
