@@ -29,6 +29,7 @@
 #pragma once
 
 #include <cutils/native_handle.h>
+#include <utils/Timers.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -182,6 +183,7 @@ struct display {
     int full_width;
     int full_height;
     int refresh;
+    uint32_t active_config;
     uint32_t *formats;
     int formats_count;
     std::map<uint32_t, std::vector<uint64_t>> modifiers;
@@ -213,6 +215,22 @@ struct display {
     int event_root_x = 0;
     int event_root_y = 0;
     bool mouse_left_btn_pressed = false;
+
+    // New addition: For mouse batch processing and frequency reduction
+    nsecs_t last_mouse_send_time;      // Last sent time
+    int accumulated_relx;              // Cumulative relative X-movement
+    int accumulated_rely;              // Cumulative relative Y-movement
+    bool pending_move;                 // Are there any pending mobile calls
+    int   touch_x[MAX_TOUCHPOINTS];
+    int   touch_y[MAX_TOUCHPOINTS];
+    bool  touch_changed[MAX_TOUCHPOINTS];
+    nsecs_t last_touch_frame_time;
+
+    int next_tracking_id;
+    int active_touch_count;
+    bool need_send_touch_btn_down;
+    bool need_send_touch_btn_up;
+    long touch_tracking_id[MAX_TOUCHPOINTS];
 };
 
 struct buffer {
@@ -306,6 +324,21 @@ struct window {
     std::string taskID;
     bool isActive;
 };
+
+struct ScreenConfig {
+    int Width;
+    int Height;
+    int Density;
+};
+
+const int defaultConfigIndex = 0;
+extern int gScreenConfigCount;
+extern ScreenConfig *screenConfigs;
+
+// Builds screenConfigs dynamically: slot 0 holds the real resolution,
+// followed by the presets that neither duplicate it nor exceed it.
+void screen_configs_init(int realWidth, int realHeight);
+void screen_configs_destroy();
 
 void
 handle_relative_motion(void *data, struct zwp_relative_pointer_v1*,
