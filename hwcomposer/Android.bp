@@ -52,6 +52,7 @@ cc_library_shared {
         "wayland/egl-tools.cpp",
         "common/scroll_touch_sim.cpp",
         "common/hwc_composer.cpp",
+        "common/screen_config.cpp",
     ],
     header_libs: [
         "libsystem_headers",
@@ -120,6 +121,7 @@ cc_library_shared {
         "x11/egl-tools.cpp",
         "common/scroll_touch_sim.cpp",
         "common/hwc_composer.cpp",
+        "common/screen_config.cpp",
     ],
     header_libs: [
         "libsystem_headers",

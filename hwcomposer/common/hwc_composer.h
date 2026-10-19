@@ -30,6 +30,8 @@
 
 #pragma once
 
+#include "screen_config.h"
+
 #if defined(USE_WAYLAND_BACKEND)
 #include "../wayland/wayland-hwc.h"
 #elif defined(USE_X11_BACKEND)
