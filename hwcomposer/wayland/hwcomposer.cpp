@@ -1083,16 +1083,17 @@ static void hwc_dump(hwc_composer_device_1* dev __unused, char* buff __unused,
 }
 
 
+
 static int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
                                    int disp, uint32_t* configs, size_t* numConfigs) {
-    if (disp == HWC_DISPLAY_PRIMARY) {
-        // 主屏支持多分辨率：config 0 为真实分辨率，其余为去重后的预设分辨率
-        size_t supportedConfigCount = gScreenConfigCount;
-        if (*numConfigs == 0) {
-            *numConfigs = supportedConfigCount;
-            return 0;
-        }
-        if (configs == NULL) {
+   size_t supportedConfigCount = gScreenConfigCount;
+    if (*numConfigs == 0) {
+        *numConfigs = supportedConfigCount;
+        return 0;
+    }
+
+    if (disp == HWC_DISPLAY_PRIMARY && *numConfigs > 0) {
+        if (configs == NULL ){
             return -EINVAL;
         }
         size_t i;
