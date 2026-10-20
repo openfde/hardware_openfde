@@ -285,7 +285,7 @@ int hwc_get_active_config(struct hwc_composer_device_1* dev, int disp) {
         return -EINVAL;
     }
 
-    return disp->active_config;
+    return pdev->display->active_config;
 }
 
 int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, int config) {
@@ -301,7 +301,7 @@ int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, int confi
         return -EINVAL;
     }
 
-    if (disp->active_config == config) {
+    if (pdev->display->active_config == config) {
         return 0;
     }
     int target_width = 0;
@@ -315,20 +315,20 @@ int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, int confi
         target_height = screenConfigs[config].Height;
     }
 
-    disp->full_width = target_width;
-    disp->full_height = target_height;
-    disp->geo_changed = true;
-    disp->width = target_width;
-    disp->height = target_height;
-    disp->primary_x = 0;
-    disp->primary_y = 0;
+    pdev->display->full_width = target_width;
+    pdev->display->full_height = target_height;
+    pdev->display->geo_changed = true;
+    pdev->display->width = target_width;
+    pdev->display->height = target_height;
+    pdev->display->primary_x = 0;
+    pdev->display->primary_y = 0;
     {
-        std::scoped_lock lock(disp->windowsMutex);
+        std::scoped_lock lock(pdev->display->windowsMutex);
         hwc_resize_windows(pdev, target_width, target_height);
     }
 
     ALOGE("setActiveConfig: config=%d resized windows to %dx%d", config, target_width, target_height);
-    disp->active_config = config;
+    pdev->display->active_config = config;
 
     return 0;
 }
