@@ -28,6 +28,8 @@
 
 #pragma once
 
+#include "../common/screen_config.h"
+
 #include <cutils/native_handle.h>
 #include <utils/Timers.h>
 
@@ -317,20 +319,8 @@ struct window {
     bool isActive;
 };
 
-struct ScreenConfig {
-    int Width;
-    int Height;
-    int Density;
-};
-
-const int defaultConfigIndex = 0;
-extern int gScreenConfigCount;
-extern ScreenConfig *screenConfigs;
-
-// Builds screenConfigs dynamically: slot 0 holds the real resolution,
-// followed by the presets that neither duplicate it nor exceed it.
-void screen_configs_init(int realWidth, int realHeight);
-void screen_configs_destroy();
+// The HWC 1.4 screen-configuration table (ScreenConfig / screenConfigs /
+// gScreenConfigCount / screen_configs_* ) lives in ../common/screen_config.h.
 
 void
 handle_relative_motion(void *data, struct zwp_relative_pointer_v1*,

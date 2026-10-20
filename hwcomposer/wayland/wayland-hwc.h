@@ -28,6 +28,8 @@
 
 #pragma once
 
+#include "../common/screen_config.h"
+
 #include <cutils/native_handle.h>
 #include <utils/Timers.h>
 
@@ -277,23 +279,8 @@ struct window {
     struct wp_fractional_scale_v1 *fractional_scale;
 };
 
-// HWC 1.4 screen configurations. Slot 0 is always the real (native)
-// resolution; the remaining slots are the presets that neither duplicate
-// nor exceed it.
-struct ScreenConfig {
-    int Width;
-    int Height;
-    int Density;
-};
-
-const int defaultConfigIndex = 0;
-extern int gScreenConfigCount;
-extern ScreenConfig *screenConfigs;
-
-void screen_configs_init(int realWidth, int realHeight);
-void screen_configs_destroy();
-int screen_config_get_index(int width, int height);
-int screen_config_set_and_get_index(int width, int height);
+// The HWC 1.4 screen-configuration table (ScreenConfig / screenConfigs /
+// gScreenConfigCount / screen_configs_* ) lives in ../common/screen_config.h.
 
 typedef struct
 {
