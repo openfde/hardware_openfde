@@ -354,7 +354,11 @@ int hwc_close(hw_device_t* dev) {
 
     for (std::map<buffer_handle_t, struct buffer *>::iterator it = pdev->secondary_display->buffer_map.begin(); it != pdev->secondary_display->buffer_map.end(); it++)
     {
+#ifdef USE_X11_BACKEND
         destroy_buffer(pdev->secondary_display, it->second);
+#else
+        destroy_buffer(it->second);
+#endif
     }
 
     pdev->secondary_display->buffer_map.clear();

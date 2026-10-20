@@ -231,6 +231,9 @@ struct display {
     bool need_send_touch_btn_down;
     bool need_send_touch_btn_up;
     long touch_tracking_id[MAX_TOUCHPOINTS];
+    
+    int primary_x = 0;      //primary display X offset
+    int primary_y = 0;      //primary display Y offset
 
     // HWC 1.4: index of the currently active screen configuration
     // (0 == the real/native resolution).
