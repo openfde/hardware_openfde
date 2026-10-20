@@ -184,20 +184,13 @@ int32_t hwc_attribute(struct openfde_hwc_composer_device_1* pdev,
     char property[PROPERTY_VALUE_MAX];
     int width = floor(pdev->display->width * pdev->display->scale);
     int height = floor(pdev->display->height * pdev->display->scale);
-#ifdef USE_X11_BACKEND
     int density = 160;
-#else
-    int density = 180;
-#endif
     // config > 0 表示选中了非默认（预设）分辨率，按 screenConfigs 覆盖宽高与密度
     if (config > 0 && config < (uint32_t)gScreenConfigCount) {
         width = screenConfigs[config].Width;
         height = screenConfigs[config].Height;
         density = screenConfigs[config].Density;
     }
-#ifdef USE_X11_BACKEND
-    ALOGE("gy hwc attribute : config=%u ", config);
-#endif
 
     switch(attribute) {
         case HWC_DISPLAY_VSYNC_PERIOD:
@@ -286,7 +279,6 @@ int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, int confi
 
     pdev->display->full_width = target_width;
     pdev->display->full_height = target_height;
-#ifdef USE_X11_BACKEND
     pdev->display->geo_changed = true;
     pdev->display->width = target_width;
     pdev->display->height = target_height;
@@ -296,12 +288,6 @@ int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, int confi
         std::scoped_lock lock(pdev->display->windowsMutex);
         hwc_resize_windows(pdev, target_width, target_height);
     }
-#else
-    double scale = pdev->display->scale > 0 ? pdev->display->scale : 1.0;
-    pdev->display->width = target_width / scale;
-    pdev->display->height = target_height / scale;
-    hwc_resize_windows(pdev, target_width, target_height);
-#endif
 
     ALOGE("setActiveConfig: config=%d resized windows to %dx%d", config, target_width, target_height);
     pdev->display->active_config = config;
