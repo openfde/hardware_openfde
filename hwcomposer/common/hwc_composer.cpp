@@ -317,7 +317,6 @@ int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, int confi
 
     disp->full_width = target_width;
     disp->full_height = target_height;
-#ifdef USE_X11_BACKEND
     disp->geo_changed = true;
     disp->width = target_width;
     disp->height = target_height;
@@ -327,12 +326,6 @@ int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, int confi
         std::scoped_lock lock(disp->windowsMutex);
         hwc_resize_windows(pdev, target_width, target_height);
     }
-#else
-    double scale = disp->scale > 0 ? disp->scale : 1.0;
-    disp->width = target_width / scale;
-    disp->height = target_height / scale;
-    hwc_resize_windows(pdev, target_width, target_height);
-#endif
 
     ALOGE("setActiveConfig: config=%d resized windows to %dx%d", config, target_width, target_height);
     disp->active_config = config;
