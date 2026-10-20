@@ -2410,8 +2410,13 @@ create_display(const char *gralloc, int target)
     }
     ALOGE("create_display target: %d", target);
 
-    screen_configs_init(display->full_width, display->full_height);
-    display->active_config = screen_config_set_and_get_index(display->full_width, display->full_height);
+    // 屏幕配置表是进程级全局状态，只能按主屏分辨率构建；扩展屏是单一固定
+    // 配置，若也调用 screen_configs_init 会把主屏的配置表覆盖掉。
+    if (target == HWC_DISPLAY_PRIMARY) {
+        screen_configs_init(display->full_width, display->full_height);
+        display->active_config =
+            screen_config_set_and_get_index(display->full_width, display->full_height);
+    }
     display->width = display->full_width /display->scale;
     display->height = display->full_height /display->scale;
     ALOGI("final display size: %dx%d (scale=%f), primary offset (%d,%d)",

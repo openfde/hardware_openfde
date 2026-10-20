@@ -203,6 +203,21 @@ int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
     return -EINVAL;
 }
 
+// 判断被查询的 config 是否是该显示屏当前生效的配置。
+// 主屏：与 display->active_config 比较；扩展屏只有一个固定配置（config 0），
+// 始终视为生效。
+static bool hwc_is_active_config(struct display *display, uint32_t config) {
+    if (display->display_type != HWC_DISPLAY_PRIMARY) {
+        return config == (uint32_t)defaultConfigIndex;
+    }
+    uint32_t active = (uint32_t)display->active_config;
+    if (active >= (uint32_t)gScreenConfigCount) {
+        // 配置表尚未就绪时，config 0（真实分辨率）即为生效配置
+        active = (uint32_t)defaultConfigIndex;
+    }
+    return config == active;
+}
+
 int32_t hwc_attribute(struct openfde_hwc_composer_device_1* pdev, struct display * display,
                       const uint32_t attribute, uint32_t config) {
     char property[PROPERTY_VALUE_MAX];
@@ -223,10 +238,16 @@ int32_t hwc_attribute(struct openfde_hwc_composer_device_1* pdev, struct display
             if (property_get("persist.openfde.width_padding", property, nullptr) > 0)
                 width -= atoi(property);
             std::string width_str = std::to_string(width);
-            if(display->display_type == HWC_DISPLAY_PRIMARY){
-                property_set("openfde.display_width", width_str.c_str());
-            }else{
-                property_set("openfde.external_display_width", width_str.c_str());
+            // 只在查询当前生效的 config 时才发布内置属性。SurfaceFlinger 会逐个
+            // 枚举所有 config 来构建设置里的分辨率列表，若无条件 property_set，
+            // 最后被查询到的预设分辨率（例如 1280x720）会覆盖真实分辨率
+            // （1920x1080），导致 openfde.display_width 与 wm size 不一致。
+            if (hwc_is_active_config(display, config)) {
+                if(display->display_type == HWC_DISPLAY_PRIMARY){
+                    property_set("openfde.display_width", width_str.c_str());
+                }else{
+                    property_set("openfde.external_display_width", width_str.c_str());
+                }
             }
             return width;
         }
@@ -234,10 +255,13 @@ int32_t hwc_attribute(struct openfde_hwc_composer_device_1* pdev, struct display
             if (property_get("persist.openfde.height_padding", property, nullptr) > 0)
                 height -= atoi(property);
             std::string height_str = std::to_string(height);
-            if(display->display_type == HWC_DISPLAY_PRIMARY){
-                property_set("openfde.display_height", height_str.c_str());
-            }else{
-                property_set("openfde.external_display_height", height_str.c_str());
+            // 同上：仅在生效 config 时发布，避免被枚举到的其它分辨率覆盖。
+            if (hwc_is_active_config(display, config)) {
+                if(display->display_type == HWC_DISPLAY_PRIMARY){
+                    property_set("openfde.display_height", height_str.c_str());
+                }else{
+                    property_set("openfde.external_display_height", height_str.c_str());
+                }
             }
             return height;
         }
