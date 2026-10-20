@@ -329,7 +329,7 @@ static int prepare(hwc_composer_device_1_t* dev,
 
 static int hwc_prepare(hwc_composer_device_1_t* dev,
                        size_t numDisplays, hwc_display_contents_1_t** displays) {
-    struct waydroid_hwc_composer_device_1 *pdev = (struct waydroid_hwc_composer_device_1 *)dev;
+    struct openfde_hwc_composer_device_1 *pdev = (struct openfde_hwc_composer_device_1 *)dev;
 
     if (!numDisplays || !displays) return 0;
 
@@ -816,7 +816,7 @@ static int set(struct hwc_composer_device_1* dev,size_t numDisplays,
                    hwc_display_contents_1_t** displays, int target) {
     //ALOGE("hwc set target: %d", target);
     char property[PROPERTY_VALUE_MAX];
-    struct waydroid_hwc_composer_device_1* pdev = (struct waydroid_hwc_composer_device_1*)dev;
+    struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
 
     /*if (!numDisplays || !displays) {
         return 0;
@@ -1445,7 +1445,6 @@ static void hwc_dump(hwc_composer_device_1* dev , char* buff ,
 // Backend hook called by the shared hwc_set_active_config() in
 // ../common/hwc_composer.cpp. Recreates every window at the new resolution.
 void hwc_resize_windows(struct openfde_hwc_composer_device_1* pdev,
->>>>>>> wayland_1.4
                                    int target_width, int target_height) {
     if (!pdev || !pdev->display) {
         return;
