@@ -44,6 +44,11 @@
 #include <pthread.h>
 #include <stdint.h>
 
+static int64_t global_mouse_icon_addr = -1;
+static bool found_primary_cursor;
+static bool found_external_cursor;
+
+
 // Private data hanging off hwc_composer_device_1_t. Members that only one
 // backend uses are still declared for both so that neither backend has to
 // keep its own copy of the struct.

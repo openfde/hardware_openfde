@@ -147,17 +147,20 @@ static void x11_set_custom_cursor(struct display* disp, Picture xpicture, int ho
 
 static bool update_cursor_surface(struct display *disp, hwc_layer_1_t* fb_layer, size_t layer, std::map<std::string, struct window *> *windows) {
     std::string layer_name = disp->layer_names[layer];
+    ALOGD("update_cursor_surface layer: %s, display type: %d", layer_name.c_str(), disp->display_type);
 
     if (layer_name.length() < 12 || layer_name.substr(0, 12) != "[BBQ] Sprite" || fb_layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
         return false;
     }
 
+    if (fb_layer->compositionType == HWC_FRAMEBUFFER_TARGET){
+        return true;
+    }
     ALOGE("update_cursor_surface found cursor layer: %s", layer_name.c_str());
-    //fb_layer->compositionType = HWC_OVERLAY; // Not participating in SurfaceFlinger GPU compositing hide internal cursor
-    disp->hide_cursor = false;
+    fb_layer->compositionType = HWC_CURSOR_OVERLAY; // Not participating in SurfaceFlinger GPU compositing hide internal cursor
     int64_t mouse_icon_addr = property_get_int64("fde.mouse_icon_addr", 0);
-    if (disp->mouse_icon_addr != mouse_icon_addr) {
-        disp->mouse_icon_addr = mouse_icon_addr;
+    if (global_mouse_icon_addr != mouse_icon_addr) {
+        global_mouse_icon_addr = mouse_icon_addr;
         disp->additional_refresh_cursor_times = 0;
         erase_cursor_layer_buffer(disp, fb_layer->handle);
     }else{
@@ -170,11 +173,11 @@ static bool update_cursor_surface(struct display *disp, hwc_layer_1_t* fb_layer,
 
     struct buffer *buf = get_wl_buffer(disp, fb_layer, layer,NULL);
     if (!buf) {
-        ALOGE("Failed to get wayland buffer");
-        return false;
+        ALOGE("update_cursor_surface Failed to get wayland buffer");
+        return true;
     }
     if(buf->width > 128 || buf->height > 128){
-        ALOGE("cursor size error");
+        ALOGE("update_cursor_surface cursor size error");
         return true;
     }
     int32_t icon_hotspot_x = property_get_int32("fde.mouse_icon_hotspot_x", 5);
@@ -292,6 +295,8 @@ static int prepare(hwc_composer_device_1_t* dev,
     bool foundCursorLayer = false;
     for (size_t i = 0; i < contents->numHwLayers; i++) {
         hwc_layer_1_t* fb_layer = &contents->hwLayers[i];
+        foundCursorLayer |= update_cursor_surface(disp, fb_layer, i, &windows);
+
         if (fb_layer->compositionType == HWC_FRAMEBUFFER_TARGET)
             continue;
         if (fb_layer->flags & HWC_SKIP_LAYER)
@@ -310,18 +315,20 @@ static int prepare(hwc_composer_device_1_t* dev,
             (pdev->use_subsurface ? HWC_FRAMEBUFFER : HWC_OVERLAY))
             fb_layer->compositionType =
                 (pdev->use_subsurface ? HWC_OVERLAY : HWC_FRAMEBUFFER);
-        foundCursorLayer |= update_cursor_surface(disp, fb_layer, i, &windows);
-    }
-
-    if(!foundCursorLayer && disp->mouse_icon_addr != -1){
-        disp->hide_cursor = true;
-        disp->mouse_icon_addr = -1;
         
     }
 
-    if(pdev->display->hide_cursor && pdev->secondary_display->hide_cursor){
+    if(target == HWC_DISPLAY_PRIMARY){
+        found_primary_cursor = foundCursorLayer;
+    }else{
+        found_external_cursor = foundCursorLayer;
+    }
+    ALOGD("prepare found_primary_cursor: %d, found_external_cursor: %d, global_mouse_icon_addr: %ld, target: %d", found_primary_cursor, found_external_cursor, global_mouse_icon_addr, target);
+    if(!found_primary_cursor && !found_external_cursor && global_mouse_icon_addr != -1){
+        global_mouse_icon_addr = -1;
+        disp->additional_refresh_cursor_times = 0;
         //x11_set_custom_cursor(disp, 0, 0, 0,&windows);
-        ALOGI("fde_test x11 cursor hidden");
+        ALOGI("x11 cursor hidden");
     }
 
     return 0;
@@ -576,6 +583,11 @@ static struct buffer *get_wl_buffer(struct display *disp, hwc_layer_1_t *layer, 
         width = layer->displayFrame.right - layer->displayFrame.left;
     if (!height)
         height = layer->displayFrame.bottom - layer->displayFrame.top;
+
+    if(!layer->handle){
+        ALOGE("get_wl_buffer layer->handle is NULL");
+        return NULL;
+    }
 
     auto it = disp->buffer_map.find(layer->handle);
     if (it != disp->buffer_map.end()) {

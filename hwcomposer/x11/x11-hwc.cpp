@@ -455,8 +455,13 @@ static void handle_pinch_update(void *data, uint32_t time, wl_fixed_t dx, wl_fix
     ssize_t res;
     unsigned int n = 0;
 
+    if(display->display_type == HWC_DISPLAY_PRIMARY){
     if (sim_ensure_pipe(display, INPUT_TOUCH))
-        return;
+            return;
+    }else{
+        if (sim_ensure_pipe(display, INPUT_TOUCH_EXTERNAL))
+            return;
+    }
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
        ALOGE("%s:%d error in touch clock_gettime: %s",
@@ -779,6 +784,8 @@ static void warp_cursor_back(struct display *display, int back_x, int last_root_
     xcb_flush(conn);
 }
 
+static bool suppress_relative_injection = false;
+static bool ignore_relative_injection = false;
 void on_motion_notify(void *data, xcb_motion_notify_event_t *xcb_event) {
     struct display* display = (struct display*)data;
     //ALOGI("display->ptrPrvX: %d, display->ptrPrvY: %d", display->ptrPrvX, display->ptrPrvY);
@@ -870,11 +877,13 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *xcb_event) {
             if(xcb_event->root_x > property_get_int32("openfde.display_width", 0)
                 && property_get_int32("fde.last_display_id", 0) == 0 ){//内部光标从主屏移动到扩展屏失败,将外部x11光标从扩展屏拉回主屏,实现内外对齐
                 android_abs_x = property_get_int32("openfde.display_width", 0) - 1;
-                warp_cursor_back(display, property_get_int32("openfde.display_width", 0) - 1, last_root_y);
+                suppress_relative_injection = true;
+                warp_cursor_back(display, property_get_int32("openfde.display_width", 0) - 10, last_root_y);
             }else if(xcb_event->root_x < property_get_int32("openfde.display_width", 0)
                 && property_get_int32("fde.last_display_id", 0) != 0){//内部光标从扩展屏移动到主屏失败,将外部x11光标从主屏拉回扩展屏,实现内外对齐
                 android_abs_x = 0;
-                warp_cursor_back(display, property_get_int32("openfde.display_width", 0) + 1, last_root_y);
+                suppress_relative_injection = true;
+                warp_cursor_back(display, property_get_int32("openfde.display_width", 0) + 10, last_root_y);
             }
         }
         SIM_ADD_EVENT(EV_ABS, ABS_X, android_abs_x);
@@ -902,7 +911,17 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *xcb_event) {
                 rely = prev_rely > 0 ? 3 : -3;
             }
         }
-        SIM_ADD_EVENT(EV_REL, REL_X, relx);
+        ALOGE("on_motion_notify suppress_relative_injection: %d", suppress_relative_injection);
+        if(ignore_relative_injection){
+            SIM_ADD_EVENT(EV_REL, REL_X, 0);
+            ignore_relative_injection = false;
+        }else{
+            SIM_ADD_EVENT(EV_REL, REL_X, relx);
+        }
+        if(suppress_relative_injection){
+            ignore_relative_injection = true;
+            suppress_relative_injection = false;
+        }
         SIM_ADD_EVENT(EV_REL, REL_Y, rely);
         SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
@@ -1051,8 +1070,13 @@ touch_handle_cancel(void *data)
     unsigned int n;
     int i, id;
 
+    if(display->display_type == HWC_DISPLAY_PRIMARY){
     if (sim_ensure_pipe(display, INPUT_TOUCH))
         return;
+    }else{
+        if (sim_ensure_pipe(display, INPUT_TOUCH_EXTERNAL))
+            return;
+    }
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
        ALOGE("%s:%d error in touch clock_gettime: %s",
