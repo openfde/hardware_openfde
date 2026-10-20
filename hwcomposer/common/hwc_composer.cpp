@@ -182,8 +182,8 @@ int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
 int32_t hwc_attribute(struct openfde_hwc_composer_device_1* pdev,
                       const uint32_t attribute, uint32_t config) {
     char property[PROPERTY_VALUE_MAX];
-    int width = floor(pdev->display->width * pdev->display->scale);
-    int height = floor(pdev->display->height * pdev->display->scale);
+    int width = pdev->display->full_width;
+    int height = pdev->display->full_height;
     int density = 160;
     // config > 0 表示选中了非默认（预设）分辨率，按 screenConfigs 覆盖宽高与密度
     if (config > 0 && config < (uint32_t)gScreenConfigCount) {
