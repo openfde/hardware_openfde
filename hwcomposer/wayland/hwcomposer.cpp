@@ -964,60 +964,51 @@ void hwc_resize_windows(struct openfde_hwc_composer_device_1* pdev,
         return;
     }
 
-    struct window_snapshot {
-        std::string key;
-        std::string app_id;
-        std::string task_id;
-        bool is_active;
-        hwc_color_t color;
-    };
-
-    std::vector<window_snapshot> snapshots;
-    snapshots.reserve(pdev->windows.size());
-
+    // NOTE: called with display->windowsMutex held (see hwc_set_active_config).
+    //
+    // Do NOT destroy and recreate the Wayland windows here. The old
+    // destroy/recreate approach raced with hwc_wayland_thread dispatching
+    // the same connection, and the wl_display_roundtrip() calls inside
+    // create_window() made two threads dispatch the default event queue at
+    // the same time. Either race kills the connection
+    // ("Wayland client was disconnected") when switching resolution.
+    //
+    // Everything a window needs for the new size can be updated in place:
+    // the xdg window geometry and the background viewport destination.
+    // Layer subsurfaces re-derive their viewport destination and position
+    // from the new displayFrame on the next hwc_set() pass.
     for (auto it = pdev->windows.begin(); it != pdev->windows.end(); ++it) {
         struct window* window = it->second;
-        if (!window) {
+        if (!window || !window->isActive) {
+            // Inactive windows already had their Wayland objects destroyed.
             continue;
         }
 
-        uint8_t alpha = (window->appID == "Openfde" || !pdev->multi_windows) ? 255 : 0;
-        snapshots.push_back(window_snapshot{
-                it->first,
-                window->appID,
-                window->taskID,
-                window->isActive,
-                {0, 0, 0, alpha}});
-    }
+        if (window->xdg_surface)
+            xdg_surface_set_window_geometry(window->xdg_surface, 0, 0,
+                                            target_width, target_height);
 
-    for (auto it = pdev->windows.begin(); it != pdev->windows.end(); ++it) {
-        if (it->second) {
-            destroy_window(it->second);
-        }
-    }
-    pdev->windows.clear();
+        // With subsurfaces enabled the background is attached directly to
+        // the main surface, otherwise to the dedicated bg subsurface.
+        struct wl_surface* bg_surface = window->bg_surface;
+        if (!bg_surface)
+            bg_surface = window->surface;
 
-    // create_window() picks up display->width/height for the viewport
-    // destination, so recreating the windows applies the new resolution.
-    for (const auto& snapshot : snapshots) {
-        struct window* new_window = create_window(
-                pdev->display,
-                pdev->use_subsurface,
-                snapshot.app_id,
-                snapshot.task_id,
-                snapshot.color);
-        if (!new_window) {
-            ALOGE("failed to recreate window for key=%s app=%s task=%s size=%dx%d",
-                  snapshot.key.c_str(),
-                  snapshot.app_id.c_str(),
-                  snapshot.task_id.c_str(),
-                  target_width,
-                  target_height);
-            continue;
+        if (window->bg_viewport && window->bg_buffer) {
+            wl_surface_attach(bg_surface, window->bg_buffer, 0, 0);
+            wl_surface_damage_buffer(bg_surface, 0, 0, 1, 1);
+            wp_viewport_set_destination(window->bg_viewport,
+                                        target_width, target_height);
+            ALOGW("resize_window bg_viewport width: %d, height: %d",
+                  target_width, target_height);
         }
-        new_window->isActive = snapshot.is_active;
-        pdev->windows[snapshot.key] = new_window;
+        wl_surface_commit(bg_surface);
+        if (bg_surface != window->surface)
+            // bg subsurface is in synchronized mode and the new window
+            // geometry lives on the parent: commit the parent as well.
+            wl_surface_commit(window->surface);
     }
+    wl_display_flush(pdev->display->display);
 }
 
 
@@ -1030,7 +1021,19 @@ static void* hwc_wayland_thread(void* data) {
     while (ret != -1)
         ret = wl_display_dispatch(pdev->display->display);
 
-    ALOGE("*** %s: Wayland client was disconnected: %s", __PRETTY_FUNCTION__, strerror(ret));
+    int disp_err = wl_display_get_error(pdev->display->display);
+    if (disp_err == EPROTO) {
+        const struct wl_interface* interface = NULL;
+        uint32_t object_id = 0;
+        uint32_t code = wl_display_get_protocol_error(pdev->display->display,
+                                                      &interface, &object_id);
+        ALOGE("*** %s: Wayland protocol error %u on interface %s (object id %u)",
+              __PRETTY_FUNCTION__, code,
+              interface ? interface->name : "unknown", object_id);
+    } else {
+        ALOGE("*** %s: Wayland client was disconnected: %s", __PRETTY_FUNCTION__,
+              strerror(disp_err ? disp_err : errno));
+    }
 
     return NULL;
 }
