@@ -153,9 +153,6 @@ static bool update_cursor_surface(struct display *disp, hwc_layer_1_t* fb_layer,
         return false;
     }
 
-    if (fb_layer->compositionType == HWC_FRAMEBUFFER_TARGET){
-        return true;
-    }
     ALOGE("update_cursor_surface found cursor layer: %s", layer_name.c_str());
     fb_layer->compositionType = HWC_CURSOR_OVERLAY; // Not participating in SurfaceFlinger GPU compositing hide internal cursor
     int64_t mouse_icon_addr = property_get_int64("fde.mouse_icon_addr", 0);
