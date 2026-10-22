@@ -366,11 +366,8 @@ void hwc2_get_function(struct hwc2_device *device, int32_t descriptor,
         case HWC2_FUNCTION_SET_LAYER_PER_FRAME_METADATA:
             *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_per_frame_metadata;
             break;
-        case HWC2_FUNCTION_SET_LAYER_CURSOR_POSITION:
+        case HWC2_FUNCTION_SET_CURSOR_POSITION:
             *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_cursor_position;
-            break;
-        case HWC2_FUNCTION_SET_LAYER_BUFFER_CROP:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_buffer_crop;
             break;
         case HWC2_FUNCTION_DUMP:
             // Optional; not implemented.
@@ -505,7 +502,7 @@ int32_t hwc2_set_active_config(struct hwc2_device *device, hwc2_display_t displa
         return HWC2_ERROR_UNSUPPORTED;
 
     if (config < 0 || config >= gScreenConfigCount) {
-        ALOGE("unsupported active config %u for display %u", config, display);
+        ALOGE("unsupported active config %u for display %llu", config, (unsigned long long)display);
         return HWC2_ERROR_BAD_PARAMETER;
     }
 
@@ -678,7 +675,7 @@ int32_t hwc2_validate_display(struct hwc2_device *device, hwc2_display_t display
     if (!dd->found_cursor && dd->disp->mouse_icon_addr != -1) {
         dd->disp->mouse_icon_addr = -1;
         dd->disp->additional_refresh_cursor_times = 0;
-        ALOGI("hwc2 cursor hidden on display %u", display);
+        ALOGI("hwc2 cursor hidden on display %llu", (unsigned long long)display);
     }
 
     dd->validated = true;
@@ -725,40 +722,56 @@ int32_t hwc2_accept_display_changes(struct hwc2_device *device,
 // layers are placed at index == their hwc2_layer_t id, so that the
 // backend render path's use of disp->layer_names[id] / layer_handles_ext[id]
 // stays aligned with the indices the IOpenfdeDisplay side-channel publishes.
-static void build_contents(struct hwc2_display_data *dd,
-                           std::vector<hwc_layer_1_t> &storage,
-                           hwc_display_contents_1_t &contents) {
+//
+// NOTE: in this tree hwc_display_contents_1_t::hwLayers is a flexible array
+// member (hwc_layer_1_t hwLayers[0]), so it cannot be assigned. We therefore
+// allocate one contiguous block: the base struct followed by the layer array.
+static hwc_display_contents_1_t *build_contents(struct hwc2_display_data *dd) {
     size_t size = (size_t)dd->next_layer_id; // ids start at 1
     if (dd->has_client_target)
         size = std::max(size, (size_t)1);
-    storage.assign(size, hwc_layer_1_t{});
+
+    // hwLayers is the trailing flexible array member, so sizeof already equals
+    // its start offset.
+    size_t alloc = sizeof(hwc_display_contents_1_t) + size * sizeof(hwc_layer_1_t);
+    hwc_display_contents_1_t *contents = (hwc_display_contents_1_t *)calloc(1, alloc);
+    if (!contents)
+        return nullptr;
+    contents->numHwLayers = (uint32_t)size;
+
     // Gaps (non-contiguous layer ids) must not carry a 0 acquire fence, or the
     // backend would close fd 0. -1 is the "no fence" sentinel.
     for (size_t i = 0; i < size; i++) {
-        storage[i].acquireFenceFd = -1;
-        storage[i].releaseFenceFd = -1;
+        contents->hwLayers[i].acquireFenceFd = -1;
+        contents->hwLayers[i].releaseFenceFd = -1;
     }
 
     if (dd->has_client_target) {
-        storage[0] = dd->client_target_layer;
-        storage[0].compositionType = HWC_FRAMEBUFFER_TARGET;
-        storage[0].handle = dd->client_target_handle;
-        storage[0].acquireFenceFd = dd->client_target_acquire_fence;
+        contents->hwLayers[0] = dd->client_target_layer;
+        contents->hwLayers[0].compositionType = HWC_FRAMEBUFFER_TARGET;
+        contents->hwLayers[0].handle = dd->client_target_handle;
+        contents->hwLayers[0].acquireFenceFd = dd->client_target_acquire_fence;
     }
 
     for (auto &kv : dd->layers) {
         hwc2_layer_state &st = kv.second;
         size_t idx = (size_t)st.id;
-        if (idx >= storage.size())
+        if (idx >= size)
             continue;
-        storage[idx] = st.layer;
+        contents->hwLayers[idx] = st.layer;
+        contents->hwLayers[idx].handle = st.handle;
+        contents->hwLayers[idx].acquireFenceFd = st.acquireFenceFd;
+        contents->hwLayers[idx].releaseFenceFd = -1;
+        if (st.found_cursor) {
+            contents->hwLayers[idx].compositionType = HWC_CURSOR;
+            contents->hwLayers[idx].transform = 0;
+        }
     }
 
-    contents.retireFenceFd = -1;
-    contents.outbufAcquireFenceFd = -1;
-    contents.flags = HWC_GEOMETRY_CHANGED;
-    contents.numHwLayers = storage.size();
-    contents.hwLayers = storage.data();
+    contents->retireFenceFd = -1;
+    contents->outbufAcquireFenceFd = -1;
+    contents->flags = HWC_GEOMETRY_CHANGED;
+    return contents;
 }
 
 int32_t hwc2_present_display(struct hwc2_device *device, hwc2_display_t display,
@@ -773,23 +786,29 @@ int32_t hwc2_present_display(struct hwc2_device *device, hwc2_display_t display,
     if (!dd->has_client_target && dd->layers.empty())
         return HWC2_ERROR_NONE;
 
-    std::vector<hwc_layer_1_t> storage;
-    hwc_display_contents_1_t contents;
-    build_contents(dd, storage, contents);
+    hwc_display_contents_1_t *contents = build_contents(dd);
+    if (!contents)
+        return HWC2_ERROR_NO_RESOURCES;
 
-    int ret = hwc2_present(pdev, dd, &contents);
-    if (ret != 0)
+    int ret = hwc2_present(pdev, dd, contents);
+    if (ret != 0) {
+        free(contents);
         return HWC2_ERROR_NONE;
+    }
 
     // Collect per-layer release fences and the frame retire fence.
-    dd->retire_fence = contents.retireFenceFd;
+    dd->retire_fence = contents->retireFenceFd;
     dd->release_fences.clear();
     for (auto &kv : dd->layers) {
         size_t idx = (size_t)kv.first;
-        if (idx < storage.size())
-            dd->release_fences[kv.first] = storage[idx].releaseFenceFd;
+        if (idx < (size_t)contents->numHwLayers)
+            dd->release_fences[kv.first] = contents->hwLayers[idx].releaseFenceFd;
     }
+    if (dd->has_client_target)
+        dd->client_target_acquire_fence = -1;
     *out_retire_fence = dd->retire_fence;
+    dd->validated = false;
+    free(contents);
     return HWC2_ERROR_NONE;
 }
 
@@ -1041,7 +1060,13 @@ int32_t hwc2_set_layer_visible_region(struct hwc2_device *device,
     if (!dd) return HWC2_ERROR_BAD_DISPLAY;
     auto it = dd->layers.find(layer);
     if (it == dd->layers.end()) return HWC2_ERROR_BAD_LAYER;
-    it->second.layer.visibleRegionScreen = region;
+    hwc2_layer_state &st = it->second;
+    if (region.numRects > 0 && region.rect)
+        st.visible_region.assign(region.rect, region.rect + region.numRects);
+    else
+        st.visible_region.clear();
+    st.layer.visibleRegionScreen.numRects = (uint32_t)st.visible_region.size();
+    st.layer.visibleRegionScreen.rect = st.visible_region.data();
     return HWC2_ERROR_NONE;
 }
 
@@ -1051,7 +1076,9 @@ int32_t hwc2_set_layer_color(struct hwc2_device *device, hwc2_display_t display,
     if (!dd) return HWC2_ERROR_BAD_DISPLAY;
     auto it = dd->layers.find(layer);
     if (it == dd->layers.end()) return HWC2_ERROR_BAD_LAYER;
-    it->second.layer.color = color;
+    // This tree's hwc_layer_1_t has no 'color' field; solid-color layers are not
+    // separately tracked (they are still composited via their buffer).
+    (void)color;
     return HWC2_ERROR_NONE;
 }
 
