@@ -74,10 +74,6 @@ struct hwc2_layer_state {
     hwc2_layer_t id;
     hwc_layer_1_t layer; // internal representation consumed by the backend
     int32_t z;           // z-order supplied via setLayerZOrder
-    // Persisted copy of the visible-region rects. hwc_layer_1_t only stores a
-    // pointer into this vector, so the data must outlive a frame (SF passes the
-    // rects transiently and may free them before present).
-    std::vector<hwc_rect_t> visible_region;
 };
 
 // All HWC2 state that is scoped to a single display.

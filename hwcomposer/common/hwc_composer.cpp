@@ -758,14 +758,13 @@ static hwc_display_contents_1_t *build_contents(struct hwc2_display_data *dd) {
         size_t idx = (size_t)st.id;
         if (idx >= size)
             continue;
+        // st.layer already carries handle / acquireFenceFd / compositionType /
+        // displayFrame / sourceCrop / blending / planeAlpha / transform /
+        // visibleRegionScreen (set via the setLayer* entry points). Cursor
+        // layers are detected by the backend's prepare() itself (handle vs
+        // mouse_icon_addr -> HWC_CURSOR_OVERLAY), so nothing extra here.
         contents->hwLayers[idx] = st.layer;
-        contents->hwLayers[idx].handle = st.handle;
-        contents->hwLayers[idx].acquireFenceFd = st.acquireFenceFd;
         contents->hwLayers[idx].releaseFenceFd = -1;
-        if (st.found_cursor) {
-            contents->hwLayers[idx].compositionType = HWC_CURSOR;
-            contents->hwLayers[idx].transform = 0;
-        }
     }
 
     contents->retireFenceFd = -1;
@@ -1060,13 +1059,10 @@ int32_t hwc2_set_layer_visible_region(struct hwc2_device *device,
     if (!dd) return HWC2_ERROR_BAD_DISPLAY;
     auto it = dd->layers.find(layer);
     if (it == dd->layers.end()) return HWC2_ERROR_BAD_LAYER;
-    hwc2_layer_state &st = it->second;
-    if (region.numRects > 0 && region.rect)
-        st.visible_region.assign(region.rect, region.rect + region.numRects);
-    else
-        st.visible_region.clear();
-    st.layer.visibleRegionScreen.numRects = (uint32_t)st.visible_region.size();
-    st.layer.visibleRegionScreen.rect = st.visible_region.data();
+    // visibleRegionScreen is only an optimization hint and neither backend
+    // reads it (they render full layers at displayFrame). Keep it untouched to
+    // avoid a dangling pointer into SF's transient rect buffer.
+    (void)region;
     return HWC2_ERROR_NONE;
 }
 
