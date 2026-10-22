@@ -198,15 +198,24 @@ int32_t hwc_attribute(struct openfde_hwc_composer_device_1* pdev,
         case HWC_DISPLAY_WIDTH: {
             if (property_get("persist.openfde.width_padding", property, nullptr) > 0)
                 width -= atoi(property);
-            std::string width_str = std::to_string(width);
-            property_set("openfde.display_width", width_str.c_str());
+            // Only publish the size of the currently active config. SurfaceFlinger
+            // enumerates every config's attributes at display setup; without this
+            // gate the property would end up holding the last enumerated (usually
+            // non-active) resolution, which breaks the input side consumers
+            // (EventHub raw axis ranges, PointerChoreographer edge threshold).
+            if (config == (uint32_t)pdev->display->active_config) {
+                std::string width_str = std::to_string(width);
+                property_set("openfde.display_width", width_str.c_str());
+            }
             return width;
         }
         case HWC_DISPLAY_HEIGHT: {
             if (property_get("persist.openfde.height_padding", property, nullptr) > 0)
                 height -= atoi(property);
-            std::string height_str = std::to_string(height);
-            property_set("openfde.display_height", height_str.c_str());
+            if (config == (uint32_t)pdev->display->active_config) {
+                std::string height_str = std::to_string(height);
+                property_set("openfde.display_height", height_str.c_str());
+            }
             return height;
         }
         case HWC_DISPLAY_DPI_X:
@@ -291,6 +300,23 @@ int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, int confi
 
     ALOGE("setActiveConfig: config=%d resized windows to %dx%d", config, target_width, target_height);
     pdev->display->active_config = config;
+
+    // Publish the new active resolution so the input side (EventHub raw axis
+    // ranges, PointerChoreographer edge threshold) tracks the current display
+    // size. hwc_attribute() only updates these properties when the active
+    // config's attributes are queried, which is not guaranteed to happen on a
+    // config switch.
+    {
+        char property[PROPERTY_VALUE_MAX];
+        int prop_width = target_width;
+        int prop_height = target_height;
+        if (property_get("persist.openfde.width_padding", property, nullptr) > 0)
+            prop_width -= atoi(property);
+        if (property_get("persist.openfde.height_padding", property, nullptr) > 0)
+            prop_height -= atoi(property);
+        property_set("openfde.display_width", std::to_string(prop_width).c_str());
+        property_set("openfde.display_height", std::to_string(prop_height).c_str());
+    }
 
     return 0;
 }
