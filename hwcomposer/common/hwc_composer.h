@@ -185,24 +185,27 @@ long time_to_sleep_to_next_vsync(struct timespec *rt, uint64_t last_vsync_ns,
 
 void* hwc_vsync_thread(void* data);
 
-// getFunction dispatcher: fills *out_pointer with the implementation of the
-// requested HWC2 function, or NULL if unsupported.
-void hwc2_get_function(struct hwc2_device *device, int32_t descriptor,
-                       hwc2_function_pointer_t *out_pointer);
+// getFunction dispatcher: returns the implementation of the requested HWC2
+// per-display/per-layer function, or NULL if unsupported. (The device-level
+// entry points below are direct hwc2_device_t members, not dispatched here.)
+hwc2_function_pointer_t hwc2_get_function(struct hwc2_device *device,
+                                          int32_t descriptor);
 
 // Callback registration (hotplug / vsync / refresh).
 int32_t hwc2_register_callback(struct hwc2_device *device, int32_t descriptor,
                                hwc2_callback_data_t callback_data,
                                hwc2_function_pointer_t pointer);
 
-int32_t hwc2_get_max_virtual_display_count(struct hwc2_device *device,
-                                           uint32_t *out_count);
-
+// Device-level entry points (direct hwc2_device_t members).
+void hwc2_get_capabilities(struct hwc2_device *device, uint32_t *out_count,
+                           int32_t *out_capabilities);
+void hwc2_dump(struct hwc2_device *device, uint32_t *out_size, char *out_buffer);
+uint32_t hwc2_get_max_virtual_display_count(struct hwc2_device *device);
 int32_t hwc2_create_virtual_display(struct hwc2_device *device, uint32_t width,
                                     uint32_t height, int32_t *format,
                                     hwc2_display_t *out_display);
-int32_t hwc2_destroy_virtual_display(struct hwc2_device *device,
-                                     hwc2_display_t display);
+void hwc2_destroy_virtual_display(struct hwc2_device *device,
+                                  hwc2_display_t display);
 
 int32_t hwc2_get_display_configs(struct hwc2_device *device,
                                  hwc2_display_t display, uint32_t *out_num_configs,

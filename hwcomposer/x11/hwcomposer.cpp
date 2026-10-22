@@ -1547,6 +1547,11 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     pdev->base.common.module = const_cast<hw_module_t *>(module);
     pdev->base.common.close = hwc_close;
     pdev->base.getFunction = hwc2_get_function;
+    pdev->base.getCapabilities = hwc2_get_capabilities;
+    pdev->base.dump = hwc2_dump;
+    pdev->base.getMaxVirtualDisplayCount = hwc2_get_max_virtual_display_count;
+    pdev->base.createVirtualDisplay = hwc2_create_virtual_display;
+    pdev->base.destroyVirtualDisplay = hwc2_destroy_virtual_display;
 
     pdev->hotplug = nullptr;
     pdev->vsync = nullptr;

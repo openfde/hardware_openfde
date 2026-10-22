@@ -231,151 +231,98 @@ static int32_t hwc2_attribute(struct openfde_hwc_composer_device_1* pdev,
 // getFunction dispatch
 // ---------------------------------------------------------------------------
 
-void hwc2_get_function(struct hwc2_device *device, int32_t descriptor,
-                       hwc2_function_pointer_t *out_pointer) {
-    if (!out_pointer)
-        return;
-
+// hwc2_device_t::getFunction returns the function pointer for the requested
+// per-display/per-layer function. The device-level entry points
+// (getCapabilities/dump/getMaxVirtualDisplayCount/createVirtualDisplay/
+// destroyVirtualDisplay) are direct hwc2_device_t members, set in hwc_open().
+hwc2_function_pointer_t hwc2_get_function(struct hwc2_device *device,
+                                          int32_t descriptor) {
+    (void)device;
     switch (descriptor) {
         case HWC2_FUNCTION_REGISTER_CALLBACK:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_register_callback;
-            break;
-        case HWC2_FUNCTION_GET_MAX_VIRTUAL_DISPLAY_COUNT:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_get_max_virtual_display_count;
-            break;
-        case HWC2_FUNCTION_CREATE_VIRTUAL_DISPLAY:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_create_virtual_display;
-            break;
-        case HWC2_FUNCTION_DESTROY_VIRTUAL_DISPLAY:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_destroy_virtual_display;
-            break;
+            return (hwc2_function_pointer_t)hwc2_register_callback;
         case HWC2_FUNCTION_GET_DISPLAY_CONFIGS:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_get_display_configs;
-            break;
+            return (hwc2_function_pointer_t)hwc2_get_display_configs;
         case HWC2_FUNCTION_GET_DISPLAY_ATTRIBUTE:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_get_display_attribute;
-            break;
+            return (hwc2_function_pointer_t)hwc2_get_display_attribute;
         case HWC2_FUNCTION_GET_ACTIVE_CONFIG:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_get_active_config;
-            break;
+            return (hwc2_function_pointer_t)hwc2_get_active_config;
         case HWC2_FUNCTION_SET_ACTIVE_CONFIG:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_active_config;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_active_config;
         case HWC2_FUNCTION_GET_DISPLAY_TYPE:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_get_display_type;
-            break;
+            return (hwc2_function_pointer_t)hwc2_get_display_type;
         case HWC2_FUNCTION_SET_POWER_MODE:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_power_mode;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_power_mode;
         case HWC2_FUNCTION_SET_VSYNC_ENABLED:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_vsync_enabled;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_vsync_enabled;
         case HWC2_FUNCTION_GET_COLOR_MODES:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_get_color_modes;
-            break;
+            return (hwc2_function_pointer_t)hwc2_get_color_modes;
         case HWC2_FUNCTION_SET_COLOR_MODE:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_color_mode;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_color_mode;
         case HWC2_FUNCTION_SET_COLOR_TRANSFORM:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_color_transform;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_color_transform;
         case HWC2_FUNCTION_CREATE_LAYER:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_create_layer;
-            break;
+            return (hwc2_function_pointer_t)hwc2_create_layer;
         case HWC2_FUNCTION_DESTROY_LAYER:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_destroy_layer;
-            break;
+            return (hwc2_function_pointer_t)hwc2_destroy_layer;
         case HWC2_FUNCTION_VALIDATE_DISPLAY:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_validate_display;
-            break;
+            return (hwc2_function_pointer_t)hwc2_validate_display;
         case HWC2_FUNCTION_GET_CHANGED_COMPOSITION_TYPES:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_get_changed_composition_types;
-            break;
+            return (hwc2_function_pointer_t)hwc2_get_changed_composition_types;
         case HWC2_FUNCTION_GET_DISPLAY_REQUESTS:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_get_display_requests;
-            break;
+            return (hwc2_function_pointer_t)hwc2_get_display_requests;
         case HWC2_FUNCTION_ACCEPT_DISPLAY_CHANGES:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_accept_display_changes;
-            break;
+            return (hwc2_function_pointer_t)hwc2_accept_display_changes;
         case HWC2_FUNCTION_PRESENT_DISPLAY:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_present_display;
-            break;
+            return (hwc2_function_pointer_t)hwc2_present_display;
         case HWC2_FUNCTION_GET_RELEASE_FENCES:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_get_release_fences;
-            break;
+            return (hwc2_function_pointer_t)hwc2_get_release_fences;
         case HWC2_FUNCTION_SET_CLIENT_TARGET:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_client_target;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_client_target;
         case HWC2_FUNCTION_GET_DISPLAY_NAME:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_get_display_name;
-            break;
+            return (hwc2_function_pointer_t)hwc2_get_display_name;
         case HWC2_FUNCTION_GET_DISPLAY_CAPABILITIES:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_get_display_capabilities;
-            break;
+            return (hwc2_function_pointer_t)hwc2_get_display_capabilities;
         case HWC2_FUNCTION_GET_DOZE_SUPPORT:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_get_doze_support;
-            break;
+            return (hwc2_function_pointer_t)hwc2_get_doze_support;
         case HWC2_FUNCTION_GET_HDR_CAPABILITIES:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_get_hdr_capabilities;
-            break;
+            return (hwc2_function_pointer_t)hwc2_get_hdr_capabilities;
         case HWC2_FUNCTION_GET_CLIENT_TARGET_SUPPORT:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_get_client_target_support;
-            break;
+            return (hwc2_function_pointer_t)hwc2_get_client_target_support;
         case HWC2_FUNCTION_SET_OUTPUT_BUFFER:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_output_buffer;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_output_buffer;
         case HWC2_FUNCTION_SET_LAYER_COMPOSITION_TYPE:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_composition_type;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_layer_composition_type;
         case HWC2_FUNCTION_SET_LAYER_BUFFER:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_buffer;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_layer_buffer;
         case HWC2_FUNCTION_SET_LAYER_DATASPACE:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_dataspace;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_layer_dataspace;
         case HWC2_FUNCTION_SET_LAYER_DISPLAY_FRAME:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_display_frame;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_layer_display_frame;
         case HWC2_FUNCTION_SET_LAYER_SOURCE_CROP:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_source_crop;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_layer_source_crop;
         case HWC2_FUNCTION_SET_LAYER_Z_ORDER:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_z_order;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_layer_z_order;
         case HWC2_FUNCTION_SET_LAYER_SURFACE_DAMAGE:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_surface_damage;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_layer_surface_damage;
         case HWC2_FUNCTION_SET_LAYER_BLEND_MODE:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_blend_mode;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_layer_blend_mode;
         case HWC2_FUNCTION_SET_LAYER_PLANE_ALPHA:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_plane_alpha;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_layer_plane_alpha;
         case HWC2_FUNCTION_SET_LAYER_TRANSFORM:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_transform;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_layer_transform;
         case HWC2_FUNCTION_SET_LAYER_VISIBLE_REGION:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_visible_region;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_layer_visible_region;
         case HWC2_FUNCTION_SET_LAYER_COLOR:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_color;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_layer_color;
         case HWC2_FUNCTION_SET_LAYER_COLOR_TRANSFORM:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_color_transform;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_layer_color_transform;
         case HWC2_FUNCTION_SET_LAYER_PER_FRAME_METADATA:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_per_frame_metadata;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_layer_per_frame_metadata;
         case HWC2_FUNCTION_SET_CURSOR_POSITION:
-            *out_pointer = (hwc2_function_pointer_t)hwc2_set_layer_cursor_position;
-            break;
-        case HWC2_FUNCTION_DUMP:
-            // Optional; not implemented.
-            *out_pointer = nullptr;
-            break;
+            return (hwc2_function_pointer_t)hwc2_set_layer_cursor_position;
         default:
-            *out_pointer = nullptr;
-            break;
+            return nullptr;
     }
 }
 
@@ -408,11 +355,23 @@ int32_t hwc2_register_callback(struct hwc2_device *device, int32_t descriptor,
 // virtual displays
 // ---------------------------------------------------------------------------
 
-int32_t hwc2_get_max_virtual_display_count(struct hwc2_device *device,
-                                           uint32_t *out_count) {
-    (void)device;
+// ---- Device-level entry points (direct hwc2_device_t members) -------------
+
+// We report no device capabilities.
+void hwc2_get_capabilities(struct hwc2_device *device, uint32_t *out_count,
+                           int32_t *out_capabilities) {
+    (void)device; (void)out_capabilities;
     *out_count = 0;
-    return HWC2_ERROR_NONE;
+}
+
+// Minimal dump (used by dumpsys).
+void hwc2_dump(struct hwc2_device *device, uint32_t *out_size, char *out_buffer) {
+    (void)device; (void)out_size; (void)out_buffer;
+}
+
+uint32_t hwc2_get_max_virtual_display_count(struct hwc2_device *device) {
+    (void)device;
+    return 0;
 }
 
 int32_t hwc2_create_virtual_display(struct hwc2_device *device, uint32_t width,
@@ -422,10 +381,9 @@ int32_t hwc2_create_virtual_display(struct hwc2_device *device, uint32_t width,
     return HWC2_ERROR_UNSUPPORTED;
 }
 
-int32_t hwc2_destroy_virtual_display(struct hwc2_device *device,
-                                     hwc2_display_t display) {
+void hwc2_destroy_virtual_display(struct hwc2_device *device,
+                                  hwc2_display_t display) {
     (void)device; (void)display;
-    return HWC2_ERROR_UNSUPPORTED;
 }
 
 // ---------------------------------------------------------------------------
