@@ -354,6 +354,23 @@ int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, int confi
     ALOGE("setActiveConfig: config=%d resized windows to %dx%d", config, target_width, target_height);
     pdev->display->active_config = config;
 
+    // Publish the new active resolution so the input side (EventHub raw axis
+    // ranges, PointerChoreographer edge threshold) tracks the current display
+    // size. hwc_attribute() only updates these properties when the active
+    // config's attributes are queried, which is not guaranteed to happen on a
+    // config switch.
+    {
+        char property[PROPERTY_VALUE_MAX];
+        int prop_width = target_width;
+        int prop_height = target_height;
+        if (property_get("persist.openfde.width_padding", property, nullptr) > 0)
+            prop_width -= atoi(property);
+        if (property_get("persist.openfde.height_padding", property, nullptr) > 0)
+            prop_height -= atoi(property);
+        property_set("openfde.display_width", std::to_string(prop_width).c_str());
+        property_set("openfde.display_height", std::to_string(prop_height).c_str());
+    }
+
     return 0;
 }
 
