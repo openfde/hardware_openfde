@@ -794,8 +794,21 @@ void get_input_shape(xcb_connection_t *conn, xcb_window_t window) {
 }
 
 static int set(struct hwc_composer_device_1* dev,size_t numDisplays, hwc_display_contents_1_t** displays, int target);
-static int hwc_setCursorPositionAsync(struct hwc_composer_device_1 *dev, int disp, int x_pos, int y_pos){
-    ALOGE("hwc_setCursorPositionAsync x_pos: %d, y_pos: %d", x_pos, y_pos);
+
+// HWC2 entry: render/present a single display. The HWC 1.x prepare/set logic
+// is reused untouched; we only feed it a single-display synthetic contents
+// array, which is exactly what the old multi-display entry points did per
+// display via the `target` parameter.
+int hwc2_present(struct openfde_hwc_composer_device_1 *pdev,
+                 struct hwc2_display_data *dd,
+                 hwc_display_contents_1_t *contents) {
+    hwc_display_contents_1_t *displays[2] = { nullptr, nullptr };
+    int target = (dd->display_class == HWC_DISPLAY_PRIMARY)
+                     ? HWC_DISPLAY_PRIMARY
+                     : HWC_DISPLAY_EXTERNAL;
+    displays[target] = contents;
+    hwc_prepare((hwc_composer_device_1_t *)pdev, 2, displays);
+    hwc_set((hwc_composer_device_1_t *)pdev, 2, displays);
     return 0;
 }
 
@@ -1382,75 +1395,6 @@ sync:
     return err;
 }
 
-static void hwc_dump(hwc_composer_device_1* dev , char* buff ,
-                     int buff_len ) {
-    if (!buff || buff_len <= 0) {
-        return;
-    }
-
-    struct openfde_hwc_composer_device_1* pdev =
-            (struct openfde_hwc_composer_device_1*)dev;
-    if (!pdev || !pdev->display) {
-        snprintf(buff, buff_len, "hwcomposerx11: invalid device or display\n");
-        return;
-    }
-
-    bool vsync_enabled = false;
-    pthread_mutex_lock(&pdev->vsync_lock);
-    vsync_enabled = pdev->vsync_callback_enabled;
-    pthread_mutex_unlock(&pdev->vsync_lock);
-
-    size_t window_count = 0;
-    size_t buffer_count = 0;
-    {
-        std::scoped_lock lock(pdev->display->windowsMutex);
-        window_count = pdev->windows.size();
-        buffer_count = pdev->display->buffer_map.size();
-    }
-
-    int written = snprintf(
-            buff,
-            buff_len,
-            "hwcomposerx11 state:\n"
-            "  active_config=%u\n"
-            "  width=%d height=%d\n"
-            "  full_width=%d full_height=%d\n"
-            "  scale=%.3f\n"
-            "  refresh=%d\n"
-            "  vsync_period_ns=%d\n"
-            "  last_vsync_ns=%llu\n"
-            "  vsync_enabled=%d\n"
-            "  use_subsurface=%d multi_windows=%d\n"
-            "  geo_changed=%d\n"
-            "  windows=%zu buffers=%zu\n"
-            "  next_sync_point=%d\n"
-            "  screen_config0width=%d\n"
-            "  screen_config0height=%d\n",
-            pdev->display->active_config,
-            pdev->display->width,
-            pdev->display->height,
-            pdev->display->full_width,
-            pdev->display->full_height,
-            pdev->display->scale,
-            pdev->display->refresh,
-            pdev->vsync_period_ns,
-            (unsigned long long)pdev->last_vsync_ns,
-            vsync_enabled ? 1 : 0,
-            pdev->use_subsurface ? 1 : 0,
-            pdev->multi_windows ? 1 : 0,
-            pdev->display->geo_changed ? 1 : 0,
-            window_count,
-            buffer_count,
-            pdev->next_sync_point,
-            screenConfigs ? screenConfigs[0].Width : 0,
-            screenConfigs ? screenConfigs[0].Height : 0);
-
-    if (written < 0 && buff_len > 0) {
-        buff[0] = '\0';
-    }
-}
-
-
 // Backend hook called by the shared hwc_set_active_config() in
 // ../common/hwc_composer.cpp. Recreates every window at the new resolution.
 void hwc_resize_windows(struct openfde_hwc_composer_device_1* pdev,
@@ -1599,22 +1543,51 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     }
 
     pdev->base.common.tag = HARDWARE_DEVICE_TAG;
-    pdev->base.common.version = HWC_DEVICE_API_VERSION_1_4;
+    pdev->base.common.version = HWC_DEVICE_API_VERSION_2_0;
     pdev->base.common.module = const_cast<hw_module_t *>(module);
     pdev->base.common.close = hwc_close;
+    pdev->base.getFunction = hwc2_get_function;
 
-    pdev->base.prepare = hwc_prepare;
-    pdev->base.set = hwc_set;
-    pdev->base.setCursorPositionAsync  = hwc_setCursorPositionAsync;
-    pdev->base.eventControl = hwc_event_control;
-    pdev->base.blank = hwc_blank;
-    pdev->base.query = hwc_query;
-    pdev->base.registerProcs = hwc_register_procs;
-    pdev->base.dump = hwc_dump;
-    pdev->base.getDisplayConfigs = hwc_get_display_configs;
-    pdev->base.getActiveConfig = hwc_get_active_config;
-    pdev->base.setActiveConfig = hwc_set_active_config;
-    pdev->base.getDisplayAttributes = hwc_get_display_attributes;
+    pdev->hotplug = nullptr;
+    pdev->vsync = nullptr;
+    pdev->refresh = nullptr;
+    pdev->secondary_hotpluged = false;
+    pdev->primary_id = 0;
+    pdev->external_id = 1;
+
+    // Per-display HWC2 state (primary + external secondary). The backend
+    // display/windows pointers are filled in once create_display() returns.
+    hwc2_display_data primary;
+    primary.id = pdev->primary_id;
+    primary.type = HWC2_DISPLAY_TYPE_PHYSICAL;
+    primary.display_class = HWC_DISPLAY_PRIMARY;
+    primary.disp = nullptr;
+    primary.windows = nullptr;
+    primary.active_config = 0;
+    primary.power_mode = HWC2_POWER_MODE_ON;
+    primary.vsync_enabled = true;
+    primary.next_layer_id = 1;
+    primary.has_client_target = false;
+    primary.retire_fence = -1;
+    primary.validated = false;
+    primary.found_cursor = false;
+    pdev->displays[pdev->primary_id] = primary;
+
+    hwc2_display_data external;
+    external.id = pdev->external_id;
+    external.type = HWC2_DISPLAY_TYPE_PHYSICAL;
+    external.display_class = HWC_DISPLAY_EXTERNAL;
+    external.disp = nullptr;
+    external.windows = nullptr;
+    external.active_config = 0;
+    external.power_mode = HWC2_POWER_MODE_ON;
+    external.vsync_enabled = true;
+    external.next_layer_id = 1;
+    external.has_client_target = false;
+    external.retire_fence = -1;
+    external.validated = false;
+    external.found_cursor = false;
+    pdev->displays[pdev->external_id] = external;
 
     pdev->vsync_period_ns = 1000*1000*1000/60; // vsync is 60 hz
 
@@ -1660,6 +1633,14 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     ALOGE("x11 display %p", pdev->display);
     pdev->display->mouse_icon_addr = -1;
     pdev->secondary_display->mouse_icon_addr = -1;
+
+    // Bind the per-display HWC2 state to the backend displays/windows.
+    pdev->displays[pdev->primary_id].disp = pdev->display;
+    pdev->displays[pdev->primary_id].windows = &pdev->windows;
+    pdev->displays[pdev->primary_id].active_config = pdev->display->active_config;
+    pdev->displays[pdev->external_id].disp = pdev->secondary_display;
+    pdev->displays[pdev->external_id].windows = &pdev->secondary_windows;
+    pdev->displays[pdev->external_id].active_config = pdev->secondary_display->active_config;
 
     pthread_mutex_init(&pdev->vsync_lock, NULL);
     pdev->vsync_callback_enabled = true;
