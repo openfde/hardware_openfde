@@ -51,6 +51,7 @@
 #include <syscall.h>
 #include <cmath>
 #include <algorithm>
+#include <new>
 
 #include <libsync/sw_sync.h>
 #include <sync/sync.h>
@@ -2314,8 +2315,12 @@ wayland_log_handler (const char *format, va_list args)
     LOG_PRI_VA (ANDROID_LOG_ERROR, "wayland-hwc", format, args);
 }
 
+// ---------------------------------------------------------------------------
+// HWC 1.4 screen configurations
+// ---------------------------------------------------------------------------
+
 struct display *
-create_display(const char *gralloc)
+create_display(const char *gralloc, int target)
 {
     struct display *display = new struct display();
     if (display == NULL) {
@@ -2326,6 +2331,7 @@ create_display(const char *gralloc)
     display->gtype = get_gralloc_type(gralloc);
     display->refresh = 0;
     display->isMaximized = true;
+    display->display_type = target;
     display->display = wl_display_connect(NULL);
     display->multi_windows = property_get_bool("persist.openfde.multi_windows", false);
     ALOGI("WAYLAND_DISPLAY: %s", getenv("WAYLAND_DISPLAY"));
@@ -2395,6 +2401,11 @@ create_display(const char *gralloc)
 
     ALOGW("display->full_width: %d, display->full_height: %d", display->full_width, display->full_height);
 
+    // HWC 1.4: build the screen configuration table and remember which slot
+    // matches the real resolution.
+    screen_configs_init(display->full_width, display->full_height);
+    display->active_config = screen_config_set_and_get_index(display->full_width, display->full_height);
+
     display->task = IOpenfdeTask::getService();
     display->isTouchDown = false;
     display->lastAxisEventNanoSeconds = 0;
@@ -2431,6 +2442,8 @@ destroy_display(struct display *display)
         zwp_pointer_constraints_v1_destroy(display->pointer_constraints);
 
     release_pointer_gestures_device(display);
+
+    screen_configs_destroy();
 
     wl_registry_destroy(display->registry);
     wl_display_flush(display->display);

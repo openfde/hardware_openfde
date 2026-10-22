@@ -28,6 +28,8 @@
 
 #pragma once
 
+#include "../common/screen_config.h"
+
 #include <cutils/native_handle.h>
 #include <utils/Timers.h>
 
@@ -65,6 +67,7 @@ using ::vendor::openfde::task::V1_0::IOpenfdeTask;
 
 enum {
     INPUT_TOUCH,
+    INPUT_TOUCH_EXTERNAL,
     INPUT_KEYBOARD,
     INPUT_POINTER,
     INPUT_TABLET,
@@ -73,6 +76,7 @@ enum {
 
 static const char *INPUT_PIPE_NAME[INPUT_TOTAL] = {
     "/dev/input/wl_touch_events",
+    "/dev/input/wl_touch_external_events",
     "/dev/input/wl_keyboard_events",
     "/dev/input/wl_pointer_events",
     "/dev/input/wl_tablet_events"
@@ -150,6 +154,7 @@ struct display {
     struct zwp_pointer_gesture_pinch_v1 *pointer_gestures_pinch;
     int gtype;
     double scale;
+    int display_type;
     double locally_calculated_scale;
 
     bool four_finger_gesture_active;
@@ -226,6 +231,12 @@ struct display {
     bool need_send_touch_btn_down;
     bool need_send_touch_btn_up;
     long touch_tracking_id[MAX_TOUCHPOINTS];
+
+    // HWC 1.4: index of the currently active screen configuration
+    // (0 == the real/native resolution).
+    int active_config;
+    int primary_x = 0;      //primary display X offset
+    int primary_y = 0;      //primary display Y offset
 };
 
 struct buffer {
@@ -269,6 +280,9 @@ struct window {
     bool isActive;
     struct wp_fractional_scale_v1 *fractional_scale;
 };
+
+// The HWC 1.4 screen-configuration table (ScreenConfig / screenConfigs /
+// gScreenConfigCount / screen_configs_* ) lives in ../common/screen_config.h.
 
 typedef struct
 {
@@ -350,7 +364,7 @@ void
 snapshot_inactive_app_window(struct display *display, struct window *window);
 
 struct display *
-create_display(const char* gralloc);
+create_display(const char* gralloc,int target);
 void
 destroy_display(struct display *display);
 
