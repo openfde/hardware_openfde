@@ -235,11 +235,9 @@ struct display {
     int primary_x = 0;      //primary display X offset
     int primary_y = 0;      //primary display Y offset
 
-    // HWC 1.4: index of the currently active screen configuration
+    // HWC 2.0: index of the currently active screen configuration
     // (0 == the real/native resolution).
     int active_config;
-    int primary_x = 0;      //primary display X offset
-    int primary_y = 0;      //primary display Y offset
 };
 
 struct buffer {
