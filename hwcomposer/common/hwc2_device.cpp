@@ -816,12 +816,12 @@ static int32_t registerCallbackHook(hwc2_device_t* device, int32_t intDescriptor
                                     hwc2_callback_data_t callbackData,
                                     hwc2_function_pointer_t pointer) {
     auto descriptor = static_cast<Callback>(intDescriptor);
-    auto error = fromDevice(device)->registerCallback(descriptor, callbackData, pointer);
+    auto error = Hwc2Device::fromDevice(device)->registerCallback(descriptor, callbackData, pointer);
     return static_cast<int32_t>(error);
 }
 
 static void dumpHook(hwc2_device_t* device, uint32_t* outSize, char* outBuffer) {
-    fromDevice(device)->dump(outSize, outBuffer);
+    Hwc2Device::fromDevice(device)->dump(outSize, outBuffer);
 }
 
 Error Hwc2Device::registerCallback(Callback descriptor, hwc2_callback_data_t callbackData,
