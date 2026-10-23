@@ -168,6 +168,8 @@ class X11Backend : public Hwc2Backend {
     void resizeX11Windows(struct display* disp,
                           std::map<std::string, struct window*>& windows,
                           int target_width, int target_height);
+    void createInitialWindow(struct display* disp,
+                             std::map<std::string, struct window*>& windows);
 
     static void* windowServiceThreadEntry(void* data);
 
@@ -1310,7 +1312,7 @@ void X11Backend::resizeX11Windows(struct display* disp,
 
 Error X11Backend::setActiveConfig(Hwc2Display& display, hwc2_config_t config) {
     if (config >= (hwc2_config_t)gScreenConfigCount) {
-        ALOGE("unsupported active config %lu", config);
+        ALOGE("unsupported active config %u", (unsigned)config);
         return Error::BadConfig;
     }
 
@@ -1343,7 +1345,8 @@ Error X11Backend::setActiveConfig(Hwc2Display& display, hwc2_config_t config) {
         resizeX11Windows(disp, windows, target_width, target_height);
     }
 
-    ALOGI("setActiveConfig: config=%lu resized windows to %dx%d", config, target_width, target_height);
+    ALOGI("setActiveConfig: config=%u resized windows to %dx%d",
+          (unsigned)config, target_width, target_height);
 
     return Error::None;
 }
