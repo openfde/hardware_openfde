@@ -37,6 +37,7 @@
 #include <log/log.h>
 #include <cutils/properties.h>
 #include <hardware/hwcomposer.h>
+#include <hidl/HidlTransportSupport.h>
 #include <system/graphics.h>
 #include <ui/Rect.h>
 #include <ui/GraphicBufferMapper.h>
