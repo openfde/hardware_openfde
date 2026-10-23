@@ -44,6 +44,11 @@
 #include <pthread.h>
 #include <stdint.h>
 
+static int64_t global_mouse_icon_addr = -1;
+static bool found_primary_cursor;
+static bool found_external_cursor;
+
+
 // Private data hanging off hwc_composer_device_1_t. Members that only one
 // backend uses are still declared for both so that neither backend has to
 // keep its own copy of the struct.
@@ -55,9 +60,15 @@ struct openfde_hwc_composer_device_1 {
     pthread_t extension_thread;   // constant after init
     pthread_t window_service_thread; // constant after init
     pthread_t egl_worker_thread;  // constant after init
+    pthread_t egl_secondary_worker_thread;  // constant after init
+    pthread_t event_thread_primary;
+    pthread_t event_thread_secondary;
     int32_t vsync_period_ns;      // constant after init
     struct display *display;      // constant after init
+    struct display *secondary_display;      // constant after init
+    bool secondary_hotpluged ;
     std::map<std::string, struct window *> windows;
+    std::map<std::string, struct window *> secondary_windows;
     struct window *calib_window;
 
     pthread_mutex_t vsync_lock;

@@ -55,6 +55,7 @@ void* hwc_vsync_thread(void* data) {
               __FILE__, __LINE__, strerror(errno));
     }
     bool vsync_enabled = false;
+    bool hotpluged = false;
 
     struct timespec wait_time;
     wait_time.tv_sec = 0;
@@ -77,6 +78,7 @@ void* hwc_vsync_thread(void* data) {
 
         pthread_mutex_lock(&pdev->vsync_lock);
         vsync_enabled = pdev->vsync_callback_enabled;
+        hotpluged = pdev->secondary_hotpluged;
         pthread_mutex_unlock(&pdev->vsync_lock);
 
         if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -91,6 +93,14 @@ void* hwc_vsync_thread(void* data) {
         if (!vsync_enabled || !pdev->procs || !pdev->procs->vsync) {
             ATRACE_END();
             continue;
+        }
+        if (  !pdev->procs || !pdev->procs->hotplug ){
+            ALOGW("hotplug is null");
+        } else {
+            if (!hotpluged){
+                pdev->procs->hotplug(pdev->procs,1,1);
+                pdev->secondary_hotpluged = true;
+            }
         }
 
         int64_t timestamp = (uint64_t)rt.tv_sec * 1e9 + rt.tv_nsec;
@@ -156,13 +166,27 @@ void hwc_register_procs(struct hwc_composer_device_1* dev,
 
 int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
                             int disp, uint32_t* configs, size_t* numConfigs) {
-    size_t supportedConfigCount = gScreenConfigCount;
-    if (*numConfigs == 0) {
-        *numConfigs = supportedConfigCount;
+    // 扩展屏只有一种固定配置
+    if (disp == HWC_DISPLAY_EXTERNAL) {
+        if (*numConfigs == 0) {
+            *numConfigs = 1;
+            return 0;
+        }
+        if (configs == NULL) {
+            return -EINVAL;
+        }
+        configs[0] = 0;
+        *numConfigs = 1;
         return 0;
     }
 
-    if (disp == HWC_DISPLAY_PRIMARY && *numConfigs > 0) {
+    if (disp == HWC_DISPLAY_PRIMARY) {
+        // 主屏支持多分辨率：config 0 为真实分辨率，其余为去重后的预设分辨率
+        size_t supportedConfigCount = gScreenConfigCount;
+        if (*numConfigs == 0) {
+            *numConfigs = supportedConfigCount;
+            return 0;
+        }
         if (configs == NULL) {
             return -EINVAL;
         }
@@ -179,11 +203,26 @@ int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
     return -EINVAL;
 }
 
-int32_t hwc_attribute(struct openfde_hwc_composer_device_1* pdev,
+// 判断被查询的 config 是否是该显示屏当前生效的配置。
+// 主屏：与 display->active_config 比较；扩展屏只有一个固定配置（config 0），
+// 始终视为生效。
+static bool hwc_is_active_config(struct display *display, uint32_t config) {
+    if (display->display_type != HWC_DISPLAY_PRIMARY) {
+        return config == (uint32_t)defaultConfigIndex;
+    }
+    uint32_t active = (uint32_t)display->active_config;
+    if (active >= (uint32_t)gScreenConfigCount) {
+        // 配置表尚未就绪时，config 0（真实分辨率）即为生效配置
+        active = (uint32_t)defaultConfigIndex;
+    }
+    return config == active;
+}
+
+int32_t hwc_attribute(struct openfde_hwc_composer_device_1* pdev, struct display * display,
                       const uint32_t attribute, uint32_t config) {
     char property[PROPERTY_VALUE_MAX];
-    int width = pdev->display->full_width;
-    int height = pdev->display->full_height;
+    int width = display->full_width; //pdev->display->full_width;
+    int height = display->full_height; //pdev->display->full_height;
     int density = 160;
     // config > 0 表示选中了非默认（预设）分辨率，按 screenConfigs 覆盖宽高与密度
     if (config > 0 && config < (uint32_t)gScreenConfigCount) {
@@ -198,23 +237,31 @@ int32_t hwc_attribute(struct openfde_hwc_composer_device_1* pdev,
         case HWC_DISPLAY_WIDTH: {
             if (property_get("persist.openfde.width_padding", property, nullptr) > 0)
                 width -= atoi(property);
-            // Only publish the size of the currently active config. SurfaceFlinger
-            // enumerates every config's attributes at display setup; without this
-            // gate the property would end up holding the last enumerated (usually
-            // non-active) resolution, which breaks the input side consumers
-            // (EventHub raw axis ranges, PointerChoreographer edge threshold).
-            if (config == (uint32_t)pdev->display->active_config) {
-                std::string width_str = std::to_string(width);
-                property_set("openfde.display_width", width_str.c_str());
+            std::string width_str = std::to_string(width);
+            // 只在查询当前生效的 config 时才发布内置属性。SurfaceFlinger 会逐个
+            // 枚举所有 config 来构建设置里的分辨率列表，若无条件 property_set，
+            // 最后被查询到的预设分辨率（例如 1280x720）会覆盖真实分辨率
+            // （1920x1080），导致 openfde.display_width 与 wm size 不一致。
+            if (hwc_is_active_config(display, config)) {
+                if(display->display_type == HWC_DISPLAY_PRIMARY){
+                    property_set("openfde.display_width", width_str.c_str());
+                }else{
+                    property_set("openfde.external_display_width", width_str.c_str());
+                }
             }
             return width;
         }
         case HWC_DISPLAY_HEIGHT: {
             if (property_get("persist.openfde.height_padding", property, nullptr) > 0)
                 height -= atoi(property);
-            if (config == (uint32_t)pdev->display->active_config) {
-                std::string height_str = std::to_string(height);
-                property_set("openfde.display_height", height_str.c_str());
+            std::string height_str = std::to_string(height);
+            // 同上：仅在生效 config 时发布，避免被枚举到的其它分辨率覆盖。
+            if (hwc_is_active_config(display, config)) {
+                if(display->display_type == HWC_DISPLAY_PRIMARY){
+                    property_set("openfde.display_height", height_str.c_str());
+                }else{
+                    property_set("openfde.external_display_height", height_str.c_str());
+                }
             }
             return height;
         }
@@ -236,8 +283,13 @@ int hwc_get_display_attributes(struct hwc_composer_device_1* dev __unused,
                                const uint32_t* attributes, int32_t* values) {
     struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
     for (int i = 0; attributes[i] != HWC_DISPLAY_NO_ATTRIBUTE; i++) {
-        if (disp == HWC_DISPLAY_PRIMARY) {
-            values[i] = hwc_attribute(pdev, attributes[i], config);
+        if (disp == HWC_DISPLAY_PRIMARY || disp == HWC_DISPLAY_EXTERNAL) {
+            if(disp == HWC_DISPLAY_PRIMARY){
+                values[i] = hwc_attribute(pdev, pdev->display, attributes[i], config);
+            }else{
+                // 扩展屏为固定配置，忽略传入的 config
+                values[i] = hwc_attribute(pdev, pdev->secondary_display, attributes[i], 0);
+            }
             if (values[i] == -EINVAL) {
                 return -EINVAL;
             }
@@ -263,6 +315,7 @@ int hwc_get_active_config(struct hwc_composer_device_1* dev, int disp) {
 int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, int config) {
     struct openfde_hwc_composer_device_1* pdev = (struct openfde_hwc_composer_device_1*)dev;
 
+    // 只有主屏支持切换分辨率；扩展屏为固定配置
     if (disp != HWC_DISPLAY_PRIMARY) {
         return -EINVAL;
     }
@@ -339,6 +392,19 @@ int hwc_close(hw_device_t* dev) {
     pdev->display->buffer_map.clear();
 
     destroy_display(pdev->display);
+
+    for (std::map<buffer_handle_t, struct buffer *>::iterator it = pdev->secondary_display->buffer_map.begin(); it != pdev->secondary_display->buffer_map.end(); it++)
+    {
+#ifdef USE_X11_BACKEND
+        destroy_buffer(pdev->secondary_display, it->second);
+#else
+        destroy_buffer(it->second);
+#endif
+    }
+
+    pdev->secondary_display->buffer_map.clear();
+    destroy_display(pdev->secondary_display);
+
 
 #ifndef USE_X11_BACKEND
     pthread_kill(pdev->wayland_thread, SIGTERM);

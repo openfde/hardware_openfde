@@ -102,6 +102,9 @@ const int SCROLLING_STRIDE = 2560;
 static double gesture_scaling_start_distance;
 static int gesture_scaling_stride;
 static uint8_t xi_opcode;
+static int last_root_x = 960;
+static int last_root_y = 540;
+static int32_t last_display_id;
 
 static double relx = 0;
 static double rely = 0;
@@ -113,6 +116,11 @@ static double prev_rely = 0;
 #endif
 
 static int find_argb_visual(struct display *display) ;
+
+static int get_primary_monitor_index(struct display *display);
+static void set_fullscreen_on_monitor(struct display *display, xcb_window_t win, int monitor_index);
+static bool get_monitor_info(struct display *display, int monitor_index);
+static void warp_cursor_back(struct display *display, int back_x, int last_root_y);
 
 void
 destroy_buffer(struct display * display ,struct buffer* buf) {
@@ -447,8 +455,13 @@ static void handle_pinch_update(void *data, uint32_t time, wl_fixed_t dx, wl_fix
     ssize_t res;
     unsigned int n = 0;
 
+    if(display->display_type == HWC_DISPLAY_PRIMARY){
     if (sim_ensure_pipe(display, INPUT_TOUCH))
-        return;
+            return;
+    }else{
+        if (sim_ensure_pipe(display, INPUT_TOUCH_EXTERNAL))
+            return;
+    }
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
        ALOGE("%s:%d error in touch clock_gettime: %s",
@@ -480,7 +493,11 @@ static void handle_pinch_update(void *data, uint32_t time, wl_fixed_t dx, wl_fix
     SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
     ALOGI("on_button_release write INPUT_TOUCH");
-    res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
+    if(display->display_type == HWC_DISPLAY_PRIMARY){
+        res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
+    }else{
+        res = write(display->input_fd[INPUT_TOUCH_EXTERNAL], &event, sizeof(event));
+    }
 
     if (res < sizeof(event))
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -496,6 +513,10 @@ static void
 x11_pointer_handle_axis(void *data,  uint32_t axis, int value)
 {
     struct display* display = (struct display*)data;
+    // Track the display that owns the current scroll session so the gear-based
+    // wheel timer (in the common sim module) drips to the correct (possibly
+    // external) display.
+    sim_set_display(display);
     int touchMove = display->reverseScroll ? wl_fixed_to_int(value) : -wl_fixed_to_int(value);
     if (display->wheelEvtIsDiscrete) {
         touchMove *= 6;
@@ -510,6 +531,7 @@ x11_pointer_handle_axis(void *data,  uint32_t axis, int value)
 
     if (sim_ensure_pipe(display, INPUT_POINTER))
         return;
+
 
     if (!display->reverseScroll) {
         fVal = -fVal;
@@ -575,6 +597,7 @@ x11_pointer_handle_axis(void *data,  uint32_t axis, int value)
 
         ALOGE("x11_pointer_handle_axis write INPUT_POINTER");
         res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
+
         if (res < sizeof(event))
             ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
     }
@@ -609,6 +632,8 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
     ALOGI("display->ptrPrvX: %d, display->ptrPrvY: %d", display->ptrPrvX, display->ptrPrvY);
     if(xcb_button_event->detail == XCB_BUTTON_INDEX_1){
         property_set("fde.axis_converting_touch", "false");
+        display->mouse_left_btn_pressed = true;
+        last_display_id = property_get_int32("fde.last_display_id", 0);
     }
 
     sim_pointer_cancel_axis_to_touch(display, false, true);
@@ -716,9 +741,20 @@ void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event)
         }
 
         uint32_t button = 0;
+        int width = property_get_int32("openfde.display_width", 1920);
         switch(xcb_button_event->detail){
             case XCB_BUTTON_INDEX_1:
                 button = BTN_LEFT;
+                display->mouse_left_btn_pressed = false;
+                if ((last_display_id == property_get_int32("fde.last_display_id", 0)) == (last_display_id == 0)) {
+                    if (last_root_x >= width) {
+                        warp_cursor_back(display, width - 1, last_root_y);
+                    }
+                } else {
+                    if (last_root_x < width) {
+                        warp_cursor_back(display, width + 1, last_root_y);
+                    }
+                }
                 break;
             case XCB_BUTTON_INDEX_3:
                 button = BTN_RIGHT;
@@ -735,7 +771,22 @@ void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event)
     }
 }
 
-void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
+static void warp_cursor_back(struct display *display, int back_x, int last_root_y)
+{
+    xcb_connection_t *conn = display->xcbconnection;
+    xcb_window_t root = display->xcbscreen->root;
+    xcb_warp_pointer(conn,
+             XCB_NONE,          // src_window
+             root,              // dst_window
+             0, 0, 0, 0,        // src 区域
+             back_x, last_root_y); // 目标坐标
+    ALOGE("ptg_test Warped X11 cursor back to position (%d, %d)", back_x, last_root_y);
+    xcb_flush(conn);
+}
+
+static bool suppress_relative_injection = false;
+static bool ignore_relative_injection = false;
+void on_motion_notify(void *data, xcb_motion_notify_event_t *xcb_event) {
     struct display* display = (struct display*)data;
     //ALOGI("display->ptrPrvX: %d, display->ptrPrvY: %d", display->ptrPrvX, display->ptrPrvY);
     //ALOGI("x11 mouse move: position=(%d, %d)\n",
@@ -750,14 +801,14 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
         return;
     }
 
-    x = event->event_x;
-    y = event->event_y;
+    x = xcb_event->event_x;
+    y = xcb_event->event_y;
+    ALOGE("on_motion_notify xcb_event->root_x: %d, xcb_event->root_y: %d, xcb_event->same_screen: %d", xcb_event->root_x, xcb_event->root_y, xcb_event->same_screen);
 
     if (display->scale != 1) {
         x = int(x * display->scale);
         y = int(y * display->scale);
     }
-
     struct timespec rt;
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
         ALOGE("%s:%d error in touch clock_gettime: %s",
@@ -785,6 +836,7 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
         return;
     }
 
+
     if (display->isTouchDown) {
         display->ptrPrvX = x;
         display->ptrPrvY = y;
@@ -799,11 +851,42 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
 
     if (display->pending_move && sim_pointer_cancel_axis_to_touch(display, false, false)) {
         struct input_event event[5];
-
         ssize_t res;
         unsigned int n = 0;
 
-        SIM_ADD_EVENT(EV_ABS, ABS_X, x);
+        int android_abs_x = x;
+        if(display->mouse_left_btn_pressed){
+            //Android跨屏了
+            if(last_display_id != property_get_int32("fde.last_display_id", 0)){
+                //起始屏幕是主屏
+                if(display->display_type == HWC_DISPLAY_PRIMARY){
+                    //Android焦点在扩展屏
+                    if(property_get_int32("fde.last_display_id", 0) != 0){
+                        android_abs_x = x - display->full_width;
+                    }
+                }
+                //起始屏幕是扩展屏
+                if(display->display_type == HWC_DISPLAY_EXTERNAL){
+                    //Android焦点在主屏
+                    if(property_get_int32("fde.last_display_id", 0) == 0){
+                        android_abs_x = x + property_get_int32("openfde.display_width", 0);
+                    }
+                }
+            }
+        }else{
+            if(xcb_event->root_x > property_get_int32("openfde.display_width", 0)
+                && property_get_int32("fde.last_display_id", 0) == 0 ){//内部光标从主屏移动到扩展屏失败,将外部x11光标从扩展屏拉回主屏,实现内外对齐
+                android_abs_x = property_get_int32("openfde.display_width", 0) - 1;
+                suppress_relative_injection = true;
+                warp_cursor_back(display, property_get_int32("openfde.display_width", 0) - 10, last_root_y);
+            }else if(xcb_event->root_x < property_get_int32("openfde.display_width", 0)
+                && property_get_int32("fde.last_display_id", 0) != 0){//内部光标从扩展屏移动到主屏失败,将外部x11光标从主屏拉回扩展屏,实现内外对齐
+                android_abs_x = 0;
+                suppress_relative_injection = true;
+                warp_cursor_back(display, property_get_int32("openfde.display_width", 0) + 10, last_root_y);
+            }
+        }
+        SIM_ADD_EVENT(EV_ABS, ABS_X, android_abs_x);
         SIM_ADD_EVENT(EV_ABS, ABS_Y, y);
 
         if(display->accumulated_relx != 0){
@@ -828,7 +911,17 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
                 rely = prev_rely > 0 ? 3 : -3;
             }
         }
-        SIM_ADD_EVENT(EV_REL, REL_X, relx);
+        ALOGE("on_motion_notify suppress_relative_injection: %d", suppress_relative_injection);
+        if(ignore_relative_injection){
+            SIM_ADD_EVENT(EV_REL, REL_X, 0);
+            ignore_relative_injection = false;
+        }else{
+            SIM_ADD_EVENT(EV_REL, REL_X, relx);
+        }
+        if(suppress_relative_injection){
+            ignore_relative_injection = true;
+            suppress_relative_injection = false;
+        }
         SIM_ADD_EVENT(EV_REL, REL_Y, rely);
         SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
@@ -844,8 +937,9 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
             return;
         }
 
-        ALOGD("on_motion_notify write INPUT_POINTER");
+        ALOGD("on_motion_notify write INPUT_POINTER, relx: %f, rely: %f", relx, rely);
         res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
+
         if (res < sizeof(event))
             ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
 
@@ -855,7 +949,11 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *event) {
         display->pending_move = false;
         display->last_mouse_send_time = now;
 
+
     }
+
+    last_root_x = xcb_event->root_x;
+    last_root_y = xcb_event->root_y;
 }
 
 bool isValidInteger(const std::string& str) {
@@ -972,8 +1070,13 @@ touch_handle_cancel(void *data)
     unsigned int n;
     int i, id;
 
+    if(display->display_type == HWC_DISPLAY_PRIMARY){
     if (sim_ensure_pipe(display, INPUT_TOUCH))
         return;
+    }else{
+        if (sim_ensure_pipe(display, INPUT_TOUCH_EXTERNAL))
+            return;
+    }
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
        ALOGE("%s:%d error in touch clock_gettime: %s",
@@ -996,7 +1099,11 @@ touch_handle_cancel(void *data)
             SIM_ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
             SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
-            res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
+            if(display->display_type == HWC_DISPLAY_PRIMARY){
+                res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
+            }else{
+                res = write(display->input_fd[INPUT_TOUCH_EXTERNAL], &event, sizeof(event));
+            }
             if (res < sizeof(event))
                 ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
         }
@@ -1060,6 +1167,60 @@ static void toggle_fullscreen_windowed(xcb_connection_t *conn, xcb_window_t wind
     xcb_flush(conn);
 }
 
+static void handle_screen_change(struct display *display)
+{
+    // 1. 重新获取当前 Monitor 信息
+    int monitor_index = (display->display_type == HWC_DISPLAY_EXTERNAL) ? 1 : 0;
+
+    // 更稳妥：如果是 PRIMARY，查询真正的 Primary；EXTERNAL 选另一个
+    if (display->display_type == HWC_DISPLAY_PRIMARY) {
+        monitor_index = get_primary_monitor_index(display);  // 前面给过的函数
+    } else {
+        int primary = get_primary_monitor_index(display);
+        // 简单策略：选一个不是 primary 的
+        monitor_index = (primary == 0) ? 1 : 0;
+    }
+
+    if (!get_monitor_info(display, monitor_index)) {
+        ALOGE("Failed to re-get monitor info after hotplug");
+        return;
+    }
+
+    ALOGI("After hotplug: type=%d → monitor %d, pos=(%d,%d), size=%dx%d",
+          display->display_type, monitor_index,
+          display->primary_x, display->primary_y,
+          display->full_width, display->full_height);
+
+    // 2. 遍历属于这个 display 的所有窗口，重新定位 + 重新全屏
+    std::lock_guard<std::mutex> lock(display->windowsMutex);
+
+    if (display->x11_windows) {
+        for (auto &pair : *display->x11_windows) {
+            struct window *win = pair.second;
+            if (!win || !win->isActive || !win->xcbwindow)
+                continue;
+
+            // 移动窗口到新位置
+            uint32_t values[] = {
+                (uint32_t)display->primary_x,
+                (uint32_t)display->primary_y,
+                (uint32_t)display->full_width,
+                (uint32_t)display->full_height
+            };
+            xcb_configure_window(display->xcbconnection, win->xcbwindow,
+                                 XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y |
+                                 XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT,
+                                 values);
+
+            // 重新请求全屏到正确的 Monitor
+            set_fullscreen_on_monitor(display, win->xcbwindow, monitor_index);
+        }
+    }
+
+    xcb_flush(display->xcbconnection);
+}
+
+
 void *event_loop_thread(void *arg) {
     ALOGE("input_loop_event start");
     struct display* display = (struct display*)arg;
@@ -1077,6 +1238,26 @@ void *event_loop_thread(void *arg) {
         }
         uint8_t event_type = event->response_type & ~0x80;
         ALOGD("Processing event: type=%d", event_type);
+        const xcb_query_extension_reply_t *randr_ext =
+            xcb_get_extension_data(display->xcbconnection, &xcb_randr_id);
+
+        if (randr_ext && randr_ext->present) {
+            // 屏幕尺寸/布局整体变化
+            if (event_type == randr_ext->first_event + XCB_RANDR_SCREEN_CHANGE_NOTIFY) {
+                ALOGI("RandR ScreenChangeNotify");
+                handle_screen_change(display);
+            }
+            // CRTC 或 Output 变化
+            else if (event_type == randr_ext->first_event + XCB_RANDR_NOTIFY) {
+                xcb_randr_notify_event_t *re = (xcb_randr_notify_event_t *)event;
+
+                if (re->subCode == XCB_RANDR_NOTIFY_CRTC_CHANGE ||
+                    re->subCode == XCB_RANDR_NOTIFY_OUTPUT_CHANGE) {
+                    ALOGI("RandR Notify subCode=%d", re->subCode);
+                    handle_screen_change(display);
+                }
+            }
+        }
         if(display->multi_windows){
             if(display->im){
                 if (!xcb_xim_filter_event(display->im, event)) {
@@ -1536,6 +1717,54 @@ bool isStartWithTidSymbols(const std::string& layer_name){
     return !layer_name.empty() && layer_name.find("TID") != std::string::npos;
 }
 
+static void set_fullscreen_on_monitor(struct display *display, xcb_window_t win, int monitor_index)
+{
+    xcb_connection_t *conn = display->xcbconnection;
+    xcb_window_t root = display->xcbscreen->root;
+
+    xcb_intern_atom_cookie_t c1 = xcb_intern_atom(conn, 0, strlen("_NET_WM_STATE"), "_NET_WM_STATE");
+    xcb_intern_atom_cookie_t c2 = xcb_intern_atom(conn, 0, strlen("_NET_WM_STATE_FULLSCREEN"), "_NET_WM_STATE_FULLSCREEN");
+    xcb_intern_atom_cookie_t c3 = xcb_intern_atom(conn, 0, strlen("_NET_WM_FULLSCREEN_MONITORS"), "_NET_WM_FULLSCREEN_MONITORS");
+
+    xcb_intern_atom_reply_t *r1 = xcb_intern_atom_reply(conn, c1, NULL);
+    xcb_intern_atom_reply_t *r2 = xcb_intern_atom_reply(conn, c2, NULL);
+    xcb_intern_atom_reply_t *r3 = xcb_intern_atom_reply(conn, c3, NULL);
+
+    if (!r1 || !r2 || !r3) {
+        free(r1); free(r2); free(r3);
+        return;
+    }
+
+    // 1. 请求全屏
+    xcb_client_message_event_t ev = {0};
+    ev.response_type = XCB_CLIENT_MESSAGE;
+    ev.window = win;
+    ev.type = r1->atom;
+    ev.format = 32;
+    ev.data.data32[0] = 1;               // _NET_WM_STATE_ADD
+    ev.data.data32[1] = r2->atom;        // _NET_WM_STATE_FULLSCREEN
+    ev.data.data32[2] = 0;
+    ev.data.data32[3] = 1;               // source = application
+    xcb_send_event(conn, 0, root,
+                   XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                   (const char *)&ev);
+
+    // 2. 指定只在目标 Monitor 上全屏
+    ev.type = r3->atom;
+    ev.data.data32[0] = monitor_index;   // top
+    ev.data.data32[1] = monitor_index;   // bottom
+    ev.data.data32[2] = monitor_index;   // left
+    ev.data.data32[3] = monitor_index;   // right
+    ev.data.data32[4] = 1;
+    xcb_send_event(conn, 0, root,
+                   XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                   (const char *)&ev);
+
+    xcb_flush(conn);
+    free(r1); free(r2); free(r3);
+}
+
+
 struct window *
 create_window(struct display *display, bool use_subsurfaces, std::string appID, std::string taskID, hwc_color_t color)
 {
@@ -1744,6 +1973,17 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
     xcb_map_window(display->xcbconnection, window->xcbwindow);
     ALOGI("xcreate xcb window %s color %d, width %d height %d",appID_title.c_str(),color.a, display->width,display->height);
 
+    //int monitor_index = (display->display_type == HWC_DISPLAY_EXTERNAL) ? 1 : 0;
+    int monitor_index;
+    if (display->display_type == HWC_DISPLAY_PRIMARY) {
+        monitor_index = get_primary_monitor_index(display);  // 真正的主屏
+    } else {
+        // EXTERNAL：选一个非主屏的
+        int primary = get_primary_monitor_index(display);
+        monitor_index = (primary == 0) ? 1 : 0;  // 简单处理：另一个
+    }
+    set_fullscreen_on_monitor(display, window->xcbwindow, monitor_index);
+
     /* Check the XInput extension and get the opcode. */
     const xcb_query_extension_reply_t *ext_reply =
         xcb_get_extension_data(display->xcbconnection, &xcb_input_id);
@@ -1799,6 +2039,176 @@ void enable_auto_repeat(Display *display) {
     XAutoRepeatOn(display);
     XFlush(display);
 }
+
+// 获取真正的 Primary Output 对应的 Monitor 索引
+static int get_primary_monitor_index(struct display *display)
+{
+    xcb_connection_t *conn = display->xcbconnection;
+    xcb_window_t root = display->xcbscreen->root;
+
+    // 1. 拿到 Primary Output
+    xcb_randr_get_output_primary_cookie_t primary_cookie =
+        xcb_randr_get_output_primary(conn, root);
+    xcb_randr_get_output_primary_reply_t *primary_reply =
+        xcb_randr_get_output_primary_reply(conn, primary_cookie, NULL);
+
+    if (!primary_reply || primary_reply->output == XCB_NONE) {
+        free(primary_reply);
+        ALOGW("No primary output, fallback to monitor 0");
+        return 0;
+    }
+
+    xcb_randr_output_t primary_output = primary_reply->output;
+    free(primary_reply);
+
+    // 2. 获取所有 CRTC，找到 Primary 对应的那个，并计算它的索引
+    xcb_randr_get_screen_resources_current_cookie_t res_cookie =
+        xcb_randr_get_screen_resources_current(conn, root);
+    xcb_randr_get_screen_resources_current_reply_t *res_reply =
+        xcb_randr_get_screen_resources_current_reply(conn, res_cookie, NULL);
+    if (!res_reply) {
+        return 0;
+    }
+
+    xcb_randr_crtc_t *crtcs = xcb_randr_get_screen_resources_current_crtcs(res_reply);
+    int ncrtc = xcb_randr_get_screen_resources_current_crtcs_length(res_reply);
+
+    // 收集有效 Monitor，并记录哪个是 Primary
+    struct MonitorInfo {
+        int x, y, width, height;
+        bool is_primary;
+    } monitors[16];
+    int count = 0;
+    int primary_idx = 0;
+
+    for (int i = 0; i < ncrtc && count < 16; i++) {
+        xcb_randr_get_crtc_info_cookie_t c_cookie =
+            xcb_randr_get_crtc_info(conn, crtcs[i], XCB_CURRENT_TIME);
+        xcb_randr_get_crtc_info_reply_t *c_info =
+            xcb_randr_get_crtc_info_reply(conn, c_cookie, NULL);
+
+        if (c_info && c_info->mode != XCB_NONE && c_info->width > 0) {
+            monitors[count].x = c_info->x;
+            monitors[count].y = c_info->y;
+            monitors[count].width = c_info->width;
+            monitors[count].height = c_info->height;
+            monitors[count].is_primary = false;
+
+            // 检查这个 CRTC 是否绑定了 Primary Output
+            xcb_randr_output_t *outputs = xcb_randr_get_crtc_info_outputs(c_info);
+            int noutput = xcb_randr_get_crtc_info_outputs_length(c_info);
+            for (int j = 0; j < noutput; j++) {
+                if (outputs[j] == primary_output) {
+                    monitors[count].is_primary = true;
+                    primary_idx = count;
+                }
+            }
+            count++;
+        }
+        free(c_info);
+    }
+    free(res_reply);
+
+    // 可选：按 x 坐标排序后重新计算 primary_idx
+    // （如果你希望索引按从左到右排列）
+
+    ALOGI("Primary monitor index = %d (total %d monitors)", primary_idx, count);
+    return primary_idx;
+}
+
+
+// 根据 monitor_index 获取对应 Output 的几何信息
+// monitor_index: 0 = 第一个 Monitor，1 = 第二个...
+static bool get_monitor_info(struct display *display, int monitor_index)
+{
+    xcb_connection_t *conn = display->xcbconnection;
+    xcb_window_t root = display->xcbscreen->root;
+
+    // 默认回退值
+    display->primary_x = 0;
+    display->primary_y = 0;
+    display->full_width = display->xcbscreen->width_in_pixels;
+    display->full_height = display->xcbscreen->height_in_pixels;
+
+    const xcb_query_extension_reply_t *randr_ext =
+        xcb_get_extension_data(conn, &xcb_randr_id);
+    if (!randr_ext || !randr_ext->present) {
+        ALOGE("RandR extension not available");
+        return false;
+    }
+
+    xcb_randr_get_screen_resources_current_cookie_t res_cookie =
+        xcb_randr_get_screen_resources_current(conn, root);
+    xcb_randr_get_screen_resources_current_reply_t *res_reply =
+        xcb_randr_get_screen_resources_current_reply(conn, res_cookie, NULL);
+    if (!res_reply) {
+        ALOGE("Failed to get screen resources");
+        return false;
+    }
+
+    xcb_randr_crtc_t *crtcs = xcb_randr_get_screen_resources_current_crtcs(res_reply);
+    int ncrtc = xcb_randr_get_screen_resources_current_crtcs_length(res_reply);
+
+    // 收集所有有效的 CRTC（有 mode 的）
+    struct {
+        int x, y, width, height;
+    } monitors[16];
+    int monitor_count = 0;
+
+    for (int i = 0; i < ncrtc && monitor_count < 16; i++) {
+        xcb_randr_get_crtc_info_cookie_t c_cookie =
+            xcb_randr_get_crtc_info(conn, crtcs[i], XCB_CURRENT_TIME);
+        xcb_randr_get_crtc_info_reply_t *c_info =
+            xcb_randr_get_crtc_info_reply(conn, c_cookie, NULL);
+
+        if (c_info && c_info->mode != XCB_NONE &&
+            c_info->width > 0 && c_info->height > 0) {
+            monitors[monitor_count].x = c_info->x;
+            monitors[monitor_count].y = c_info->y;
+            monitors[monitor_count].width = c_info->width;
+            monitors[monitor_count].height = c_info->height;
+            monitor_count++;
+        }
+        free(c_info);
+    }
+    free(res_reply);
+
+    if (monitor_count == 0) {
+        ALOGE("No active CRTCs found");
+        return false;
+    }
+
+    // 按 x 坐标排序，保证 index 0 是最左边的
+    for (int i = 0; i < monitor_count - 1; i++) {
+        for (int j = i + 1; j < monitor_count; j++) {
+            if (monitors[j].x < monitors[i].x) {
+                auto tmp = monitors[i];
+                monitors[i] = monitors[j];
+                monitors[j] = tmp;
+            }
+        }
+    }
+
+    if (monitor_index < 0 || monitor_index >= monitor_count) {
+        ALOGE("monitor_index %d out of range (total %d), fallback to 0",
+              monitor_index, monitor_count);
+        monitor_index = 0;
+    }
+
+    display->primary_x   = monitors[monitor_index].x;
+    display->primary_y   = monitors[monitor_index].y;
+    display->full_width  = monitors[monitor_index].width;
+    display->full_height = monitors[monitor_index].height;
+
+    ALOGI("Selected monitor %d: %dx%d @ (%d,%d)  (total monitors: %d)",
+          monitor_index,
+          display->full_width, display->full_height,
+          display->primary_x, display->primary_y,
+          monitor_count);
+
+    return true;
+}
+
 
 static bool get_primary_info(struct display *display)
 {
@@ -1940,7 +2350,7 @@ cleanup:
 }
 
 struct display *
-create_display(const char *gralloc)
+create_display(const char *gralloc, int target)
 {
     struct display *display = new struct display();
     if (display == NULL) {
@@ -1950,6 +2360,7 @@ create_display(const char *gralloc)
     display->gtype = get_gralloc_type(gralloc);
     display->refresh = 0;
     display->isMaximized = true;
+    display->display_type = target;
 
     display->x11display = NULL;
     ALOGI("x11 display env %s", getenv("DISPLAY"));
@@ -2009,8 +2420,11 @@ create_display(const char *gralloc)
     display->gesture_scale = 160;
     // Get screen resolution and scale
     display->scale = 1;
+
+    int monitor_index = (target == HWC_DISPLAY_EXTERNAL) ? 1 : 0;
+
     // use randr to get the primary display resolution (prioritize the primary display when using multiple display device).
-    if (!get_primary_info(display)) {
+    if (!get_monitor_info(display, monitor_index)) {
         // fallback to root window（single display or randr not available）
         display->full_width = display->xcbscreen->width_in_pixels;
         display->full_height = display->xcbscreen->height_in_pixels;
@@ -2018,23 +2432,47 @@ create_display(const char *gralloc)
         display->primary_y = 0;
         ALOGI("fallback to root window size: %dx%d", display->full_width, display->full_height);
     }
-    screen_configs_init(display->full_width, display->full_height);
-    display->active_config = screen_config_set_and_get_index(display->full_width, display->full_height);
+    ALOGE("create_display target: %d", target);
+
+    // 屏幕配置表是进程级全局状态，只能按主屏分辨率构建；扩展屏是单一固定
+    // 配置，若也调用 screen_configs_init 会把主屏的配置表覆盖掉。
+    if (target == HWC_DISPLAY_PRIMARY) {
+        screen_configs_init(display->full_width, display->full_height);
+        display->active_config =
+            screen_config_set_and_get_index(display->full_width, display->full_height);
+    }
     display->width = display->full_width /display->scale;
     display->height = display->full_height /display->scale;
     ALOGI("final display size: %dx%d (scale=%f), primary offset (%d,%d)",
           display->width, display->height, display->scale, display->primary_x, display->primary_y);
+
+    ALOGI("create_display: type=%d → monitor %d, size %dx%d, offset (%d,%d)",
+          target, monitor_index,
+          display->width, display->height,
+          display->primary_x, display->primary_y);
+
     struct display *d = (struct display*)display;
-    d->input_fd[INPUT_POINTER] = -1;
     d->ptrPrvX = 0;
     d->ptrPrvY = 0;
     d->reverseScroll = property_get_bool("persist.waydroid.reverse_scrolling", false);
+
+    d->input_fd[INPUT_POINTER] = -1;
     mkfifo(INPUT_PIPE_NAME[INPUT_POINTER], S_IRWXO | S_IRWXG | S_IRWXU);
     chown(INPUT_PIPE_NAME[INPUT_POINTER], 1000, 1000);
+
+    
     // for emulate touch input event
-    d->input_fd[INPUT_TOUCH] = -1;
-    mkfifo(INPUT_PIPE_NAME[INPUT_TOUCH], S_IRWXO | S_IRWXG | S_IRWXU);
-    chown(INPUT_PIPE_NAME[INPUT_TOUCH], 1000, 1000);
+    if(target == HWC_DISPLAY_PRIMARY){
+        d->input_fd[INPUT_TOUCH] = -1;
+        mkfifo(INPUT_PIPE_NAME[INPUT_TOUCH], S_IRWXO | S_IRWXG | S_IRWXU);
+        chown(INPUT_PIPE_NAME[INPUT_TOUCH], 1000, 1000);
+    }else{
+        d->input_fd[INPUT_TOUCH_EXTERNAL] = -1;
+        mkfifo(INPUT_PIPE_NAME[INPUT_TOUCH_EXTERNAL], S_IRWXO | S_IRWXG | S_IRWXU);
+        chown(INPUT_PIPE_NAME[INPUT_TOUCH_EXTERNAL], 1000, 1000);
+    }
+    
+    
     for (int i = 0; i < MAX_TOUCHPOINTS; i++)
             d->touch_id[i] = -1;
 
@@ -2054,6 +2492,15 @@ create_display(const char *gralloc)
 
     display->argb_format = XRenderFindStandardFormat(display->x11display, PictStandardARGB32);
 
+    // 选择 RandR 事件
+    xcb_randr_select_input(display->xcbconnection,
+                           display->xcbscreen->root,
+                           XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE |
+                           XCB_RANDR_NOTIFY_MASK_CRTC_CHANGE |
+                           XCB_RANDR_NOTIFY_MASK_OUTPUT_CHANGE);
+    xcb_flush(display->xcbconnection);
+
+    // Hwc 1.4: initialize batching/touch state
     display->last_mouse_send_time = 0;
     display->accumulated_relx = 0;
     display->accumulated_rely = 0;
@@ -2069,10 +2516,11 @@ create_display(const char *gralloc)
         display->touch_changed[i] = false;
         display->touch_tracking_id[i] = -1;
     }
-    pthread_t event_thread;
+
+    /*pthread_t event_thread;
     if (pthread_create(&event_thread, NULL, event_loop_thread, display) != 0) {
         ALOGE("Unable to create event processing thread\n");
-    }
+    }*/
 
     sim_init_timer();
     sim_set_display(display);

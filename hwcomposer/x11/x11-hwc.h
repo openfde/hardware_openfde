@@ -56,6 +56,7 @@
 #define EGL_EGLEXT_PROTOTYPES
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#include <GLES2/gl2.h>
 
 #include <functional>
 
@@ -79,6 +80,7 @@ using ::vendor::openfde::task::V1_0::IOpenfdeTask;
 
 enum {
     INPUT_TOUCH,
+    INPUT_TOUCH_EXTERNAL,
     INPUT_KEYBOARD,
     INPUT_POINTER,
     INPUT_TABLET,
@@ -87,6 +89,7 @@ enum {
 
 static const char *INPUT_PIPE_NAME[INPUT_TOTAL] = {
     "/dev/input/wl_touch_events",
+    "/dev/input/wl_touch_external_events",
     "/dev/input/wl_keyboard_events",
     "/dev/input/wl_pointer_events",
     "/dev/input/wl_tablet_events"
@@ -134,7 +137,7 @@ struct display {
     xcb_xim_t *im;
     int gtype;
     double scale;
- 
+    int display_type;
 
     int input_fd[INPUT_TOTAL];
     int ptrPrvX;
@@ -148,6 +151,13 @@ struct display {
     int axisY;
     int axisX;
     int64_t lastAxisEventNanoSeconds;
+
+    int                 touch_move = 0;
+    bool                vertical_scroll = true;
+    int                 timer_active = 0;
+    int                 scroll_speed = 0;
+    struct itimerval    timer;
+
     int touch_id[MAX_TOUCHPOINTS];
     std::map<struct wl_surface *, struct layerFrame> layers;
     std::map<struct wl_surface *, struct window *> windows;
@@ -158,6 +168,9 @@ struct display {
     std::list<std::function<void()>> egl_work_queue;
     sem_t egl_go;
     sem_t egl_done;
+    GLuint shader_program = 0;
+    GLuint VAO = 0, VBO = 0, EBO = 0;
+    bool gl_initialized = false;
 
     int width;
     int height;
@@ -192,6 +205,9 @@ struct display {
     int primary_x = 0;      //primary display X offset
     int primary_y = 0;      //primary display Y offset
     bool is_fullscreen = true;  //Initially full screen (for toggle state tracking)
+    int event_root_x = 0;
+    int event_root_y = 0;
+    bool mouse_left_btn_pressed = false;
 
     // New addition: For mouse batch processing and frequency reduction
     nsecs_t last_mouse_send_time;      // Last sent time
@@ -316,7 +332,9 @@ void
 snapshot_inactive_app_window(struct display *display, struct window *window);
 
 struct display *
-create_display(const char* gralloc);
+create_display(const char* gralloc, int target);
+void *event_loop_thread(void *arg);
+
 void
 destroy_display(struct display *display);
 int remove_title(xcb_connection_t *conn, xcb_window_t main_win);
@@ -345,3 +363,4 @@ bool isValidInteger(const std::string& str);
 bool isStartWithSpecialSymbols(const std::string& layer_name);
 bool isStartWithTidSymbols(const std::string& layer_name);
 int add_title(xcb_connection_t *conn, xcb_window_t main_win);
+void init_timer();
