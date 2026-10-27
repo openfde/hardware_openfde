@@ -896,16 +896,38 @@ Error Hwc2Device::registerCallback(Callback descriptor, hwc2_callback_data_t cal
     if (descriptor == Callback::Hotplug && pointer != nullptr) {
         auto hotplug = reinterpret_cast<HWC2_PFN_HOTPLUG>(pointer);
         std::vector<std::pair<hwc2_display_t, int32_t>> pending;
+        std::vector<std::pair<hwc2_display_t, int32_t>> events;
         {
             std::lock_guard<std::recursive_mutex> lock(mStateMutex);
             pending.swap(mPendingHotplugs);
+            // 先按 id 升序上报所有已存在的 display。display 0（主屏）必须是
+            // 第一个，否则 SurfaceFlinger 会把第一个上报的显示器当成内建 /
+            // 默认屏（见 frameworks native 的 allocatePhysicalDisplay），
+            // 导致“屏幕分辨率”设置消失、默认屏与外接屏身份互换。
             for (const auto& pair : mDisplays) {
-                pending.emplace_back(pair.first,
-                                     static_cast<int32_t>(HWC2::Connection::Connected));
+                events.emplace_back(pair.first,
+                                    static_cast<int32_t>(HWC2::Connection::Connected));
+            }
+            // 再补上 pending 中、已不在 mDisplays 中的事件
+            // （例如注册回调前已经被销毁的 display）
+            for (const auto& ev : pending) {
+                bool found = false;
+                for (const auto& e : events) {
+                    if (e.first == ev.first) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) events.emplace_back(ev);
             }
         }
-        for (const auto& event : pending) {
-            hotplug(callbackData, event.first, event.second);
+        std::sort(events.begin(), events.end(),
+                  [](const std::pair<hwc2_display_t, int32_t>& a,
+                     const std::pair<hwc2_display_t, int32_t>& b) {
+                      return a.first < b.first;
+                  });
+        for (const auto& ev : events) {
+            hotplug(callbackData, ev.first, ev.second);
         }
     }
 

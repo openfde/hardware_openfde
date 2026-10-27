@@ -2124,11 +2124,9 @@ static bool get_monitor_info(struct display *display, int monitor_index)
     xcb_connection_t *conn = display->xcbconnection;
     xcb_window_t root = display->xcbscreen->root;
 
-    // 默认回退值
-    display->primary_x = 0;
-    display->primary_y = 0;
-    display->full_width = display->xcbscreen->width_in_pixels;
-    display->full_height = display->xcbscreen->height_in_pixels;
+    // 不预设回退值：查询成功时才写回 display->，查询失败时保持调用前的
+    // 几何不变，避免被整个 X 屏幕（多屏合并虚拟桌面）尺寸污染，否则会
+    // 表现为应用列表图标被拉伸放大（把两屏总分辨率当成一屏）。
 
     const xcb_query_extension_reply_t *randr_ext =
         xcb_get_extension_data(conn, &xcb_randr_id);
@@ -2195,6 +2193,7 @@ static bool get_monitor_info(struct display *display, int monitor_index)
         monitor_index = 0;
     }
 
+    // 查询成功，才把真实显示器几何写回 display->
     display->primary_x   = monitors[monitor_index].x;
     display->primary_y   = monitors[monitor_index].y;
     display->full_width  = monitors[monitor_index].width;
