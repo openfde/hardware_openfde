@@ -1166,8 +1166,9 @@ Error X11Backend::present(Hwc2Display& display) {
         const int kAcquireWarningMS = 100;
         int fenceErr = sync_wait(acquireFence, kAcquireWarningMS);
         if (fenceErr < 0 && errno == ETIME) {
-            ALOGE("hwcomposer waited on fence %d for %d ms",
-            acquireFence, kAcquireWarningMS);
+            ALOGE("hwcomposer waited on fence %d for %d ms (%s)",
+            acquireFence, kAcquireWarningMS,
+            layer_name.empty() ? "<client target>" : layer_name.c_str());
         }
         if (acquireFence != -1) {
             close(acquireFence);

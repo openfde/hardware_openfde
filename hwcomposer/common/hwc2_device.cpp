@@ -576,9 +576,10 @@ int Hwc2Device::createPresentFence() {
         // statistics after the timeout.
         return -1;
     }
-    sw_sync_timeline_inc(mTimelineFd, 1);
     const int fence = sw_sync_fence_create(mTimelineFd, "openfde_hwc_present",
-                                           ++mNextSyncPoint);
+                                           mNextSyncPoint);
+    mNextSyncPoint++;
+    sw_sync_timeline_inc(mTimelineFd, 1);
     if (fence < 0 && !mPresentFenceErrorLogged) {
         mPresentFenceErrorLogged = true;
         ALOGE("sw_sync_fence_create failed (timeline fd %d): %s; SF will report "
