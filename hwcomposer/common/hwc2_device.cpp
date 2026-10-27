@@ -22,6 +22,9 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+
 #include <algorithm>
 #include <chrono>
 #include <sstream>
@@ -457,6 +460,29 @@ Hwc2Device::Hwc2Device(std::unique_ptr<Hwc2Backend> backend, void* primaryBacken
               strerror(errno));
     }
 
+    // One-time diagnostic for the sw_sync source. libsync first tries
+    // /sys/kernel/debug/sync/sw_sync and falls back to /dev/sw_sync; when the
+    // fallback has to kick in, record why the sysfs path was rejected (DAC
+    // permissions, an SELinux label the composer domain cannot access, or a
+    // different mount namespace). errno from sw_sync_timeline_create itself
+    // is useless here since it belongs to whichever open failed last.
+    {
+        const char* sysPath = "/sys/kernel/debug/sync/sw_sync";
+        struct stat st;
+        if (stat(sysPath, &st) == 0) {
+            const int fd = open(sysPath, O_RDWR);
+            ALOGI("sw_sync sysfs path: mode=%o uid=%u gid=%u, open=%s; hal uid=%d",
+                  st.st_mode & 07777, st.st_uid, st.st_gid,
+                  fd >= 0 ? "ok" : strerror(errno), geteuid());
+            if (fd >= 0) {
+                close(fd);
+            }
+        } else {
+            ALOGI("sw_sync sysfs path unavailable: %s; hal uid=%d", strerror(errno),
+                  geteuid());
+        }
+    }
+
     struct timespec rt;
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
         ALOGE("%s:%d error in clock_gettime: %s", __FILE__, __LINE__, strerror(errno));
@@ -543,6 +569,13 @@ void Hwc2Device::hotplugEvent(hwc2_display_t displayId, bool connected) {
 }
 
 int Hwc2Device::createPresentFence() {
+    if (mTimelineFd < 0) {
+        // The timeline is unusable (sw_sync missing from the kernel); report
+        // "no fence" instead of handing SF a bad fd. SF treats a missing
+        // present fence as pending and drops the frame from its latency
+        // statistics after the timeout.
+        return -1;
+    }
     sw_sync_timeline_inc(mTimelineFd, 1);
     const int fence = sw_sync_fence_create(mTimelineFd, "openfde_hwc_present",
                                            ++mNextSyncPoint);
