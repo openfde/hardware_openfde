@@ -21,6 +21,7 @@
 // presents per-display layer lists through XRender.
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdlib.h>
