@@ -41,3 +41,9 @@ int screen_config_get_index(int width, int height);
 // Returns the slot matching width/height, recording it as the real
 // resolution (slot 0) when it is not a known preset.
 int screen_config_set_and_get_index(int width, int height);
+
+// Whether the queried config is the one currently in effect on the display.
+// External displays only ever have the single fixed config (slot 0); primary
+// displays track their active slot in active_config, which falls back to the
+// real resolution until the table is ready.
+bool screen_config_is_active(bool isPrimary, int active_config, int config);

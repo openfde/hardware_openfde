@@ -91,18 +91,21 @@ class WaylandBackend : public Hwc2Backend {
 
     // Hwc2Backend interface
     std::vector<hwc2_config_t> getConfigs(Hwc2Display& /*display*/) override {
-        return {0};
+        // The primary display supports multiple resolutions: config 0 is the
+        // real one, the rest are deduplicated presets
+        std::vector<hwc2_config_t> configs;
+        for (int i = 0; i < gScreenConfigCount; i++) {
+            configs.push_back((hwc2_config_t)i);
+        }
+        return configs;
     }
 
     Error getActiveConfig(Hwc2Display& /*display*/, hwc2_config_t* outConfig) override {
-        *outConfig = 0;
+        *outConfig = mDisplay->active_config;
         return Error::None;
     }
 
-    Error setActiveConfig(Hwc2Display& /*display*/, hwc2_config_t config) override {
-        return config == 0 ? Error::None : Error::BadConfig;
-    }
-
+    Error setActiveConfig(Hwc2Display& display, hwc2_config_t config) override;
     Error getAttribute(Hwc2Display& display, hwc2_config_t config, Attribute attribute,
                        int32_t* outValue) override;
     Error validate(Hwc2Display& display) override;
@@ -115,6 +118,8 @@ class WaylandBackend : public Hwc2Backend {
     int startThreads();
 
   private:
+    void resizeWindows(int target_width, int target_height);
+
     struct buffer* getWlBuffer(buffer_handle_t handle, const handle_ext& ext,
                                hwc_rect_t fallbackFrame);
     struct wl_surface* getSurface(hwc_rect_t frame, hwc_frect_t crop, Transform transform,
@@ -974,16 +979,122 @@ Error WaylandBackend::present(Hwc2Display& display) {
     return Error::None;
 }
 
+Error WaylandBackend::setActiveConfig(Hwc2Display& /*display*/, hwc2_config_t config) {
+    if (config >= (hwc2_config_t)gScreenConfigCount) {
+        ALOGE("unsupported active config %u", (unsigned)config);
+        return Error::BadConfig;
+    }
+
+    if (mDisplay->active_config == config) {
+        return Error::None;
+    }
+
+    // config 0 is the real resolution, the others are deduplicated presets
+    if (screenConfigs[config].Width == 0 || screenConfigs[config].Height == 0) {
+        return Error::BadConfig;
+    }
+    int target_width = screenConfigs[config].Width;
+    int target_height = screenConfigs[config].Height;
+
+    mDisplay->full_width = target_width;
+    mDisplay->full_height = target_height;
+    mDisplay->geo_changed = true;
+    mDisplay->width = target_width;
+    mDisplay->height = target_height;
+    mDisplay->primary_x = 0;
+    mDisplay->primary_y = 0;
+    {
+        std::scoped_lock lock(mDisplay->windowsMutex);
+        resizeWindows(target_width, target_height);
+    }
+
+    // Publish the new active resolution so the input side (EventHub raw axis
+    // ranges, PointerChoreographer edge threshold) tracks the current display
+    // size. getAttribute() only updates these properties when the active
+    // config's attributes are queried, which is not guaranteed on a switch.
+    {
+        char property[PROPERTY_VALUE_MAX];
+        int prop_width = target_width;
+        int prop_height = target_height;
+        if (property_get("persist.openfde.width_padding", property, nullptr) > 0)
+            prop_width -= atoi(property);
+        if (property_get("persist.openfde.height_padding", property, nullptr) > 0)
+            prop_height -= atoi(property);
+        property_set("openfde.display_width", std::to_string(prop_width).c_str());
+        property_set("openfde.display_height", std::to_string(prop_height).c_str());
+    }
+
+    ALOGI("setActiveConfig: config=%u resized windows to %dx%d",
+          (unsigned)config, target_width, target_height);
+
+    mDisplay->active_config = config;
+
+    return Error::None;
+}
+
+void WaylandBackend::resizeWindows(int target_width, int target_height) {
+    // NOTE: called with display->windowsMutex held (see setActiveConfig).
+    //
+    // Do NOT destroy and recreate the Wayland windows here. The old
+    // destroy/recreate approach raced with the wayland dispatch thread on the
+    // same connection, and the wl_display_roundtrip() calls inside
+    // create_window() made two threads dispatch the default event queue at
+    // the same time. Either race kills the connection ("Wayland client was
+    // disconnected") when switching resolution.
+    //
+    // Everything a window needs for the new size can be updated in place:
+    // the xdg window geometry and the background viewport destination.
+    // Layer subsurfaces re-derive their viewport destination and position
+    // from the new displayFrame on the next present() pass.
+    for (auto it = mWindows.begin(); it != mWindows.end(); ++it) {
+        struct window* window = it->second;
+        if (!window || !window->isActive) {
+            // Inactive windows already had their Wayland objects destroyed.
+            continue;
+        }
+
+        if (window->xdg_surface)
+            xdg_surface_set_window_geometry(window->xdg_surface, 0, 0,
+                                            target_width, target_height);
+
+        // With subsurfaces enabled the background is attached directly to
+        // the main surface, otherwise to the dedicated bg subsurface.
+        struct wl_surface* bg_surface = window->bg_surface;
+        if (!bg_surface)
+            bg_surface = window->surface;
+
+        if (window->bg_viewport && window->bg_buffer) {
+            wl_surface_attach(bg_surface, window->bg_buffer, 0, 0);
+            wl_surface_damage_buffer(bg_surface, 0, 0, 1, 1);
+            wp_viewport_set_destination(window->bg_viewport,
+                                        target_width, target_height);
+        }
+        wl_surface_commit(bg_surface);
+        if (bg_surface != window->surface)
+            // bg subsurface is in synchronized mode and the new window
+            // geometry lives on the parent: commit the parent as well.
+            wl_surface_commit(window->surface);
+    }
+    wl_display_flush(mDisplay->display);
+}
+
 Error WaylandBackend::getAttribute(Hwc2Display& /*display*/, hwc2_config_t config,
                                    Attribute attribute, int32_t* outValue) {
-    if (config != 0) {
+    if (config >= (hwc2_config_t)gScreenConfigCount) {
         return Error::BadConfig;
     }
 
     char property[PROPERTY_VALUE_MAX];
-    int width = floor(mDisplay->width * mDisplay->scale);
-    int height = floor(mDisplay->height * mDisplay->scale);
-    int density = 180;
+    int width = mDisplay->full_width;
+    int height = mDisplay->full_height;
+    int density = 160;
+    // config > 0 means a non-default (preset) resolution was selected,
+    // override width/height/density from the table
+    if (config > 0 && config < (hwc2_config_t)gScreenConfigCount) {
+        width = screenConfigs[config].Width;
+        height = screenConfigs[config].Height;
+        density = screenConfigs[config].Density;
+    }
 
     switch (attribute) {
         case Attribute::VsyncPeriod: {
@@ -993,18 +1104,32 @@ Error WaylandBackend::getAttribute(Hwc2Display& /*display*/, hwc2_config_t confi
             *outValue = period;
             return Error::None;
         }
-        case Attribute::Width:
+        case Attribute::Width: {
             if (property_get("persist.openfde.width_padding", property, nullptr) > 0)
                 width -= atoi(property);
-            property_set("openfde.display_width", std::to_string(width).c_str());
+            // Only publish the built-in property when the active config is
+            // queried. SurfaceFlinger enumerates every config to build the
+            // resolution list in Settings; publishing unconditionally would
+            // let the last enumerated preset (e.g. 1280x720) clobber the
+            // real resolution (1920x1080), leaving openfde.display_width
+            // inconsistent with wm size.
+            if (screen_config_is_active(true, mDisplay->active_config, (int)config)) {
+                property_set("openfde.display_width", std::to_string(width).c_str());
+            }
             *outValue = width;
             return Error::None;
-        case Attribute::Height:
+        }
+        case Attribute::Height: {
             if (property_get("persist.openfde.height_padding", property, nullptr) > 0)
                 height -= atoi(property);
-            property_set("openfde.display_height", std::to_string(height).c_str());
+            // Same as above: only publish for the active config so other
+            // enumerated resolutions cannot clobber it.
+            if (screen_config_is_active(true, mDisplay->active_config, (int)config)) {
+                property_set("openfde.display_height", std::to_string(height).c_str());
+            }
             *outValue = height;
             return Error::None;
+        }
         case Attribute::DpiX:
         case Attribute::DpiY:
             if (property_get("ro.sf.lcd_density", property, nullptr) > 0)

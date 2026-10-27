@@ -109,8 +109,15 @@ class X11Backend : public Hwc2Backend {
     }
 
     // Hwc2Backend interface
-    std::vector<hwc2_config_t> getConfigs(Hwc2Display& /*display*/) override {
+    std::vector<hwc2_config_t> getConfigs(Hwc2Display& display) override {
         std::vector<hwc2_config_t> configs;
+        if (!display.isPrimary()) {
+            // The external display has one single fixed config
+            configs.push_back(0);
+            return configs;
+        }
+        // The primary display supports multiple resolutions: config 0 is the
+        // real one, the rest are deduplicated presets
         for (int i = 0; i < gScreenConfigCount; i++) {
             configs.push_back((hwc2_config_t)i);
         }
@@ -1311,6 +1318,12 @@ void X11Backend::resizeX11Windows(struct display* disp,
 }
 
 Error X11Backend::setActiveConfig(Hwc2Display& display, hwc2_config_t config) {
+    if (!display.isPrimary()) {
+        // Only the primary display supports switching resolution; the
+        // external display is a single fixed config
+        return Error::BadConfig;
+    }
+
     if (config >= (hwc2_config_t)gScreenConfigCount) {
         ALOGE("unsupported active config %u", (unsigned)config);
         return Error::BadConfig;
@@ -1348,23 +1361,45 @@ Error X11Backend::setActiveConfig(Hwc2Display& display, hwc2_config_t config) {
     ALOGI("setActiveConfig: config=%u resized windows to %dx%d",
           (unsigned)config, target_width, target_height);
 
+    // Publish the new active resolution so the input side (EventHub raw axis
+    // ranges, PointerChoreographer edge threshold) tracks the current display
+    // size. getAttribute() only updates these properties when the active
+    // config's attributes are queried, which is not guaranteed on a switch.
+    {
+        char property[PROPERTY_VALUE_MAX];
+        int prop_width = target_width;
+        int prop_height = target_height;
+        if (property_get("persist.openfde.width_padding", property, nullptr) > 0)
+            prop_width -= atoi(property);
+        if (property_get("persist.openfde.height_padding", property, nullptr) > 0)
+            prop_height -= atoi(property);
+        property_set("openfde.display_width", std::to_string(prop_width).c_str());
+        property_set("openfde.display_height", std::to_string(prop_height).c_str());
+    }
+
     return Error::None;
 }
 
 Error X11Backend::getAttribute(Hwc2Display& display, hwc2_config_t config,
                                Attribute attribute, int32_t* outValue) {
+    // The external display is a single fixed config; ignore the requested one
+    if (!display.isPrimary()) {
+        config = 0;
+    }
+
     if (config >= (hwc2_config_t)gScreenConfigCount) {
         return Error::BadConfig;
     }
 
     const BackendDisplay backend = resolve(display);
     struct display* disp = backend.disp;
-    std::map<std::string, struct window*>& windows = *backend.windows;
 
     char property[PROPERTY_VALUE_MAX];
-    int width = floor(disp->width * disp->scale);
-    int height = floor(disp->height * disp->scale);
+    int width = disp->full_width;
+    int height = disp->full_height;
     int density = 160;
+    // config > 0 means a non-default (preset) resolution was selected,
+    // override width/height/density from the table
     if (config > 0 && config < (hwc2_config_t)gScreenConfigCount) {
         width = screenConfigs[config].Width;
         height = screenConfigs[config].Height;
@@ -1379,18 +1414,40 @@ Error X11Backend::getAttribute(Hwc2Display& display, hwc2_config_t config,
             *outValue = period;
             return Error::None;
         }
-        case Attribute::Width:
+        case Attribute::Width: {
             if (property_get("persist.openfde.width_padding", property, nullptr) > 0)
                 width -= atoi(property);
-            property_set("openfde.display_width", std::to_string(width).c_str());
+            // Only publish the built-in property when the active config is
+            // queried. SurfaceFlinger enumerates every config to build the
+            // resolution list in Settings; publishing unconditionally would
+            // let the last enumerated preset (e.g. 1280x720) clobber the
+            // real resolution (1920x1080), leaving openfde.display_width
+            // inconsistent with wm size.
+            if (screen_config_is_active(display.isPrimary(), disp->active_config, (int)config)) {
+                if (disp->display_type == HWC_DISPLAY_PRIMARY) {
+                    property_set("openfde.display_width", std::to_string(width).c_str());
+                } else {
+                    property_set("openfde.external_display_width", std::to_string(width).c_str());
+                }
+            }
             *outValue = width;
             return Error::None;
-        case Attribute::Height:
+        }
+        case Attribute::Height: {
             if (property_get("persist.openfde.height_padding", property, nullptr) > 0)
                 height -= atoi(property);
-            property_set("openfde.display_height", std::to_string(height).c_str());
+            // Same as above: only publish for the active config so other
+            // enumerated resolutions cannot clobber it.
+            if (screen_config_is_active(display.isPrimary(), disp->active_config, (int)config)) {
+                if (disp->display_type == HWC_DISPLAY_PRIMARY) {
+                    property_set("openfde.display_height", std::to_string(height).c_str());
+                } else {
+                    property_set("openfde.external_display_height", std::to_string(height).c_str());
+                }
+            }
             *outValue = height;
             return Error::None;
+        }
         case Attribute::DpiX:
         case Attribute::DpiY:
             if (property_get("ro.sf.lcd_density", property, nullptr) > 0)
