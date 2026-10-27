@@ -450,6 +450,12 @@ Hwc2Device::Hwc2Device(std::unique_ptr<Hwc2Backend> backend, void* primaryBacken
 
     pthread_mutex_init(&mVsyncLock, nullptr);
     mTimelineFd = sw_sync_timeline_create();
+    if (mTimelineFd < 0) {
+        // Every present fence created on a broken timeline is an invalid fd,
+        // which surfaces as "trackPendingFrame: Invalid present fence" in SF
+        ALOGE("sw_sync_timeline_create failed: %s; present fences will be unusable",
+              strerror(errno));
+    }
 
     struct timespec rt;
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
@@ -463,7 +469,7 @@ Hwc2Device::Hwc2Device(std::unique_ptr<Hwc2Backend> backend, void* primaryBacken
     mDisplays.emplace(0, primary);
 
     // Let the backend report any additional (external) display it supports
-    mBackend->createExternalDisplays(*this);
+    // mBackend->createExternalDisplays(*this);
 }
 
 Hwc2Device::~Hwc2Device() {
@@ -538,7 +544,14 @@ void Hwc2Device::hotplugEvent(hwc2_display_t displayId, bool connected) {
 
 int Hwc2Device::createPresentFence() {
     sw_sync_timeline_inc(mTimelineFd, 1);
-    return sw_sync_fence_create(mTimelineFd, "openfde_hwc_present", ++mNextSyncPoint);
+    const int fence = sw_sync_fence_create(mTimelineFd, "openfde_hwc_present",
+                                           ++mNextSyncPoint);
+    if (fence < 0 && !mPresentFenceErrorLogged) {
+        mPresentFenceErrorLogged = true;
+        ALOGE("sw_sync_fence_create failed (timeline fd %d): %s; SF will report "
+              "\"Invalid present fence\"", mTimelineFd, strerror(errno));
+    }
+    return fence;
 }
 
 void Hwc2Device::setVsyncTimestamp(int64_t timestampNs) {

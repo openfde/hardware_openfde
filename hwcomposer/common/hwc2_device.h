@@ -377,6 +377,9 @@ class Hwc2Device : public hwc2_device_t {
 
     int mTimelineFd = -1;
     int mNextSyncPoint = 1;
+    // Set once a present fence could not be created, so the error is logged
+    // only once instead of on every frame
+    bool mPresentFenceErrorLogged = false;
 
     std::string mDumpString;
 };
