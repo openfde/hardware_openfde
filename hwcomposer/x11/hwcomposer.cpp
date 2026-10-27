@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdlib.h>
@@ -1323,6 +1324,33 @@ static void hwc_dump(hwc_composer_device_1* dev , char* buff ,
 
     if (written < 0 && buff_len > 0) {
         buff[0] = '\0';
+    }
+
+    // dump display->input_fd: array pointer and per-type fd state.
+    if (written >= 0 && written < buff_len) {
+        int remaining = buff_len - written;
+        int offset = written;
+        int n = snprintf(buff + offset, remaining,
+                         "  input_fd ptr=%p\n", (void*)pdev->display->input_fd);
+        if (n > 0 && n < remaining) {
+            offset += n;
+            remaining -= n;
+            for (int i = 0; i < INPUT_TOTAL && remaining > 0; i++) {
+                int fd = pdev->display->input_fd[i];
+                const char* state = "unset";
+                if (fd >= 0) {
+                    state = (fcntl(fd, F_GETFD) == -1 && errno == EBADF)
+                            ? "stale(EBADF)" : "valid";
+                }
+                n = snprintf(buff + offset, remaining,
+                             "  input_fd[%d](%s)=%d (%s)\n",
+                             i, INPUT_PIPE_NAME[i], fd, state);
+                if (n <= 0 || n >= remaining)
+                    break;
+                offset += n;
+                remaining -= n;
+            }
+        }
     }
 }
 
