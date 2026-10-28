@@ -45,13 +45,13 @@ cc_library_shared {
         "libxkbcommon",
     ],
     srcs: [
-        "wayland/extension.cpp",
         "wayland/hwcomposer.cpp",
         "wayland/wayland-hwc.cpp",
         "wayland/OpenfdeWindow.cpp",
         "wayland/egl-tools.cpp",
+        "common/hwc2_device.cpp",
+        "common/extension.cpp",
         "common/scroll_touch_sim.cpp",
-        "common/hwc_composer.cpp",
         "common/screen_config.cpp",
     ],
     header_libs: [
@@ -114,13 +114,13 @@ cc_library_shared {
         "libxkbcommon",
     ],
     srcs: [
-        "x11/extension.cpp",
         "x11/hwcomposer.cpp",
         "x11/x11-hwc.cpp",
         "x11/WaydroidWindow.cpp",
         "x11/egl-tools.cpp",
+        "common/hwc2_device.cpp",
+        "common/extension.cpp",
         "common/scroll_touch_sim.cpp",
-        "common/hwc_composer.cpp",
         "common/screen_config.cpp",
     ],
     header_libs: [

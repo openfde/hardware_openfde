@@ -114,3 +114,16 @@ int screen_config_set_and_get_index(int width, int height) {
         return defaultConfigIndex;
     }
 }
+
+bool screen_config_is_active(bool isPrimary, int active_config, int config) {
+    if (!isPrimary) {
+        // External displays only have the single fixed config
+        return config == defaultConfigIndex;
+    }
+    int active = active_config;
+    if (active < 0 || active >= gScreenConfigCount) {
+        // Table not ready yet: config 0 (the real resolution) is active
+        active = defaultConfigIndex;
+    }
+    return config == active;
+}
