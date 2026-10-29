@@ -57,8 +57,11 @@
 #include "egl-tools.h"
 #include "xdg-shell-client-protocol.h"
 
+#include <hidl/HidlTransportSupport.h>
+
 using ::android::OK;
 using ::android::status_t;
+using ::android::hardware::configureRpcThreadpool;
 using ::android::hardware::joinRpcThreadpool;
 
 using ::openfde::Hwc2Backend;
@@ -1170,7 +1173,9 @@ void* WaylandBackend::windowServiceThreadEntry(void* data) {
 
     status = openfdeWindow->registerAsService();
     if (status != OK) {
-        ALOGE("Could not register service for Openfde Window HAL (%d).", status);
+        ALOGE("Could not register service for Openfde Window HAL (%d / 0x%x).",
+              status, status);
+        goto shutdown;
     }
 
     ALOGI("Openfde Window HAL thread is ready.");
@@ -1267,6 +1272,12 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
         wayland_display->cursor_viewport =
             wp_viewporter_get_viewport(wayland_display->viewporter, wayland_display->cursor_surface);
     }
+
+    // Binderized HIDL services (IOpenfdeWindow / IOpenfdeDisplay) must have the
+    // hwbinder RPC threadpool configured before they are registered, otherwise
+    // hwservicemanager cannot validate/serve them and registerAsService() fails
+    // with UNKNOWN_ERROR (-2147483648).
+    configureRpcThreadpool(4, false);
 
     ret = wlBackend->startThreads();
     dev->startServices();

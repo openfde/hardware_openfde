@@ -495,7 +495,7 @@ Hwc2Device::Hwc2Device(std::unique_ptr<Hwc2Backend> backend, void* primaryBacken
     mDisplays.emplace(0, primary);
 
     // Let the backend report any additional (external) display it supports
-    // mBackend->createExternalDisplays(*this);
+     mBackend->createExternalDisplays(*this);
 }
 
 Hwc2Device::~Hwc2Device() {
@@ -688,13 +688,16 @@ void* Hwc2Device::extensionThreadEntry(void* data) {
     sp<::vendor::openfde::display::V1_1::IOpenfdeDisplay> service = new OpenfdeDisplay(device);
     status_t status = service->registerAsService();
     if (status != OK) {
-        ALOGE("Could not register service for Openfde Display HAL (%d).", status);
+        ALOGE("Could not register service for Openfde Display HAL (%d / 0x%x).",
+              status, status);
+        goto shutdown;
     }
 
     ALOGI("Openfde Display HAL thread is ready.");
     joinRpcThreadpool();
     // Should not pass this line
 
+shutdown:
     ALOGE("Openfde Display HAL service is shutting down.");
     return nullptr;
 }

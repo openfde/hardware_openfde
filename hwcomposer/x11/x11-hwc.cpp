@@ -2188,7 +2188,9 @@ static bool get_monitor_info(struct display *display, int monitor_index)
     }
 
     if (monitor_index < 0 || monitor_index >= monitor_count) {
-        ALOGE("monitor_index %d out of range (total %d), fallback to 0",
+        // 请求的显示器索引超范围（例如只有 1 块屏时副屏仍按 index 1 取值），
+        // 这里安全回退到 0，不会导致崩溃，降级为 warning。
+        ALOGW("monitor_index %d out of range (total %d), fallback to 0",
               monitor_index, monitor_count);
         monitor_index = 0;
     }
