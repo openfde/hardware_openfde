@@ -82,6 +82,7 @@ struct openfde_hwc_composer_device_1 {
     int next_sync_point;
     bool use_subsurface;
     bool multi_windows;
+    bool is_nvidia;
 };
 
 static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos);
@@ -212,10 +213,10 @@ static int hwc_prepare(hwc_composer_device_1_t* dev,
     return 0;
 }
 
-static void update_shm_buffer(struct display* display, struct buffer *buffer)
+static void update_shm_buffer(struct display* display, struct buffer *buffer, bool is_nvidia)
 {
     // Slower but always correct
-    if (display->gtype != GRALLOC_DEFAULT) {
+    if (display->gtype != GRALLOC_DEFAULT && !is_nvidia) {
         display->egl_work_queue.push_back(std::bind(egl_render_to_pixels, display, buffer));
         sem_post(&display->egl_go);
         sem_wait(&display->egl_done);
@@ -251,6 +252,13 @@ static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, 
     uint32_t pixel_stride;
     uint32_t width;
     uint32_t height;
+
+    std::string layer_name = pdev->display->layer_names[pos];
+    bool is_cursor = 0;
+    if (layer_name.substr(0, 6) == "Sprite") {
+        is_cursor = 1;
+    }
+
     if (layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
         format = pdev->display->target_layer_handle_ext.format;
         pixel_stride = pdev->display->target_layer_handle_ext.stride;
@@ -275,7 +283,7 @@ static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, 
                 destroy_buffer(it->second);
                 pdev->display->buffer_map.erase(it);
             } else {
-                update_shm_buffer(pdev->display, it->second);
+                update_shm_buffer(pdev->display, it->second, pdev->is_nvidia);
                 return it->second;
             }
         } else
@@ -288,11 +296,11 @@ static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, 
     buf = new struct buffer();
     if (pdev->display->gtype == GRALLOC_GBM) {
         struct gralloc_handle_t *drm_handle = (struct gralloc_handle_t *)layer->handle;
-        if (pdev->display->dmabuf) {
+        if (pdev->display->dmabuf && !(is_cursor && pdev->is_nvidia)) {
             ret = create_dmabuf_wl_buffer(pdev->display, buf, drm_handle->width, drm_handle->height, drm_handle->format, -1 /* compute drm format */, drm_handle->prime_fd, pixel_stride, drm_handle->stride, 0 /* offset */, drm_handle->modifier, layer->handle);
         } else {
             ret = create_shm_wl_buffer(pdev->display, buf, drm_handle->width, drm_handle->height, drm_handle->format, pixel_stride, layer->handle);
-            update_shm_buffer(pdev->display, buf);
+            update_shm_buffer(pdev->display, buf, pdev->is_nvidia);
         }
     } else if (pdev->display->gtype == GRALLOC_CROS) {
         const struct cros_gralloc_handle *cros_handle = (const struct cros_gralloc_handle *)layer->handle;
@@ -300,7 +308,7 @@ static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, 
             ret = create_dmabuf_wl_buffer(pdev->display, buf, cros_handle->width, cros_handle->height, cros_handle->droid_format, cros_handle->format, cros_handle->fds[0], pixel_stride, cros_handle->strides[0], cros_handle->offsets[0], cros_handle->format_modifier, layer->handle);
         } else {
             ret = create_shm_wl_buffer(pdev->display, buf, cros_handle->width, cros_handle->height, cros_handle->droid_format, pixel_stride, layer->handle);
-            update_shm_buffer(pdev->display, buf);
+            update_shm_buffer(pdev->display, buf, pdev->is_nvidia);
         }
     } else if (pdev->display->gtype == GRALLOC_X100) {
         const X100_native_handle_t *cros_handle = (const X100_native_handle_t *)layer->handle;
@@ -315,7 +323,7 @@ static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, 
             if (ret != 0 ){
                 ALOGE("x100 create shm wl buffer failed");
             }
-            update_shm_buffer(pdev->display, buf);
+            update_shm_buffer(pdev->display, buf, pdev->is_nvidia);
         }
     } else if (pdev->display->gtype == GRALLOC_FTG340) {
         const gc_private_handle_t *gc_handle = (const gc_private_handle_t *)layer->handle;
@@ -324,14 +332,14 @@ static struct buffer *get_wl_buffer(struct openfde_hwc_composer_device_1 *pdev, 
                 -1, gc_handle->prime_fd, pixel_stride, gc_handle->stride, 0, DRM_FORMAT_MOD_INVALID, layer->handle);
         } else {
             ret = create_shm_wl_buffer(pdev->display, buf, gc_handle->width, gc_handle->height, gc_handle->format, pixel_stride, layer->handle);
-            update_shm_buffer(pdev->display, buf);
+            update_shm_buffer(pdev->display, buf, pdev->is_nvidia);
         }
     } else {
         if (pdev->display->gtype == GRALLOC_ANDROID) {
             ret = create_android_wl_buffer(pdev->display, buf, width, height, format, pixel_stride, layer->handle);
         } else {
             ret = create_shm_wl_buffer(pdev->display, buf, width, height, format, pixel_stride, layer->handle);
-            update_shm_buffer(pdev->display, buf);
+            update_shm_buffer(pdev->display, buf, pdev->is_nvidia);
         }
     }
 
@@ -1290,6 +1298,13 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     pdev->timeline_fd = sw_sync_timeline_create();
     pdev->next_sync_point = 1;
 
+    pdev->is_nvidia = false;
+    if (property_get("ro.hardware.gpu.model", property, "default") > 0) {
+        if (strcmp(property, "nvidia") == 0) {
+            ALOGD("GPU Model : Nvidia");
+            pdev->is_nvidia = true;
+        }
+    }
     if (property_get("openfde.xdg_runtime_dir", property, "/run/user/1000") > 0) {
         setenv("XDG_RUNTIME_DIR", property, 1);
     }
