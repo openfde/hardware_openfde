@@ -2039,6 +2039,52 @@ static const struct wl_seat_listener seat_listener = {
     seat_handle_name,
 };
 
+#define __gbm_fourcc_code(a,b,c,d) ((uint32_t)(a) | ((uint32_t)(b) << 8) | \
+			      ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
+#define GBM_FORMAT_R8		__gbm_fourcc_code('R', '8', ' ', ' ') /* [7:0] R */
+#define GBM_FORMAT_GR88		__gbm_fourcc_code('G', 'R', '8', '8') /* [15:0] G:R 8:8 little endian */
+#define GBM_FORMAT_RGB565	__gbm_fourcc_code('R', 'G', '1', '6') /* [15:0] R:G:B 5:6:5 little endian */
+#define GBM_FORMAT_RGB888	__gbm_fourcc_code('R', 'G', '2', '4') /* [23:0] R:G:B little endian */
+#define GBM_FORMAT_BGR888	__gbm_fourcc_code('B', 'G', '2', '4') /* [23:0] B:G:R little endian */
+#define GBM_FORMAT_XRGB8888	__gbm_fourcc_code('X', 'R', '2', '4') /* [31:0] x:R:G:B 8:8:8:8 little endian */
+#define GBM_FORMAT_XBGR8888	__gbm_fourcc_code('X', 'B', '2', '4') /* [31:0] x:B:G:R 8:8:8:8 little endian */
+#define GBM_FORMAT_RGBX8888	__gbm_fourcc_code('R', 'X', '2', '4') /* [31:0] R:G:B:x 8:8:8:8 little endian */
+#define GBM_FORMAT_BGRX8888	__gbm_fourcc_code('B', 'X', '2', '4') /* [31:0] B:G:R:x 8:8:8:8 little endian */
+#define GBM_FORMAT_ARGB8888	__gbm_fourcc_code('A', 'R', '2', '4') /* [31:0] A:R:G:B 8:8:8:8 little endian */
+#define GBM_FORMAT_ABGR8888	__gbm_fourcc_code('A', 'B', '2', '4') /* [31:0] A:B:G:R 8:8:8:8 little endian */
+#define GBM_FORMAT_RGBA8888	__gbm_fourcc_code('R', 'A', '2', '4') /* [31:0] R:G:B:A 8:8:8:8 little endian */
+#define GBM_FORMAT_BGRA8888	__gbm_fourcc_code('B', 'A', '2', '4') /* [31:0] B:G:R:A 8:8:8:8 little endian */
+#define GBM_FORMAT_ABGR16161616F __gbm_fourcc_code('A', 'B', '4', 'H') /* [63:0] A:B:G:R 16:16:16:16 little endian */
+#define GBM_FORMAT_ABGR2101010	__gbm_fourcc_code('A', 'B', '3', '0') /* [31:0] A:B:G:R 2:10:10:10 little endian */
+
+static int check_modifiers_by_format(uint32_t format)
+{
+    char property[PROPERTY_VALUE_MAX];
+    if (property_get("ro.hardware.gpu.model", property, "default") > 0) {
+        if (strcmp(property, "nvidia") == 0) {
+            switch (format) {
+                case GBM_FORMAT_ARGB8888 :
+                case GBM_FORMAT_BGRA8888 :
+                case GBM_FORMAT_RGBA8888 :
+                case GBM_FORMAT_ABGR8888 :
+                case GBM_FORMAT_XBGR8888 :
+                case GBM_FORMAT_XRGB8888 :
+                case GBM_FORMAT_RGBX8888 :
+                case GBM_FORMAT_BGRX8888 :
+                case GBM_FORMAT_RGB888 :
+                case GBM_FORMAT_BGR888 :
+                case GBM_FORMAT_RGB565 :
+                case GBM_FORMAT_GR88 :
+                case GBM_FORMAT_R8 :
+                case GBM_FORMAT_ABGR16161616F :
+                case GBM_FORMAT_ABGR2101010 :
+                    return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 static void dmabuf_format(void *, struct zwp_linux_dmabuf_v1 *, uint32_t);
 static void
 dmabuf_modifiers(void *data, struct zwp_linux_dmabuf_v1 * dmabuf,
@@ -2046,20 +2092,22 @@ dmabuf_modifiers(void *data, struct zwp_linux_dmabuf_v1 * dmabuf,
 {
     dmabuf_format(data, dmabuf, format);
 
-    struct display *d = (struct display*)data;
-    uint64_t modifier = ((uint64_t)modifier_hi << 32) | modifier_lo;
-    if (modifier == DRM_FORMAT_MOD_INVALID)
-        return;
+    if (check_modifiers_by_format(format)) {
+        struct display *d = (struct display*)data;
+        uint64_t modifier = ((uint64_t)modifier_hi << 32) | modifier_lo;
+        if (modifier == DRM_FORMAT_MOD_INVALID)
+            return;
 
-    std::stringstream prop_name_stream;
-    std::stringstream prop_value_stream;
-    prop_name_stream << "openfde.modifiers." << std::hex << format << "." << std::dec << d->modifiers[format].size();
-    prop_value_stream << std::hex << modifier;
-    std::string prop_name = prop_name_stream.str();
-    std::string prop_value = prop_value_stream.str();
-    property_set(prop_name.c_str(), prop_value.c_str());
+        std::stringstream prop_name_stream;
+        std::stringstream prop_value_stream;
+        prop_name_stream << "openfde.modifiers." << std::hex << format << "." << std::dec << d->modifiers[format].size();
+        prop_value_stream << std::hex << modifier;
+        std::string prop_name = prop_name_stream.str();
+        std::string prop_value = prop_value_stream.str();
+        property_set(prop_name.c_str(), prop_value.c_str());
 
-    d->modifiers[format].push_back(modifier);
+        d->modifiers[format].push_back(modifier);
+    }
 }
 
 static void
