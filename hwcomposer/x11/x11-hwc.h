@@ -58,6 +58,7 @@
 #include <EGL/eglext.h>
 
 #include <functional>
+#include <mutex>
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -147,6 +148,12 @@ struct display {
     bool isMouseLeftDown;
     int axisY;
     int axisX;
+    // Position where the simulated scroll touch went down. The min-distance
+    // guard in scroll_touch_sim.cpp measures the scroll distance from this
+    // anchor instead of ptrPrvX/Y, which can drift while the mouse moves
+    // during a scroll session.
+    int axisStartX;
+    int axisStartY;
     int64_t lastAxisEventNanoSeconds;
     int touch_id[MAX_TOUCHPOINTS];
     std::map<struct wl_surface *, struct layerFrame> layers;

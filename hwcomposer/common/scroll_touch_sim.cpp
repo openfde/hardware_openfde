@@ -364,10 +364,14 @@ extern "C" bool sim_pointer_cancel_axis_to_touch(struct display *display,
 
     // Guarantee the simulated scroll moves at least the touch slop distance,
     // otherwise the system interprets the short down/up sequence as a click
-    // instead of a scroll.
+    // instead of a scroll. Measure from the position where the touch actually
+    // went down (axisStartX/Y), not from ptrPrvX/Y: ptrPrvX/Y are re-anchored
+    // by mouse motion while the scroll session is running, so measuring from
+    // them can make a too-short scroll look long enough and a click slip
+    // through.
     {
-        int moved = sim_mVerticalScroll ? display->axisY - display->ptrPrvY
-                                       : display->axisX - display->ptrPrvX;
+        int moved = sim_mVerticalScroll ? display->axisY - display->axisStartY
+                                       : display->axisX - display->axisStartX;
         int minDistance = sim_min_scroll_distance(display);
         if (std::abs(moved) < minDistance) {
             int direction;
@@ -394,6 +398,8 @@ extern "C" bool sim_pointer_cancel_axis_to_touch(struct display *display,
     }
 
     display->axisY = display->ptrPrvY;
+    display->axisStartX = display->ptrPrvX;
+    display->axisStartY = display->ptrPrvY;
     display->lastAxisEventNanoSeconds = 0;
 
     if (!from_axis_stop_event) {
@@ -453,6 +459,12 @@ extern "C" void sim_pointer_axis_to_touch(struct display *display,
     if (display->lastAxisEventNanoSeconds == 0) {
         display->axisY = display->ptrPrvY;
         display->axisX = display->ptrPrvX;
+        // Remember exactly where the simulated touch went down. The guard in
+        // sim_pointer_cancel_axis_to_touch uses this anchor to guarantee the
+        // finger travels at least the touch slop before being lifted; ptrPrv
+        // can drift while the mouse moves during the scroll session.
+        display->axisStartY = display->ptrPrvY;
+        display->axisStartX = display->ptrPrvX;
         SIM_ADD_EVENT(EV_ABS, ABS_MT_SLOT, SIM_AXIS_TOUCH_SLOT_ID);
         SIM_ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, SIM_AXIS_TOUCH_TRACKING_ID);
         if (vertical_scroll) {
