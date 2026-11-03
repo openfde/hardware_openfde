@@ -42,6 +42,7 @@
 #include <signal.h>
 #include <time.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <getopt.h>
 #include <errno.h>
 #include <linux/input.h>
@@ -1227,14 +1228,40 @@ void *event_loop_thread(void *arg) {
     xcb_connection_t *connection = display->xcbconnection;
 
     xcb_generic_event_t *event;
-    while ((event = xcb_wait_for_event(connection))) {
+    while (!display->event_exit) {
+        // Wait on BOTH the X connection fd and a self-pipe. destroy_display()
+        // writes the pipe when it wants this thread to exit, so we wake instantly
+        // instead of blocking in xcb_wait_for_event() until the X connection is
+        // torn down (which used to take seconds and made pthread_join() in
+        // destroy_display() hang while mStateMutex was held, freezing
+        // SurfaceFlinger -> app dequeueBuffer -110). event_exit is also checked
+        // every poll as a backstop. Never touch `connection` after
+        // destroy_display() frees it (use-after-free).
+        struct pollfd pfds[2];
+        pfds[0].fd = xcb_get_file_descriptor(connection);
+        pfds[0].events = POLLIN;
+        pfds[1].fd = display->event_wakeup_fds[0];
+        pfds[1].events = POLLIN;
+        int rc = poll(pfds, 2, 250 /*ms*/);
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (pfds[1].revents & POLLIN) {
+            char dummy;
+            while (read(display->event_wakeup_fds[0], &dummy, 1) > 0) {}
+            if (display->event_exit) break;
+        }
+        if (xcb_connection_has_error(connection)) break;
+        event = xcb_poll_for_event(connection);
         if (!event) {
-            if (xcb_connection_has_error(connection)) {
-                ALOGE("XCB connection error: %d", xcb_connection_has_error(connection));
-                break;
-            }
-            ALOGE("error event is null. ");
+            // No event pending right now (poll timed out, or only the wakeup
+            // pipe fired); re-loop to re-check event_exit.
             continue;
+        }
+        if (display->event_exit) {
+            free(event);
+            break;
         }
         uint8_t event_type = event->response_type & ~0x80;
         ALOGD("Processing event: type=%d", event_type);
@@ -1537,7 +1564,6 @@ void *event_loop_thread(void *arg) {
     }
 
     ALOGE("Exiting XCB event loop");
-    abort();
     return NULL;
 }
 
@@ -2526,12 +2552,65 @@ create_display(const char *gralloc, int target)
     sim_init_timer();
     sim_set_display(display);
 
+    // Self-pipe used to wake event_loop_thread during teardown (see
+    // destroy_display). Created here so it exists before the event thread
+    // starts polling it.
+    if (pipe(display->event_wakeup_fds) != 0) {
+        ALOGE("create_display: pipe() for event wakeup failed");
+        display->event_wakeup_fds[0] = display->event_wakeup_fds[1] = -1;
+    } else {
+        for (int i = 0; i < 2; i++) {
+            int fl = fcntl(display->event_wakeup_fds[i], F_GETFL, 0);
+            fcntl(display->event_wakeup_fds[i], F_SETFL, fl | O_NONBLOCK);
+        }
+    }
+
     return display;
 }
 
 void
 destroy_display(struct display *display)
 {
+    // 1. Stop the EGL worker thread. It owns the offscreen GL context bound to
+    //    this display and loops on egl_go until egl_exit is set. Join before
+    //    freeing anything it touches.
+    if (display->egl_thread) {
+        display->egl_exit = true;
+        sem_post(&display->egl_go);
+        pthread_join(display->egl_thread, nullptr);
+        display->egl_thread = 0;
+    }
+
+    // 2. Wake the X event thread out of its poll() immediately (write the
+    //    self-pipe) and mark event_exit, so the join below returns at once
+    //    instead of blocking until the X connection is torn down. Closing the
+    //    connection was the old (unreliable) wakeup and used to hang
+    //    pthread_join() for seconds while mStateMutex was held, freezing
+    //    SurfaceFlinger -> app dequeueBuffer -110.
+    display->event_exit = true;
+
+    if (display->event_wakeup_fds[1] >= 0) {
+        char dummy = 1;
+        if (write(display->event_wakeup_fds[1], &dummy, 1) < 0) {
+            // Non-fatal: the thread also re-checks event_exit on its poll timeout.
+        }
+    }
+
+    // Now the event thread is unblocked and will return; join it.
+    if (display->event_thread) {
+        pthread_join(display->event_thread, nullptr);
+        display->event_thread = 0;
+    }
+
+    // Event thread is gone; safe to close the wakeup pipe.
+    if (display->event_wakeup_fds[0] >= 0) {
+        close(display->event_wakeup_fds[0]);
+        display->event_wakeup_fds[0] = -1;
+    }
+    if (display->event_wakeup_fds[1] >= 0) {
+        close(display->event_wakeup_fds[1]);
+        display->event_wakeup_fds[1] = -1;
+    }
 
     if (display->ic) {
         display->ic = 0;
@@ -2544,27 +2623,34 @@ destroy_display(struct display *display)
         }
     }
 
-    if (display->xcbscreen) {
-        display->xcbscreen = NULL;
-    }
-
     if (display->colormap) {
         xcb_free_colormap(display->xcbconnection, display->colormap);
         display->colormap = 0;
     }
 
-     if (display->xcbconnection) {
+    /*if (display->xcbconnection) {
         xcb_flush(display->xcbconnection);
         xcb_disconnect(display->xcbconnection);
         display->xcbconnection = NULL;
-    }
+    }*/
 
     if (display->x11display) {
         XCloseDisplay(display->x11display);
         display->x11display = NULL;
     }
 
-    screen_configs_destroy();
+    // xcbconnection 由 XCloseDisplay 一起关掉，只需置空
+    display->xcbconnection = NULL;
+    if (display->xcbscreen) {
+        display->xcbscreen = NULL;
+    }
+
+    // Screen configs are process-global (shared by all displays). Only free
+    // them when the primary display is torn down; never on external-display
+    // hot-unplug, or the still-live primary would lose its configs.
+    if (display->display_type == HWC_DISPLAY_PRIMARY) {
+        screen_configs_destroy();
+    }
 
     delete display;
 }

@@ -1,0 +1,11 @@
+cc_binary {
+    name: "openfde_display_test",
+    srcs: ["OpenfdeDisplayTest.cpp"],
+    shared_libs: [
+        "liblog",
+        "libutils",
+        "libhidlbase",
+        "vendor.openfde.display@1.2",
+    ],
+    vendor: true,
+}

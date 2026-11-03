@@ -13,10 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef VENDOR_OPENFDE_DISPLAY_V1_1_OPENFDEDISPLAY_H
-#define VENDOR_OPENFDE_DISPLAY_V1_1_OPENFDEDISPLAY_H
+#ifndef VENDOR_OPENFDE_DISPLAY_V1_2_OPENFDEDISPLAY_H
+#define VENDOR_OPENFDE_DISPLAY_V1_2_OPENFDEDISPLAY_H
 
-#include <vendor/openfde/display/1.1/IOpenfdeDisplay.h>
+#include <vendor/openfde/display/1.2/IOpenfdeDisplay.h>
 #include <hidl/HidlTransportSupport.h>
 #include <hidl/MQDescriptor.h>
 #include <hidl/Status.h>
@@ -26,14 +26,14 @@
 namespace vendor {
 namespace openfde {
 namespace display {
-namespace V1_1 {
+namespace V1_2 {
 namespace implementation {
 
 using ::android::hardware::hidl_string;
 using ::android::hardware::Return;
 using ::android::hardware::graphics::composer::V2_1::Error;
 using ::android::sp;
-using ::vendor::openfde::display::V1_1::IOpenfdeDisplay;
+using ::vendor::openfde::display::V1_2::IOpenfdeDisplay;
 
 /*
  * Vendor display extension shared by all hwcomposer backends.
@@ -41,6 +41,9 @@ using ::vendor::openfde::display::V1_1::IOpenfdeDisplay;
  * The protocol follows the HWC2 addressing rules: every method takes the
  * hwc2_display_t display id, and layer related methods take the per-display
  * hwc2_layer_t layer id instead of the former HWC1 layer array index.
+ *
+ * V1_2 additionally exposes dynamic external (secondary) display management:
+ * openExternalDisplay() / closeExternalDisplay() / getExternalDisplayState().
  */
 class OpenfdeDisplay : public IOpenfdeDisplay {
   public:
@@ -60,14 +63,19 @@ class OpenfdeDisplay : public IOpenfdeDisplay {
     Return<Error> setTargetLayerSize(uint64_t display, uint32_t width,
                                      uint32_t height) override;
 
+    // Methods from ::vendor::openfde::display::V1_2::IOpenfdeDisplay follow.
+    Return<Error> openExternalDisplay() override;
+    Return<Error> closeExternalDisplay() override;
+    Return<bool> getExternalDisplayState() override;
+
   private:
     ::openfde::Hwc2Device *mDevice;
 };
 
 }  // namespace implementation
-}  // namespace V1_1
+}  // namespace V1_2
 }  // namespace display
 }  // namespace openfde
 }  // namespace vendor
 
-#endif  // VENDOR_OPENFDE_DISPLAY_V1_1_OPENFDEDISPLAY_H
+#endif  // VENDOR_OPENFDE_DISPLAY_V1_2_OPENFDEDISPLAY_H

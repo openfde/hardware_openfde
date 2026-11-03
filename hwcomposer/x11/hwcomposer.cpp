@@ -1387,6 +1387,8 @@ Error X11Backend::setActiveConfig(Hwc2Display& display, hwc2_config_t config) {
 
 Error X11Backend::getAttribute(Hwc2Display& display, hwc2_config_t config,
                                Attribute attribute, int32_t* outValue) {
+    ALOGE("getAttribute: isPrimary=%d config=%u attribute=%d",
+      display.isPrimary(), config, static_cast<int32_t>(attribute));
     // The external display is a single fixed config; ignore the requested one
     if (!display.isPrimary()) {
         config = 0;
@@ -1539,15 +1541,30 @@ void X11Backend::createExternalDisplays(Hwc2Device& device) {
     if (pthread_create(&mEglSecondaryWorkerThread, NULL, egl_loop, mSecondaryDisplay) != 0) {
         ALOGE("openfde_hw_composer could not start egl_secondary_worker_thread");
     }
+    mSecondaryDisplay->egl_thread = mEglSecondaryWorkerThread;
     if (pthread_create(&mEventThreadSecondary, NULL, event_loop_thread, mSecondaryDisplay) != 0) {
         ALOGE("Failed to create secondary event_loop_thread");
     }
+    mSecondaryDisplay->event_thread = mEventThreadSecondary;
+
+    // ========== 新增：为外部屏创建初始窗口 ==========
+    createInitialWindow(mSecondaryDisplay, mSecondaryWindows);
 }
 
 void X11Backend::destroyExternalDisplay(void* backendData) {
     struct display* disp = static_cast<struct display*>(backendData);
     if (!disp) {
         return;
+    }
+
+    {
+        std::scoped_lock lock(disp->windowsMutex);
+        for (auto& pair : mSecondaryWindows) {
+            if (pair.second) {
+                destroy_window(pair.second);
+            }
+        }
+        mSecondaryWindows.clear();
     }
 
     for (auto& pair : disp->buffer_map) {
@@ -1601,10 +1618,12 @@ int X11Backend::startThreads() {
     if (ret) {
         ALOGE("openfde_hw_composer could not start egl_worker_thread");
     }
+    mDisplay->egl_thread = mEglWorkerThread;
 
     if (pthread_create(&mEventThreadPrimary, NULL, event_loop_thread, mDisplay) != 0) {
         ALOGE("Failed to create primary event_loop_thread");
     }
+    mDisplay->event_thread = mEventThreadPrimary;
 
     return ret;
 }

@@ -19,7 +19,7 @@
 namespace vendor {
 namespace openfde {
 namespace display {
-namespace V1_1 {
+namespace V1_2 {
 namespace implementation {
 
 using ::openfde::Hwc2Device;
@@ -112,8 +112,23 @@ Return<Error> OpenfdeDisplay::setTargetLayerSize(uint64_t display, uint32_t widt
     return Error::NONE;
 }
 
+// Methods from ::vendor::openfde::display::V1_2::IOpenfdeDisplay follow.
+Return<Error> OpenfdeDisplay::openExternalDisplay() {
+    // mDevice returns HWC2::Error; the HAL uses the composer V2_1 Error enum.
+    // Numerically identical, so a static_cast is safe and lossless.
+    return static_cast<Error>(mDevice->openExternalDisplay());
+}
+
+Return<Error> OpenfdeDisplay::closeExternalDisplay() {
+    return static_cast<Error>(mDevice->closeExternalDisplay());
+}
+
+Return<bool> OpenfdeDisplay::getExternalDisplayState() {
+    return mDevice->isExternalDisplayOpen();
+}
+
 }  // namespace implementation
-}  // namespace V1_1
+}  // namespace V1_2
 }  // namespace display
 }  // namespace openfde
 }  // namespace vendor

@@ -46,7 +46,7 @@ using ::android::OK;
 using ::android::sp;
 using ::android::status_t;
 using ::android::hardware::joinRpcThreadpool;
-using ::vendor::openfde::display::V1_1::implementation::OpenfdeDisplay;
+using ::vendor::openfde::display::V1_2::implementation::OpenfdeDisplay;
 
 template <typename PFN, typename T>
 static hwc2_function_pointer_t asFP(T function) {
@@ -495,7 +495,7 @@ Hwc2Device::Hwc2Device(std::unique_ptr<Hwc2Backend> backend, void* primaryBacken
     mDisplays.emplace(0, primary);
 
     // Let the backend report any additional (external) display it supports
-     mBackend->createExternalDisplays(*this);
+    // mBackend->createExternalDisplays(*this);
 }
 
 Hwc2Device::~Hwc2Device() {
@@ -551,6 +551,42 @@ HWC2::Error Hwc2Device::destroyExternalDisplay(hwc2_display_t displayId) {
     mBackend->destroyExternalDisplay(backendData);
 
     return Error::None;
+}
+
+HWC2::Error Hwc2Device::openExternalDisplay() {
+    std::lock_guard<std::recursive_mutex> lock(mStateMutex);
+
+    // The external display always uses id 1. If it is already present we are a
+    // no-op so repeated openExternalDisplay() calls are safe (e.g. the test
+    // tool toggling enable twice).
+    if (mDisplays.count(1) > 0) {
+        return Error::None;
+    }
+
+    // The backend creates the X11 secondary display, registers it with
+    // createExternalDisplay() (which emits the hotplug event) and starts its
+    // worker/event threads.
+    mBackend->createExternalDisplays(*this);
+
+    return mDisplays.count(1) > 0 ? Error::None : Error::NoResources;
+}
+
+HWC2::Error Hwc2Device::closeExternalDisplay() {
+    std::lock_guard<std::recursive_mutex> lock(mStateMutex);
+
+    auto it = mDisplays.find(1);
+    if (it == mDisplays.end()) {
+        return Error::None;  // already closed (idempotent)
+    }
+
+    // Tears down the Hwc2Display, emits hotplug(false) and lets the backend
+    // stop/join its threads and free the X11 resources.
+    return destroyExternalDisplay(1);
+}
+
+bool Hwc2Device::isExternalDisplayOpen() {
+    std::lock_guard<std::recursive_mutex> lock(mStateMutex);
+    return mDisplays.count(1) > 0;
 }
 
 void Hwc2Device::hotplugEvent(hwc2_display_t displayId, bool connected) {
@@ -685,7 +721,7 @@ void* Hwc2Device::extensionThreadEntry(void* data) {
     auto* device = static_cast<Hwc2Device*>(data);
     setpriority(PRIO_PROCESS, 0, HAL_PRIORITY_URGENT_DISPLAY);
 
-    sp<::vendor::openfde::display::V1_1::IOpenfdeDisplay> service = new OpenfdeDisplay(device);
+    sp<::vendor::openfde::display::V1_2::IOpenfdeDisplay> service = new OpenfdeDisplay(device);
     status_t status = service->registerAsService();
     if (status != OK) {
         ALOGE("Could not register service for Openfde Display HAL (%d / 0x%x).",
@@ -787,6 +823,24 @@ static int32_t getDisplayAttributeHook(hwc2_device_t* device, hwc2_display_t dis
     return Hwc2Device::callDisplayFunction(device, display, &Hwc2Display::getAttribute,
                                            config, attribute, outValue);
 }
+
+static int32_t getDisplayConnectionTypeHook(hwc2_device_t* device,
+                                            hwc2_display_t display,
+                                            uint32_t* outType) {
+    auto* self = Hwc2Device::fromDevice(device);
+    std::lock_guard<std::recursive_mutex> lock(self->stateMutex());
+    auto* disp = self->getDisplay(display);
+    if (!disp) {
+        return static_cast<int32_t>(Error::BadDisplay);
+    }
+
+    // 主屏 = INTERNAL，外部屏 = EXTERNAL
+    *outType = disp->isPrimary()
+                   ? HWC2_DISPLAY_CONNECTION_TYPE_INTERNAL
+                   : HWC2_DISPLAY_CONNECTION_TYPE_EXTERNAL;
+    return static_cast<int32_t>(Error::None);
+}
+
 
 static int32_t setColorTransformHook(hwc2_device_t* device, hwc2_display_t display,
                                      const float* /*matrix*/, int32_t intHint) {
@@ -1017,6 +1071,8 @@ hwc2_function_pointer_t Hwc2Device::doGetFunction(FunctionDescriptor descriptor)
             return asFP<HWC2_PFN_GET_DISPLAY_TYPE>(
                     displayHook<decltype(&Hwc2Display::getType), &Hwc2Display::getType,
                                 int32_t*>);
+        case FunctionDescriptor::GetDisplayConnectionType:
+            return asFP<HWC2_PFN_GET_DISPLAY_CONNECTION_TYPE>(getDisplayConnectionTypeHook);
         case FunctionDescriptor::GetDozeSupport:
             return asFP<HWC2_PFN_GET_DOZE_SUPPORT>(
                     displayHook<decltype(&Hwc2Display::getDozeSupport),

@@ -290,6 +290,14 @@ class Hwc2Device : public hwc2_device_t {
     Hwc2Display* createExternalDisplay(void* backendData);
     HWC2::Error destroyExternalDisplay(hwc2_display_t displayId);
 
+    // Dynamic external display open/close/query, exposed through the
+    // vendor.openfde.display HAL (V1_2). All calls are serialized by
+    // stateMutex() and idempotent: opening an already-open display or closing an
+    // already-closed one is a no-op returning Error::None.
+    HWC2::Error openExternalDisplay();
+    HWC2::Error closeExternalDisplay();
+    bool isExternalDisplayOpen();
+
     // Recursion is required since present()/validate() call back into the
     // backend, which may query display state that takes the same lock.
     std::recursive_mutex& stateMutex() { return mStateMutex; }

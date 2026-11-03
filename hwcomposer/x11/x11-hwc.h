@@ -158,12 +158,33 @@ struct display {
     std::mutex windowsMutex;
 
     EGLDisplay egl_dpy;
+    // Per-display EGL objects created in egl_init() and released in egl_loop()
+    // on close. egl_dpy is the shared default display and must never be
+    // eglTerminate()'d here (the primary display uses the same one).
+    EGLContext egl_ctx = EGL_NO_CONTEXT;
+    EGLSurface egl_surface = EGL_NO_SURFACE;
     std::list<std::function<void()>> egl_work_queue;
     sem_t egl_go;
     sem_t egl_done;
     GLuint shader_program = 0;
     GLuint VAO = 0, VBO = 0, EBO = 0;
     bool gl_initialized = false;
+
+    // Thread lifecycle: the EGL worker and X event threads are bound to this
+    // display and must be stopped and joined before the struct is freed (see
+    // destroy_display). egl_exit is polled by egl_loop; event_exit marks the
+    // event thread for shutdown (closing the X connection unblocks it).
+    bool egl_exit = false;
+    bool event_exit = false;
+    pthread_t egl_thread = 0;
+    pthread_t event_thread = 0;
+
+    // Self-pipe used to wake event_loop_thread out of its poll() during
+    // teardown, so pthread_join() in destroy_display() returns promptly instead
+    // of hanging while the X connection closes (which used to freeze
+    // SurfaceFlinger for seconds -> app dequeueBuffer -110). fds[0]=read,
+    // fds[1]=write; both -1 when uninitialized.
+    int event_wakeup_fds[2] = {-1, -1};
 
     int width;
     int height;
