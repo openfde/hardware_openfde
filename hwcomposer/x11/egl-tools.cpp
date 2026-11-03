@@ -79,10 +79,12 @@ void egl_init(struct display* display) {
     EGLint context_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
     EGLContext ctx = eglCreateContext(display->egl_dpy, config,  EGL_NO_CONTEXT, context_attrs);
     ALOGI("eglCreateContext: %s", eglStrError(eglGetError()));
+    display->egl_ctx = ctx;
 
     EGLint pbuf_attrs[] = { EGL_WIDTH, EGLint(display->width * display->scale), EGL_HEIGHT, EGLint(display->height * display->scale), EGL_NONE };
     EGLSurface pbuf = eglCreatePbufferSurface(display->egl_dpy, config, pbuf_attrs);
     ALOGI("eglCreatePbufferSurface: %s", eglStrError(eglGetError()));
+    display->egl_surface = pbuf;
 
     eglMakeCurrent(display->egl_dpy, pbuf, pbuf, ctx);
     ALOGI("eglMakeCurrent: %s", eglStrError(eglGetError()));
@@ -126,12 +128,43 @@ void* egl_loop(void* data) {
 
     while (true) {
         sem_wait(&display->egl_go);
+        if (display->egl_exit) {
+            break;
+        }
         for (auto const& f : display->egl_work_queue) {
             f();
         }
         display->egl_work_queue.clear();
         sem_post(&display->egl_done);
     }
+
+    // Tear down the per-display EGL resources. This runs on the EGL worker
+    // thread (the one the context is current on) while the X connection is
+    // still alive: destroy_display() joins this thread BEFORE it closes the X
+    // connection, so the pbuffer surface and GL objects are still valid here.
+    // egl_dpy is the shared default display, so it must NOT be eglTerminate()'d
+    // (the primary display uses the same one).
+    ALOGI("egl_loop: tearing down per-display EGL resources (ctx=%p surface=%p)",
+          (void*)display->egl_ctx, (void*)display->egl_surface);
+    if (display->gl_initialized) {
+        glDeleteProgram(display->shader_program);
+        glDeleteVertexArraysOES(1, &display->VAO);
+        glDeleteBuffers(1, &display->VBO);
+        glDeleteBuffers(1, &display->EBO);
+        display->shader_program = 0;
+        display->VAO = display->VBO = display->EBO = 0;
+        display->gl_initialized = false;
+    }
+    eglMakeCurrent(display->egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    if (display->egl_surface != EGL_NO_SURFACE) {
+        eglDestroySurface(display->egl_dpy, display->egl_surface);
+        display->egl_surface = EGL_NO_SURFACE;
+    }
+    if (display->egl_ctx != EGL_NO_CONTEXT) {
+        eglDestroyContext(display->egl_dpy, display->egl_ctx);
+        display->egl_ctx = EGL_NO_CONTEXT;
+    }
+    eglReleaseThread();
     return NULL;
 }
 

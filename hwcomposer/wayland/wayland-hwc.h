@@ -98,13 +98,6 @@ struct layerFrame {
     int y;
 };
 
-struct handleExt {
-    uint32_t format;
-    uint32_t stride;
-    uint32_t width;
-    uint32_t height;
-};
-
 struct window;
 
 struct output {
@@ -198,9 +191,6 @@ struct display {
     int formats_count;
     std::map<uint32_t, std::vector<uint64_t>> modifiers;
     bool geo_changed;
-    std::map<uint32_t, std::string> layer_names;
-    std::map<uint32_t, struct handleExt> layer_handles_ext;
-    struct handleExt target_layer_handle_ext;
     std::map<buffer_handle_t, struct buffer *> buffer_map;
     std::array<uint8_t, 239> keysDown;
 
@@ -238,8 +228,6 @@ struct display {
     // HWC 1.4: index of the currently active screen configuration
     // (0 == the real/native resolution).
     int active_config;
-    int primary_x = 0;      //primary display X offset
-    int primary_y = 0;      //primary display Y offset
 };
 
 struct buffer {
