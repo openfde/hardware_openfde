@@ -17,8 +17,14 @@ package vendor.openfde.display@1.0;
 
 import android.hardware.graphics.composer@2.1::types;
 
+/**
+ * Vendor extension to the HWC2 composer HAL.
+ *
+ * All methods follow the HWC2 addressing model: displays are identified by
+ * their hwc2_display_t id and layers by their per-display hwc2_layer_t id.
+ */
 interface IOpenfdeDisplay {
-    setLayerName(uint32_t layer, string name) generates (Error error);
-    setLayerHandleInfo(uint32_t layer, uint32_t format, uint32_t stride) generates (Error error);
-    setTargetLayerHandleInfo(uint32_t format, uint32_t stride) generates (Error error);
+    setLayerName(uint64_t display, uint64_t layer, string name) generates (Error error);
+    setLayerHandleInfo(uint64_t display, uint64_t layer, uint32_t format, uint32_t stride) generates (Error error);
+    setTargetLayerHandleInfo(uint64_t display, uint32_t format, uint32_t stride) generates (Error error);
 };

@@ -1,0 +1,22 @@
+cc_binary {
+    name: "vendor.openfde.display-service",
+    relative_install_path: "hw",
+    init_rc: ["vendor.openfde.display-service.rc"],
+    vintf_fragments: ["vendor.openfde.display-service.xml"],
+    vendor: true,
+    srcs: [
+        "main.cpp",
+        "OpenfdeDisplayAidl.cpp",
+    ],
+    shared_libs: [
+        "libbase",
+        "libbinder_ndk",
+        "libhidlbase",
+        "liblog",
+        "libutils",
+        "vendor.openfde.display@1.2",   // 原 HIDL
+    ],
+    static_libs: [
+        "vendor.openfde.display-V1-ndk",    // 新 AIDL NDK 后端
+    ],
+}
