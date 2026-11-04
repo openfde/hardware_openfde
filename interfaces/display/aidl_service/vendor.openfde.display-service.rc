@@ -1,0 +1,5 @@
+service vendor.openfde.display /vendor/bin/hw/vendor.openfde.display-service
+    class hal
+    user system
+    group system
+    interface aidl vendor.openfde.display.IOpenfdeDisplay/default

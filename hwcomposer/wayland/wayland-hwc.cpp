@@ -2402,9 +2402,14 @@ create_display(const char *gralloc, int target)
     ALOGW("display->full_width: %d, display->full_height: %d", display->full_width, display->full_height);
 
     // HWC 1.4: build the screen configuration table and remember which slot
-    // matches the real resolution.
-    screen_configs_init(display->full_width, display->full_height);
-    display->active_config = screen_config_set_and_get_index(display->full_width, display->full_height);
+    // matches the real resolution. The table is process-global, so only the
+    // primary display may build it (an external display has a single fixed
+    // config and would otherwise clobber the primary's table).
+    if (target == HWC_DISPLAY_PRIMARY) {
+        screen_configs_init(display->full_width, display->full_height);
+        display->active_config =
+            screen_config_set_and_get_index(display->full_width, display->full_height);
+    }
 
     display->task = IOpenfdeTask::getService();
     display->isTouchDown = false;

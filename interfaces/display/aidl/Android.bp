@@ -1,0 +1,28 @@
+aidl_interface {
+    name: "vendor.openfde.display",
+    vendor_available: true,
+    srcs: [
+        "vendor/openfde/display/IOpenfdeDisplay.aidl",
+    ],
+    stability: "vintf",
+    backend: {
+        ndk: {
+            enabled: true,
+        },
+        cpp: {
+            enabled: true,
+        },
+        java: {
+            enabled: true,
+            platform_apis: true,
+        },
+    },
+    frozen: true,
+    versions_with_info: [
+        {
+            version: "1",
+            imports: [],
+        },
+    ],
+
+}
