@@ -290,7 +290,7 @@ destroy_window(struct window *window, bool keep)
         window->xpicture = 0;
     }
      if (window->xcbwindow) {
-        ALOGE("destroy window window->xcbwindow: %u", window->xcbwindow);
+        ALOGD("destroy window window->xcbwindow: %u", window->xcbwindow);
         for (auto it = window->display->x11_windows->begin(); it != window->display->x11_windows->end(); it++) {
             if (it->second->xcbwindow == window->xcbwindow){
                 if (it->first != "Toast" && it->first.find("Application Not Responding:") ==  std::string::npos && !isStartWithSpecialSymbols(it->first)) {
@@ -596,7 +596,7 @@ x11_pointer_handle_axis(void *data,  uint32_t axis, int value)
               ? REL_WHEEL : REL_HWHEEL, move);
         SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
-        ALOGE("x11_pointer_handle_axis write INPUT_POINTER");
+        ALOGD("x11_pointer_handle_axis write INPUT_POINTER");
         res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
 
         if (res < sizeof(event))
@@ -626,7 +626,7 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
     }
     if(xcb_button_event->detail == XCB_BUTTON_INDEX_4 || xcb_button_event->detail == XCB_BUTTON_INDEX_5
        || xcb_button_event->detail == 6 || xcb_button_event->detail == 7){
-        ALOGE("on_button_press %d return", xcb_button_event->detail);
+        ALOGD("on_button_press %d return", xcb_button_event->detail);
         sim_reset_timer();
         return;
     }
@@ -669,7 +669,7 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
         }
         if(xcb_button_event->detail == 1){
             display->isMouseLeftDown = true;
-            ALOGE("on_button_press isMouseLeftDown set true");
+            ALOGD("on_button_press isMouseLeftDown set true");
         }
 
         uint32_t button = 0;
@@ -687,7 +687,7 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
         if(button != 0){
             SIM_ADD_EVENT(EV_KEY, button, 1);
             SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-            ALOGE("on_button_press write INPUT_POINTER");
+            ALOGD("on_button_press write INPUT_POINTER");
             res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
         }
     }
@@ -781,7 +781,7 @@ static void warp_cursor_back(struct display *display, int back_x, int last_root_
              root,              // dst_window
              0, 0, 0, 0,        // src 区域
              back_x, last_root_y); // 目标坐标
-    ALOGE("ptg_test Warped X11 cursor back to position (%d, %d)", back_x, last_root_y);
+    ALOGD("Warped X11 cursor back to position (%d, %d)", back_x, last_root_y);
     xcb_flush(conn);
 }
 
@@ -804,7 +804,7 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *xcb_event) {
 
     x = xcb_event->event_x;
     y = xcb_event->event_y;
-    ALOGE("on_motion_notify xcb_event->root_x: %d, xcb_event->root_y: %d, xcb_event->same_screen: %d", xcb_event->root_x, xcb_event->root_y, xcb_event->same_screen);
+    ALOGD("on_motion_notify xcb_event->root_x: %d, xcb_event->root_y: %d, xcb_event->same_screen: %d", xcb_event->root_x, xcb_event->root_y, xcb_event->same_screen);
 
     if (display->scale != 1) {
         x = int(x * display->scale);
@@ -912,7 +912,7 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *xcb_event) {
                 rely = prev_rely > 0 ? 3 : -3;
             }
         }
-        ALOGE("on_motion_notify suppress_relative_injection: %d", suppress_relative_injection);
+        ALOGD("on_motion_notify suppress_relative_injection: %d", suppress_relative_injection);
         if(ignore_relative_injection){
             SIM_ADD_EVENT(EV_REL, REL_X, 0);
             ignore_relative_injection = false;
@@ -1223,7 +1223,7 @@ static void handle_screen_change(struct display *display)
 
 
 void *event_loop_thread(void *arg) {
-    ALOGE("input_loop_event start");
+    ALOGI("input_loop_event start");
     struct display* display = (struct display*)arg;
     xcb_connection_t *connection = display->xcbconnection;
 
@@ -1574,7 +1574,7 @@ void forward_event(xcb_xim_t *im, xcb_xic_t ic, xcb_key_press_event_t *event,
     (void) ic;
     //(void) user_data;
     struct display* display = (struct display*)user_data;
-    ALOGE("Key %s Keycode %u, State %u\n",
+    ALOGD("Key %s Keycode %u, State %u\n",
             event->response_type == XCB_KEY_PRESS ? "press" : "release",
             event->detail, event->state);
     if(!display){
@@ -1647,7 +1647,7 @@ xcb_xim_im_callback callback = {
 };
 
 void create_ic_callback(xcb_xim_t *im, xcb_xic_t new_ic, void *user_data) {
-    ALOGE("create_ic_callback called");
+    ALOGD("create_ic_callback called");
     //(void) user_data;
     struct display* display = (struct display*)user_data;
     if(!display){
@@ -1662,7 +1662,7 @@ void create_ic_callback(xcb_xim_t *im, xcb_xic_t new_ic, void *user_data) {
 }
 
 void open_im_callback(xcb_xim_t *im, void *user_data) {
-    ALOGE("open_callback called");
+    ALOGD("open_callback called");
     //(void)user_data;
     struct display* display = (struct display*)user_data;
     if(!display){
@@ -1683,7 +1683,7 @@ void open_im_callback(xcb_xim_t *im, void *user_data) {
 }
 
 void set_window_title(xcb_connection_t *connection, xcb_window_t window, const std::string &title) {
-    ALOGE("set_window_title %s", title.c_str());
+    ALOGD("set_window_title %s", title.c_str());
 
     const char *utf8_title = title.c_str();
 
@@ -1843,9 +1843,9 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
         XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_POINTER_MOTION | XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_FOCUS_CHANGE,
         display->colormap
     };
-    ALOGE("create window for taskID: %s", taskID.c_str());
+    ALOGD("create window for taskID: %s", taskID.c_str());
     window->xcbwindow = xcb_generate_id(display->xcbconnection);
-    ALOGE("xcb create window window->xcbwindow: %u", window->xcbwindow);
+    ALOGD("xcb create window window->xcbwindow: %u", window->xcbwindow);
 
     xcb_create_window(display->xcbconnection,
                     32,
@@ -2030,7 +2030,7 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
         return window;
     }
     free(ver_reply);
-    ALOGE("XInput version: %d.%d\n", ver_reply->major_version, ver_reply->minor_version);
+    ALOGD("XInput version: %d.%d\n", ver_reply->major_version, ver_reply->minor_version);
 
     uint32_t touch_mask = XCB_INPUT_XI_EVENT_MASK_TOUCH_BEGIN |
                           XCB_INPUT_XI_EVENT_MASK_TOUCH_UPDATE |
@@ -2415,7 +2415,7 @@ create_display(const char *gralloc, int target)
     XSetEventQueueOwner(display->x11display, XCBOwnsEventQueue);
     display->xcbscreen = xcb_setup_roots_iterator(xcb_get_setup(display->xcbconnection)).data;
     display->screen_default_nbr = XDefaultScreen(display->x11display);
-    ALOGE("XDefaultScreen display->screen_default_nbr: %d", display->screen_default_nbr);
+    ALOGD("XDefaultScreen display->screen_default_nbr: %d", display->screen_default_nbr);
 
     display->multi_windows = property_get_bool("persist.openfde.multi_windows", false);
     if(display->multi_windows){
@@ -2426,7 +2426,7 @@ create_display(const char *gralloc, int target)
 
         // Open connection to XIM server.
         bool result = xcb_xim_open(display->im, open_im_callback, true, display);
-        ALOGE("xcb_xim_open result = %d", result);
+        ALOGD("xcb_xim_open result = %d", result);
         if(!result){
             return NULL;
         }
@@ -2459,7 +2459,7 @@ create_display(const char *gralloc, int target)
         display->primary_y = 0;
         ALOGI("fallback to root window size: %dx%d", display->full_width, display->full_height);
     }
-    ALOGE("create_display target: %d", target);
+    ALOGD("create_display target: %d", target);
 
     // 屏幕配置表是进程级全局状态，只能按主屏分辨率构建；扩展屏是单一固定
     // 配置，若也调用 screen_configs_init 会把主屏的配置表覆盖掉。

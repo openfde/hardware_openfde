@@ -88,12 +88,10 @@ namespace {
 
 class X11Backend : public Hwc2Backend {
   public:
-    X11Backend(struct display* display, bool useSubsurface, bool multiWindows,
-               int32_t aospVersion)
+    X11Backend(struct display* display, bool useSubsurface, bool multiWindows)
         : mDisplay(display),
           mUseSubsurface(useSubsurface),
-          mMultiWindows(multiWindows),
-          mAospVersion(aospVersion) {
+          mMultiWindows(multiWindows) {
         mDisplay->x11_windows = &mWindows;
     }
 
@@ -191,7 +189,6 @@ class X11Backend : public Hwc2Backend {
     std::map<std::string, struct window*> mSecondaryWindows;
     bool mUseSubsurface;
     bool mMultiWindows;
-    int32_t mAospVersion;
 
     pthread_t mWindowServiceThread = 0;
     pthread_t mEglWorkerThread = 0;
@@ -313,7 +310,7 @@ Error X11Backend::validate(Hwc2Display& display) {
     struct display* disp = backend.disp;
     std::map<std::string, struct window*>& windows = *backend.windows;
 
-    if (mAospVersion == 17 || (display.geometryChanged() && mUseSubsurface)) {
+    if (display.geometryChanged() && mUseSubsurface) {
         disp->geo_changed = true;
     }
 
@@ -1387,7 +1384,7 @@ Error X11Backend::setActiveConfig(Hwc2Display& display, hwc2_config_t config) {
 
 Error X11Backend::getAttribute(Hwc2Display& display, hwc2_config_t config,
                                Attribute attribute, int32_t* outValue) {
-    ALOGE("getAttribute: isPrimary=%d config=%u attribute=%d",
+    ALOGD("getAttribute: isPrimary=%d config=%u attribute=%d",
       display.isPrimary(), config, static_cast<int32_t>(attribute));
     // The external display is a single fixed config; ignore the requested one
     if (!display.isPrimary()) {
@@ -1642,7 +1639,6 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
 
     bool multi_windows = property_get_bool("persist.openfde.multi_windows", false);
     bool use_subsurface = property_get_bool("persist.openfde.use_subsurface", false) || multi_windows;
-    int32_t aosp_version = property_get_int32("ro.vendor.build.version.release", 0);
 
     if (multi_windows) {
         if (property_get("openfde.xmodifiers", property, "@im=fcitx") > 0) {
@@ -1669,8 +1665,7 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     }
     x11_display->mouse_icon_addr = -1;
 
-    auto backend = std::make_unique<X11Backend>(x11_display, use_subsurface, multi_windows,
-                                                aosp_version);
+    auto backend = std::make_unique<X11Backend>(x11_display, use_subsurface, multi_windows);
     // The device constructor also lets the backend create the external
     // display, which is reported to the client with a hotplug event
     auto* dev = new Hwc2Device(std::move(backend), x11_display);
