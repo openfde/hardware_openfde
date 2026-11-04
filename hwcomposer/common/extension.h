@@ -1,0 +1,81 @@
+/*
+ * Copyright (C) 2021 The Openfde Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#ifndef VENDOR_OPENFDE_DISPLAY_V1_2_OPENFDEDISPLAY_H
+#define VENDOR_OPENFDE_DISPLAY_V1_2_OPENFDEDISPLAY_H
+
+#include <vendor/openfde/display/1.2/IOpenfdeDisplay.h>
+#include <hidl/HidlTransportSupport.h>
+#include <hidl/MQDescriptor.h>
+#include <hidl/Status.h>
+
+#include "hwc2_device.h"
+
+namespace vendor {
+namespace openfde {
+namespace display {
+namespace V1_2 {
+namespace implementation {
+
+using ::android::hardware::hidl_string;
+using ::android::hardware::Return;
+using ::android::hardware::graphics::composer::V2_1::Error;
+using ::android::sp;
+using ::vendor::openfde::display::V1_2::IOpenfdeDisplay;
+
+/*
+ * Vendor display extension shared by all hwcomposer backends.
+ *
+ * The protocol follows the HWC2 addressing rules: every method takes the
+ * hwc2_display_t display id, and layer related methods take the per-display
+ * hwc2_layer_t layer id instead of the former HWC1 layer array index.
+ *
+ * V1_2 additionally exposes dynamic external (secondary) display management:
+ * openExternalDisplay() / closeExternalDisplay() / getExternalDisplayState().
+ */
+class OpenfdeDisplay : public IOpenfdeDisplay {
+  public:
+    explicit OpenfdeDisplay(::openfde::Hwc2Device *device);
+
+    // Methods from ::vendor::openfde::display::V1_0::IOpenfdeDisplay follow.
+    Return<Error> setLayerName(uint64_t display, uint64_t layer,
+                               const hidl_string &name) override;
+    Return<Error> setLayerHandleInfo(uint64_t display, uint64_t layer, uint32_t format,
+                                     uint32_t stride) override;
+    Return<Error> setTargetLayerHandleInfo(uint64_t display, uint32_t format,
+                                           uint32_t stride) override;
+
+    // Methods from ::vendor::openfde::display::V1_1::IOpenfdeDisplay follow.
+    Return<Error> setLayerSize(uint64_t display, uint64_t layer, uint32_t width,
+                               uint32_t height) override;
+    Return<Error> setTargetLayerSize(uint64_t display, uint32_t width,
+                                     uint32_t height) override;
+
+    // Methods from ::vendor::openfde::display::V1_2::IOpenfdeDisplay follow.
+    Return<Error> openExternalDisplay() override;
+    Return<Error> closeExternalDisplay() override;
+    Return<bool> getExternalDisplayState() override;
+
+  private:
+    ::openfde::Hwc2Device *mDevice;
+};
+
+}  // namespace implementation
+}  // namespace V1_2
+}  // namespace display
+}  // namespace openfde
+}  // namespace vendor
+
+#endif  // VENDOR_OPENFDE_DISPLAY_V1_2_OPENFDEDISPLAY_H

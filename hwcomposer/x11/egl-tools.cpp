@@ -79,10 +79,12 @@ void egl_init(struct display* display) {
     EGLint context_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
     EGLContext ctx = eglCreateContext(display->egl_dpy, config,  EGL_NO_CONTEXT, context_attrs);
     ALOGI("eglCreateContext: %s", eglStrError(eglGetError()));
+    display->egl_ctx = ctx;
 
     EGLint pbuf_attrs[] = { EGL_WIDTH, EGLint(display->width * display->scale), EGL_HEIGHT, EGLint(display->height * display->scale), EGL_NONE };
     EGLSurface pbuf = eglCreatePbufferSurface(display->egl_dpy, config, pbuf_attrs);
     ALOGI("eglCreatePbufferSurface: %s", eglStrError(eglGetError()));
+    display->egl_surface = pbuf;
 
     eglMakeCurrent(display->egl_dpy, pbuf, pbuf, ctx);
     ALOGI("eglMakeCurrent: %s", eglStrError(eglGetError()));
@@ -126,12 +128,43 @@ void* egl_loop(void* data) {
 
     while (true) {
         sem_wait(&display->egl_go);
+        if (display->egl_exit) {
+            break;
+        }
         for (auto const& f : display->egl_work_queue) {
             f();
         }
         display->egl_work_queue.clear();
         sem_post(&display->egl_done);
     }
+
+    // Tear down the per-display EGL resources. This runs on the EGL worker
+    // thread (the one the context is current on) while the X connection is
+    // still alive: destroy_display() joins this thread BEFORE it closes the X
+    // connection, so the pbuffer surface and GL objects are still valid here.
+    // egl_dpy is the shared default display, so it must NOT be eglTerminate()'d
+    // (the primary display uses the same one).
+    ALOGI("egl_loop: tearing down per-display EGL resources (ctx=%p surface=%p)",
+          (void*)display->egl_ctx, (void*)display->egl_surface);
+    if (display->gl_initialized) {
+        glDeleteProgram(display->shader_program);
+        glDeleteVertexArraysOES(1, &display->VAO);
+        glDeleteBuffers(1, &display->VBO);
+        glDeleteBuffers(1, &display->EBO);
+        display->shader_program = 0;
+        display->VAO = display->VBO = display->EBO = 0;
+        display->gl_initialized = false;
+    }
+    eglMakeCurrent(display->egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    if (display->egl_surface != EGL_NO_SURFACE) {
+        eglDestroySurface(display->egl_dpy, display->egl_surface);
+        display->egl_surface = EGL_NO_SURFACE;
+    }
+    if (display->egl_ctx != EGL_NO_CONTEXT) {
+        eglDestroyContext(display->egl_dpy, display->egl_ctx);
+        display->egl_ctx = EGL_NO_CONTEXT;
+    }
+    eglReleaseThread();
     return NULL;
 }
 
@@ -200,14 +233,14 @@ static GLuint create_shader_program() {
 }
 
 void egl_convert_buffer_to_BGRA_8888(struct display* display, android::sp<android::GraphicBuffer> src_buffer, android::sp<android::GraphicBuffer> dst_buffer) {
-    static GLuint shader_program = 0;
-    static GLuint VAO = 0, VBO = 0, EBO = 0;
-    static int gl_initialized = 0;
+    //static GLuint shader_program = 0;
+    //static GLuint VAO = 0, VBO = 0, EBO = 0;
+    //static int gl_initialized = 0;
 
-    if (!gl_initialized) {
+    if (!display->gl_initialized) {
         // 创建着色器程序
-        shader_program = create_shader_program();
-        if (!shader_program) {
+        display->shader_program = create_shader_program();
+        if (!display->shader_program) {
             return;
         }
 
@@ -224,15 +257,15 @@ void egl_convert_buffer_to_BGRA_8888(struct display* display, android::sp<androi
             2, 3, 0
         };
 
-        glGenVertexArraysOES(1, &VAO);
-        glGenBuffers(1, &VBO);
-        glGenBuffers(1, &EBO);
+        glGenVertexArraysOES(1, &display->VAO);
+        glGenBuffers(1, &display->VBO);
+        glGenBuffers(1, &display->EBO);
 
-        glBindVertexArrayOES(VAO);
-        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        glBindVertexArrayOES(display->VAO);
+        glBindBuffer(GL_ARRAY_BUFFER, display->VBO);
         glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, display->EBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
@@ -240,7 +273,7 @@ void egl_convert_buffer_to_BGRA_8888(struct display* display, android::sp<androi
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
         glEnableVertexAttribArray(1);
 
-        gl_initialized = 1;
+        display->gl_initialized = 1;
     }
 
     EGLint image_attrs[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
@@ -300,17 +333,17 @@ void egl_convert_buffer_to_BGRA_8888(struct display* display, android::sp<androi
 
     // Set viewport and use shader program
     glViewport(0, 0, src_buffer->getWidth(), src_buffer->getHeight());
-    glUseProgram(shader_program);
+    glUseProgram(display->shader_program);
 
     // Set uniform variable
-    GLint texture_location = glGetUniformLocation(shader_program, "ourTexture");
+    GLint texture_location = glGetUniformLocation(display->shader_program, "ourTexture");
     glUniform1i(texture_location, 0);
 
     // Bind source texture and render
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, src_texture);
 
-    glBindVertexArrayOES(VAO);
+    glBindVertexArrayOES(display->VAO);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
     glFinish();
 

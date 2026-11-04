@@ -19,6 +19,6 @@ import vendor.openfde.display@1.0;
 import android.hardware.graphics.composer@2.1::types;
 
 interface IOpenfdeDisplay extends @1.0::IOpenfdeDisplay {
-    setLayerSize(uint32_t layer, uint32_t width, uint32_t height) generates (Error error);
-    setTargetLayerSize(uint32_t width, uint32_t height) generates (Error error);
+    setLayerSize(uint64_t display, uint64_t layer, uint32_t width, uint32_t height) generates (Error error);
+    setTargetLayerSize(uint64_t display, uint32_t width, uint32_t height) generates (Error error);
 };
