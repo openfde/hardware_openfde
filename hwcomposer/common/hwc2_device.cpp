@@ -563,6 +563,14 @@ HWC2::Error Hwc2Device::openExternalDisplay() {
         return Error::None;
     }
 
+    // Guard: only create the external display when the backend actually
+    // supports one (e.g. x11 needs >=2 monitors in extended, non-mirror mode).
+    // If not supported, do not execute the open and return early.
+    if (!mBackend->isExternalDisplaySupported()) {
+        ALOGI("openExternalDisplay: external display not supported, skip");
+        return Error::Unsupported;
+    }
+
     // The backend creates the X11 secondary display, registers it with
     // createExternalDisplay() (which emits the hotplug event) and starts its
     // worker/event threads.
@@ -587,6 +595,11 @@ HWC2::Error Hwc2Device::closeExternalDisplay() {
 bool Hwc2Device::isExternalDisplayOpen() {
     std::lock_guard<std::recursive_mutex> lock(mStateMutex);
     return mDisplays.count(1) > 0;
+}
+
+bool Hwc2Device::isExternalDisplaySupported() {
+    std::lock_guard<std::recursive_mutex> lock(mStateMutex);
+    return mBackend->isExternalDisplaySupported();
 }
 
 void Hwc2Device::hotplugEvent(hwc2_display_t displayId, bool connected) {

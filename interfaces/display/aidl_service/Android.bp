@@ -17,6 +17,6 @@ cc_binary {
         "vendor.openfde.display@1.2",   // 原 HIDL
     ],
     static_libs: [
-        "vendor.openfde.display-V1-ndk",    // 新 AIDL NDK 后端
+        "vendor.openfde.display-V2-ndk",    // 新 AIDL NDK 后端 (V2 新增 isExternalDisplaySupported)
     ],
 }

@@ -27,4 +27,8 @@ interface IOpenfdeDisplay extends @1.1::IOpenfdeDisplay {
     closeExternalDisplay() generates (Error error);
     // Query current external display state. true = open, false = closed.
     getExternalDisplayState() generates (bool state);
+    // Whether opening an external (secondary) display is currently supported.
+    // Returns true only when the X11 side has at least two monitors arranged in
+    // extended (non-mirror) mode.
+    isExternalDisplaySupported() generates (bool supported);
 };

@@ -30,6 +30,16 @@ ndk::ScopedAStatus OpenfdeDisplayAidl::openExternalDisplay(bool* _aidl_return) {
         return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
     }
 
+    // Guard: only open when the backend reports an external display can be
+    // hosted (e.g. x11 requires >=2 monitors in extended, non-mirror mode).
+    // If not supported, do not attempt to open and return false early.
+    auto sup = mHidlDisplay->isExternalDisplaySupported();
+    if (!sup.isOk() || !sup.withDefault(false)) {
+        ALOGI("openExternalDisplay skipped: external display not supported");
+        *_aidl_return = false;
+        return ndk::ScopedAStatus::ok();
+    }
+
     auto ret = mHidlDisplay->openExternalDisplay();
     if (!ret.isOk()) {
         ALOGE("HIDL openExternalDisplay transaction failed");
@@ -93,6 +103,27 @@ ndk::ScopedAStatus OpenfdeDisplayAidl::getExternalDisplayState(bool* _aidl_retur
 
     ALOGI("HIDL getExternalDisplayState returned: %s", state ? "true" : "false");
     *_aidl_return = state;
+    return ndk::ScopedAStatus::ok();
+}
+
+ndk::ScopedAStatus OpenfdeDisplayAidl::isExternalDisplaySupported(bool* _aidl_return) {
+    ALOGI("OpenfdeDisplayAidl::isExternalDisplaySupported called");
+    if (mHidlDisplay == nullptr) {
+        ALOGE("HIDL IOpenfdeDisplay is null");
+        *_aidl_return = false;
+        return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
+    }
+
+    auto ret = mHidlDisplay->isExternalDisplaySupported();
+    if (!ret.isOk()) {
+        ALOGE("HIDL isExternalDisplaySupported transaction failed");
+        *_aidl_return = false;
+        return ndk::ScopedAStatus::fromExceptionCode(EX_TRANSACTION_FAILED);
+    }
+
+    bool supported = ret.withDefault(false);
+    ALOGI("HIDL isExternalDisplaySupported returned: %s", supported ? "true" : "false");
+    *_aidl_return = supported;
     return ndk::ScopedAStatus::ok();
 }
 

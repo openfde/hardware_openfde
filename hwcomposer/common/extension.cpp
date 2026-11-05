@@ -127,6 +127,10 @@ Return<bool> OpenfdeDisplay::getExternalDisplayState() {
     return mDevice->isExternalDisplayOpen();
 }
 
+Return<bool> OpenfdeDisplay::isExternalDisplaySupported() {
+    return mDevice->isExternalDisplaySupported();
+}
+
 }  // namespace implementation
 }  // namespace V1_2
 }  // namespace display

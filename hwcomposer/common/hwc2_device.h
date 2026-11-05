@@ -157,6 +157,10 @@ class Hwc2Backend {
     // Hwc2Device::createExternalDisplay().
     virtual void destroyExternalDisplay(void* /*backendData*/) {}
 
+    // Whether the backend can currently host an external (secondary) display.
+    // The x11 backend requires >= 2 monitors in extended (non-mirror) mode.
+    virtual bool isExternalDisplaySupported() { return true; }
+
   private:
     Hwc2Device* mDevice = nullptr;
 };
@@ -297,6 +301,9 @@ class Hwc2Device : public hwc2_device_t {
     HWC2::Error openExternalDisplay();
     HWC2::Error closeExternalDisplay();
     bool isExternalDisplayOpen();
+    // Whether opening an external display is currently possible (x11 requires
+    // >=2 monitors in extended mode). Serialized by stateMutex().
+    bool isExternalDisplaySupported();
 
     // Recursion is required since present()/validate() call back into the
     // backend, which may query display state that takes the same lock.
