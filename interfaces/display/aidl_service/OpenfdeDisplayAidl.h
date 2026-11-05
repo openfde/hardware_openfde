@@ -15,6 +15,7 @@ public:
     ndk::ScopedAStatus openExternalDisplay(bool* _aidl_return) override;
     ndk::ScopedAStatus closeExternalDisplay(bool* _aidl_return) override;
     ndk::ScopedAStatus getExternalDisplayState(bool* _aidl_return) override;
+    ndk::ScopedAStatus isExternalDisplaySupported(bool* _aidl_return) override;
 
 private:
     // 1.2 版本继承自 1.1，持有 1.2 即可调用所有方法

@@ -141,6 +141,7 @@ class X11Backend : public Hwc2Backend {
     // The external display is always available, as in the HWC1 backend
     void createExternalDisplays(Hwc2Device& device) override;
     void destroyExternalDisplay(void* backendData) override;
+    bool isExternalDisplaySupported() override;
 
     // Creates the initial "Openfde" window matching the desktop file, for
     // the primary display and for the external one when present
@@ -1575,6 +1576,13 @@ void X11Backend::destroyExternalDisplay(void* backendData) {
     if (disp == mSecondaryDisplay) {
         mSecondaryDisplay = nullptr;
     }
+}
+
+bool X11Backend::isExternalDisplaySupported() {
+    if (!mDisplay) {
+        return false;
+    }
+    return ::is_external_display_supported(mDisplay);
 }
 
 void* X11Backend::windowServiceThreadEntry(void* data) {

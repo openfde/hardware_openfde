@@ -2236,6 +2236,81 @@ static bool get_monitor_info(struct display *display, int monitor_index)
     return true;
 }
 
+// Query whether an external (secondary) display can currently be opened.
+// Supported only when the X11 side exposes at least two active CRTCs whose
+// geometries differ, i.e. two monitors arranged in extended (non-mirror) mode.
+// Mirror mode collapses the monitors onto a single identical CRTC geometry, so
+// it does not satisfy the condition.
+bool is_external_display_supported(struct display *display) {
+    if (!display || !display->xcbconnection || !display->xcbscreen) {
+        return false;
+    }
+    xcb_connection_t *conn = display->xcbconnection;
+    xcb_window_t root = display->xcbscreen->root;
+
+    const xcb_query_extension_reply_t *randr_ext =
+        xcb_get_extension_data(conn, &xcb_randr_id);
+    if (!randr_ext || !randr_ext->present) {
+        ALOGW("RandR extension not available; cannot determine external display support");
+        return false;
+    }
+
+    xcb_randr_get_screen_resources_current_reply_t *res_reply = nullptr;
+    xcb_randr_get_screen_resources_current_cookie_t res_cookie =
+        xcb_randr_get_screen_resources_current(conn, root);
+    res_reply = xcb_randr_get_screen_resources_current_reply(conn, res_cookie, nullptr);
+    if (!res_reply) {
+        ALOGE("Failed to get screen resources for external display support query");
+        return false;
+    }
+
+    xcb_randr_crtc_t *crtcs = xcb_randr_get_screen_resources_current_crtcs(res_reply);
+    int ncrtc = xcb_randr_get_screen_resources_current_crtcs_length(res_reply);
+
+    struct { int x, y, width, height; } geo[16];
+    int n = 0;
+    for (int i = 0; i < ncrtc && n < 16; i++) {
+        xcb_randr_get_crtc_info_cookie_t c_cookie =
+            xcb_randr_get_crtc_info(conn, crtcs[i], XCB_CURRENT_TIME);
+        xcb_randr_get_crtc_info_reply_t *c_info =
+            xcb_randr_get_crtc_info_reply(conn, c_cookie, nullptr);
+        if (c_info && c_info->mode != XCB_NONE &&
+            c_info->width > 0 && c_info->height > 0) {
+            geo[n].x = c_info->x;
+            geo[n].y = c_info->y;
+            geo[n].width = c_info->width;
+            geo[n].height = c_info->height;
+            n++;
+        }
+        free(c_info);
+    }
+    free(res_reply);
+
+    // Need at least two active outputs.
+    if (n < 2) {
+        ALOGI("External display NOT supported: only %d active CRTC(s)", n);
+        return false;
+    }
+
+    // Mirror mode: every active CRTC shares identical geometry.
+    bool mirror = true;
+    for (int i = 1; i < n; i++) {
+        if (geo[i].x != geo[0].x || geo[i].y != geo[0].y ||
+            geo[i].width != geo[0].width || geo[i].height != geo[0].height) {
+            mirror = false;
+            break;
+        }
+    }
+
+    if (mirror) {
+        ALOGI("External display NOT supported: monitors in mirror mode");
+        return false;
+    }
+
+    ALOGI("External display supported: %d monitors in extended mode", n);
+    return true;
+}
+
 
 static bool get_primary_info(struct display *display)
 {

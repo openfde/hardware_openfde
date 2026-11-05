@@ -9,4 +9,5 @@ interface IOpenfdeDisplay {
 	boolean openExternalDisplay();
 	boolean closeExternalDisplay();
 	boolean getExternalDisplayState();
+	boolean isExternalDisplaySupported();
 }

@@ -67,6 +67,7 @@ class OpenfdeDisplay : public IOpenfdeDisplay {
     Return<Error> openExternalDisplay() override;
     Return<Error> closeExternalDisplay() override;
     Return<bool> getExternalDisplayState() override;
+    Return<bool> isExternalDisplaySupported() override;
 
   private:
     ::openfde::Hwc2Device *mDevice;

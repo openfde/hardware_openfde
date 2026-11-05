@@ -344,6 +344,7 @@ snapshot_inactive_app_window(struct display *display, struct window *window);
 
 struct display *
 create_display(const char* gralloc, int target);
+bool is_external_display_supported(struct display* display);
 void *event_loop_thread(void *arg);
 
 void
