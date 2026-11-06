@@ -544,6 +544,13 @@ HWC2::Error Hwc2Device::destroyExternalDisplay(hwc2_display_t displayId) {
         return Error::BadDisplay;
     }
 
+    // Stop delivering vsync for this display before tearing it down. The single
+    // global vsync thread iterates mVsyncEnabled and fires onVsync(displayId)
+    // for every enabled entry; if we don't disable it here, it keeps signalling
+    // a display that is about to be disconnected and SurfaceFlinger floods
+    // "onVsync failed for HWC display N: Invalid HWC display".
+    setVsyncEnabled(displayId, false);
+
     void* backendData = it->second->backendData();
     mDisplays.erase(it);
 
