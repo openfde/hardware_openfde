@@ -91,6 +91,7 @@ struct waydroid_hwc_composer_device_1 {
     int next_sync_point;
     bool use_subsurface;
     bool multi_windows;
+    bool is_nvidia;
 };
 
 int cancel_maximum(xcb_connection_t *conn,xcb_screen_t * screen, xcb_window_t main_win);
@@ -324,10 +325,10 @@ static int hwc_prepare(hwc_composer_device_1_t* dev,
     return 0;
 }
 
-static void update_shm_buffer(struct display* display, struct buffer *buffer)
+static void update_shm_buffer(struct display* display, struct buffer *buffer, bool is_nvidia)
 {
     // Slower but always correct
-    if (display->gtype != GRALLOC_DEFAULT) {
+    if (display->gtype != GRALLOC_DEFAULT && !is_nvidia) {
         display->egl_work_queue.push_back(std::bind(egl_render_to_pixels, display, buffer));
         sem_post(&display->egl_go);
         sem_wait(&display->egl_done);
@@ -357,10 +358,10 @@ static void update_shm_buffer(struct display* display, struct buffer *buffer)
     }
 }
 
-static int update_shm_pixmap(struct display * display, struct buffer *buffer, struct window *window) {
+static int update_shm_pixmap(struct display * display, struct buffer *buffer, struct window *window, bool is_nvidia) {
 	int width = buffer->width;
 	int height = buffer->height;
-	update_shm_buffer(display,buffer);
+	update_shm_buffer(display,buffer,is_nvidia);
 	if (window != NULL){
 		xcb_put_image(display->xcbconnection, XCB_IMAGE_FORMAT_Z_PIXMAP,
 		    buffer->xcbpixmap, window->xcbgc, width, height, 0, 0, 0, 32,
@@ -384,9 +385,90 @@ static void * produce_BGRA_8888(struct waydroid_hwc_composer_device_1 *pdev, sp<
 	return (void *)dst_gb->getNativeBuffer()->handle;
 }
 
+#define __gbm_fourcc_code(a,b,c,d) ((uint32_t)(a) | ((uint32_t)(b) << 8) | \
+			      ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
+#define GBM_FORMAT_ARGB8888	__gbm_fourcc_code('A', 'R', '2', '4') /* [31:0] A:R:G:B 8:8:8:8 little endian */
+#define GBM_FORMAT_ABGR8888	__gbm_fourcc_code('A', 'B', '2', '4') /* [31:0] A:B:G:R 8:8:8:8 little endian */
+#define GBM_FORMAT_XRGB8888	__gbm_fourcc_code('X', 'R', '2', '4') /* [31:0] x:R:G:B 8:8:8:8 little endian */
+#define GBM_FORMAT_XBGR8888	__gbm_fourcc_code('X', 'B', '2', '4') /* [31:0] x:B:G:R 8:8:8:8 little endian */
+
+#define DRI3_MAX_X_MODIFIERS 32
+static uint64_t s_dri3_x_modifiers[DRI3_MAX_X_MODIFIERS];
+static int s_dri3_x_modifier_count = 0;
+
+static int dri3QueryXModifiers(struct display *display) {
+    if (!display || !display->xcbconnection || !display->xcbscreen) {
+        ALOGE("dri3Probe: X connection not ready, cannot query modifiers");
+        return 0;
+    }
+    if (xcb_connection_has_error(display->xcbconnection)) {
+        ALOGE("dri3Probe: XCB connection has error, skip modifier query");
+        return 0;
+    }
+
+    xcb_connection_t *conn = display->xcbconnection;
+    xcb_generic_error_t *mod_err = NULL;
+    xcb_dri3_get_supported_modifiers_reply_t *mod_reply =
+        xcb_dri3_get_supported_modifiers_reply(conn,
+            xcb_dri3_get_supported_modifiers(conn, display->xcbscreen->root, 32, 32),
+            &mod_err);
+    if (!mod_reply) {
+        ALOGE("dri3Probe: GetSupportedModifiers failed err=%d",
+              mod_err ? mod_err->error_code : -1);
+        free(mod_err);
+        return 0;
+    }
+    free(mod_err);
+
+    const uint64_t *scr_mods =
+        xcb_dri3_get_supported_modifiers_screen_modifiers(mod_reply);
+    s_dri3_x_modifier_count =
+        xcb_dri3_get_supported_modifiers_screen_modifiers_length(mod_reply);
+
+    for (int i = 0; i < s_dri3_x_modifier_count; i++) {
+        ALOGI("dri3Probe: screen_modifiers[%d]=0x%llx", i,
+              (unsigned long long)scr_mods[i]);
+        if (i < DRI3_MAX_X_MODIFIERS)
+            s_dri3_x_modifiers[i] = scr_mods[i];
+    }
+
+    ALOGI("dri3Probe: listed %d screen modifiers", s_dri3_x_modifier_count);
+    free(mod_reply);
+    return s_dri3_x_modifier_count;
+}
+
+static void dri3PublishModifiersToGralloc(struct display *display) {
+    const int count = dri3QueryXModifiers(display);
+    if (count <= 0) {
+        ALOGW("dri3Publish: no X-declared modifiers, nothing to publish");
+        return;
+    }
+
+    static const uint32_t kFormats[] = {
+        GBM_FORMAT_ARGB8888,
+        GBM_FORMAT_ABGR8888,
+        GBM_FORMAT_XRGB8888,
+        GBM_FORMAT_XBGR8888,
+    };
+    const int nformats = (int)(sizeof(kFormats) / sizeof(kFormats[0]));
+
+    for (int f = 0; f < nformats; ++f) {
+        const unsigned int fourcc = (unsigned int)kFormats[f];
+        for (int i = 0; i < count; ++i) {
+            char name[128], value[64];
+            snprintf(name, sizeof(name), "openfde.modifiers.%x.%d", fourcc, i);
+            snprintf(value, sizeof(value), "%llx",
+                     (unsigned long long)s_dri3_x_modifiers[i]);
+            if (property_set(name, value) != 0)
+                ALOGW("dri3Publish: property_set(%s) failed", name);
+        }
+    }
+}
+
 static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, struct window *window, struct buffer *buf, int pixel_stride) {
 	int width,height, stride, format, prime_fd, size;
 	int usage = GRALLOC_USAGE_HW_TEXTURE;
+	buffer_handle_t import_handle = layer->handle;
     if (pdev->display->gtype == GRALLOC_GBM) {
         struct gralloc_handle_t *drm_handle = (struct gralloc_handle_t *)layer->handle;
         width = drm_handle->width;
@@ -425,8 +507,8 @@ static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pde
        width, height, HAL_PIXEL_FORMAT_BGRA_8888,
        GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_RENDER);
     if (dst_gb->initCheck() != android::NO_ERROR) {
-	ALOGE("Failed to create destination GraphicBuffer");
-	return ;
+        ALOGE("Failed to create destination GraphicBuffer");
+        return ;
     }
     if (format != HAL_PIXEL_FORMAT_BGRA_8888) {
 	    sp<android::GraphicBuffer> gb_for_stride = new android::GraphicBuffer(width, height,
@@ -467,11 +549,13 @@ static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pde
                 return ;
             }
 		const native_handle_t* native_handle = dst_gb->getNativeBuffer()->handle;
+		import_handle = native_handle;
 		struct gralloc_handle_t * drm_handle = (struct gralloc_handle_t*)native_handle;
 		prime_fd = drm_handle->prime_fd;
 		size = dst_gb->getStride() * height * 4;
 		stride = dst_gb->getStride() * 4 ;
     }
+
     if (window != NULL ) {
 	//ALOGE("Found  app: %s layer  ,drop %d", window->appID.c_str(), lastlayer);
         xcb_window_t xcbwindow = window->xcbwindow;
@@ -486,11 +570,23 @@ static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pde
         buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
         XRenderPictureAttributes pa;
         pa.repeat = False;
-        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(pdev->display->xcbconnection,
-            buf->xcbpixmap, xcbwindow, size, width, height, stride, 32, 32, x11_fd);
-        xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        xcb_generic_error_t *pixmap_error = NULL;
+        if (pdev->is_nvidia) {
+            int32_t fds[1] = { (int32_t) x11_fd };
+            xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffers_checked(pdev->display->xcbconnection,
+                buf->xcbpixmap, xcbwindow, 1, width, height, stride,
+                0, 0, 0, 0, 0, 0, 0, 32, 32, ((const struct gralloc_handle_t *)import_handle)->modifier, fds);
+            pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        } else {
+	        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(pdev->display->xcbconnection,
+                buf->xcbpixmap, xcbwindow, size, width, height, stride, 32, 32, x11_fd);
+            pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        }
         if (pixmap_error) {
-           ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
+           ALOGE("XCB error in %s: %d, %dx%d",
+                 pdev->is_nvidia ? "xcb_dri3_pixmap_from_buffers_checked"
+                                        : "xcb_dri3_pixmap_from_buffer",
+                 pixmap_error->error_code, width, height);
            free(pixmap_error);
            return ;
         }
@@ -507,11 +603,23 @@ static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pde
         buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
         XRenderPictureAttributes pa;
         pa.repeat = False;
-        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(pdev->display->xcbconnection,
-            buf->xcbpixmap, pdev->display->xcbscreen->root, size, width, height, stride, 32, 32, x11_fd);
-        xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        xcb_generic_error_t *pixmap_error = NULL;
+        if (pdev->is_nvidia) {
+            int32_t fds[1] = { (int32_t) x11_fd };
+            xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffers_checked(pdev->display->xcbconnection,
+                buf->xcbpixmap, pdev->display->xcbscreen->root, 1, width, height, stride,
+                0, 0, 0, 0, 0, 0, 0, 32, 32, ((const struct gralloc_handle_t *)import_handle)->modifier, fds);
+            pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        } else {
+	        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(pdev->display->xcbconnection,
+	            buf->xcbpixmap, pdev->display->xcbscreen->root, size, width, height, stride, 32, 32, x11_fd);
+            pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        }
         if (pixmap_error) {
-           ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
+           ALOGE("No win XCB error in %s: %d",
+                 pdev->is_nvidia ? "xcb_dri3_pixmap_from_buffers_checked"
+                                        : "xcb_dri3_pixmap_from_buffer",
+                 pixmap_error->error_code);
            free(pixmap_error);
            return ;
         }
@@ -549,7 +657,7 @@ static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev,
                 destroy_buffer(pdev->display, it->second);
                 pdev->display->buffer_map.erase(it);
             } else {
-                update_shm_pixmap(pdev->display, it->second,window);
+                update_shm_pixmap(pdev->display, it->second,window, pdev->is_nvidia);
                 return it->second;
             }
         } else {
@@ -568,35 +676,71 @@ static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev,
         struct gralloc_handle_t *drm_handle = (struct gralloc_handle_t *)layer->handle;
         buf->width=drm_handle->width;
         buf->height=drm_handle->height;
-	buf->pixel_stride = pixel_stride;
-        createDri3XRenderPicture(pdev, layer, window, buf,pixel_stride);
+	    buf->pixel_stride = pixel_stride;
+
+        std::string layer_name = pdev->display->layer_names[pos];
+        bool is_cursor = 0;
+        if (layer_name.substr(0, 6) == "Sprite") {
+            is_cursor = 1;
+        }
+        if (!(is_cursor && pdev->is_nvidia)) {
+            createDri3XRenderPicture(pdev, layer, window, buf,pixel_stride);
+        }
         if (!buf->xpicture) {
-            delete buf;
-            return NULL;
+            if (create_shm_buffer(buf, drm_handle->width, drm_handle->height,
+                                  drm_handle->format, pixel_stride, layer->handle) == 0) {
+                buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
+                xcb_void_cookie_t create_pixmap_cookie;
+                if (window != NULL) {
+                    create_pixmap_cookie = xcb_create_pixmap(
+                        pdev->display->xcbconnection, 32, buf->xcbpixmap, window->xcbwindow,
+                        drm_handle->width, drm_handle->height);
+                } else {
+                    create_pixmap_cookie = xcb_create_pixmap(
+                        pdev->display->xcbconnection, 32, buf->xcbpixmap, pdev->display->xcbscreen->root,
+                        drm_handle->width, drm_handle->height);
+                }
+                xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, create_pixmap_cookie);
+                if (pixmap_error) {
+                    ALOGE("XCB error in xcb_create_pixmap (shm fallback): %d\n", pixmap_error->error_code);
+                    free(pixmap_error);
+                    delete buf;
+                    return NULL;
+                }
+                update_shm_pixmap(pdev->display, buf, window, pdev->is_nvidia);
+                XRenderPictureAttributes pa;
+                pa.repeat = False;
+                buf->xpicture = XRenderCreatePicture(pdev->display->x11display, buf->xcbpixmap,
+                    pdev->display->argb_format, CPRepeat, &pa);
+            }
+            if (!buf->xpicture) {
+                delete buf;
+                return NULL;
+            }
         }
     } else if (pdev->display->gtype == GRALLOC_RANCHU) {
         struct cb_handle_t* cb_handle = (struct cb_handle_t*)layer->handle;
         auto width = cb_handle->width;
         auto height = cb_handle->height;
         auto hal_format = cb_handle->format;
-	create_shm_buffer(buf, width, height, hal_format,pixel_stride,layer->handle);
-	buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
-	xcb_void_cookie_t create_pixmap_cookie;
-	if (window != NULL){
-		create_pixmap_cookie = xcb_create_pixmap(
-		    pdev->display->xcbconnection, 32, buf->xcbpixmap, window->xcbwindow, width, height);
-	}else {
-		create_pixmap_cookie = xcb_create_pixmap(
-		    pdev->display->xcbconnection, 32, buf->xcbpixmap, pdev->display->xcbscreen->root, width, height);
-	}
-	xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, create_pixmap_cookie);
-	if (pixmap_error) {
-	    ALOGE("XCB error in xcb_create_pixmap: %d\n", pixmap_error->error_code);
-	    free(pixmap_error);
-	    delete buf;
-	    return NULL;
-	}
-	update_shm_pixmap(pdev->display, buf,window);
+        create_shm_buffer(buf, width, height, hal_format,pixel_stride,layer->handle);
+        buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
+        xcb_void_cookie_t create_pixmap_cookie;
+        if (window != NULL){
+            create_pixmap_cookie = xcb_create_pixmap(
+                pdev->display->xcbconnection, 32, buf->xcbpixmap, window->xcbwindow, width, height);
+        }else {
+            create_pixmap_cookie = xcb_create_pixmap(
+                pdev->display->xcbconnection, 32, buf->xcbpixmap, pdev->display->xcbscreen->root, width, height);
+        }
+        xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, create_pixmap_cookie);
+        if (pixmap_error) {
+            ALOGE("XCB error in xcb_create_pixmap: %d\n", pixmap_error->error_code);
+            free(pixmap_error);
+            delete buf;
+            return NULL;
+        }
+        update_shm_pixmap(pdev->display, buf,window, pdev->is_nvidia);
         XRenderPictureAttributes pa;
         pa.repeat = False;
         buf->xpicture = XRenderCreatePicture(pdev->display->x11display, buf->xcbpixmap,
@@ -1608,6 +1752,15 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     }
     ALOGE("x11 display %p", pdev->display);
     pdev->display->mouse_icon_addr = -1;
+
+    pdev->is_nvidia = false;
+    if (property_get("ro.hardware.gpu.model", property, "default") > 0) {
+        if (strcmp(property, "nvidia") == 0) {
+            ALOGD("GPU Model : Nvidia");
+            pdev->is_nvidia = true;
+            dri3PublishModifiersToGralloc(pdev->display);
+        }
+    }
 
     pthread_mutex_init(&pdev->vsync_lock, NULL);
     pdev->vsync_callback_enabled = true;
