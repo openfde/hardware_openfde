@@ -3,8 +3,8 @@
 #include <android/binder_manager.h>
 #include <log/log.h>
 
-// 1.2 的 HIDL 代理
-using ::vendor::openfde::display::V1_2::IOpenfdeDisplay;
+#include <vendor/openfde/display/1.3/IOpenfdeDisplayCallback.h>
+
 // Error 类型来自 composer 2.1
 using ::android::hardware::graphics::composer::V2_1::Error;
 
@@ -13,12 +13,40 @@ namespace vendor {
 namespace openfde {
 namespace display {
 
+namespace {
+
+// HIDL 回调：hwcomposer 进程通过它把外部屏事件转发出来，这里再转给 SystemUI
+// 注册的 AIDL 回调（跨进程 oneway，不会阻塞）。
+class HidlExternalDisplayCallback
+    : public ::vendor::openfde::display::V1_3::IOpenfdeDisplayCallback {
+public:
+    explicit HidlExternalDisplayCallback(
+        std::shared_ptr<::aidl::vendor::openfde::display::IOpenfdeDisplayCallback> cb)
+        : mAidlCb(std::move(cb)) {}
+
+    ::android::hardware::Return<void> onExternalDisplayEvent(int32_t event) override {
+        if (mAidlCb) {
+            mAidlCb->onExternalDisplayEvent(event);
+        }
+        return ::android::hardware::Void();
+    }
+
+private:
+    std::shared_ptr<::aidl::vendor::openfde::display::IOpenfdeDisplayCallback> mAidlCb;
+};
+
+}  // namespace
+
 OpenfdeDisplayAidl::OpenfdeDisplayAidl() {
     // 注意：不能用 IOpenfdeDisplay::getService()，
     // 因为名字和 AIDL 的 IOpenfdeDisplay 冲突了，且这里要的是 HIDL 的。
     mHidlDisplay = ::vendor::openfde::display::V1_2::IOpenfdeDisplay::getService();
     if (mHidlDisplay == nullptr) {
         ALOGE("Failed to get HIDL IOpenfdeDisplay@1.2 service");
+    }
+    mHidlDisplayV3 = ::vendor::openfde::display::V1_3::IOpenfdeDisplay::getService();
+    if (mHidlDisplayV3 == nullptr) {
+        ALOGE("Failed to get HIDL IOpenfdeDisplay@1.3 service");
     }
 }
 
@@ -124,6 +152,28 @@ ndk::ScopedAStatus OpenfdeDisplayAidl::isExternalDisplaySupported(bool* _aidl_re
     bool supported = ret.withDefault(false);
     ALOGI("HIDL isExternalDisplaySupported returned: %s", supported ? "true" : "false");
     *_aidl_return = supported;
+    return ndk::ScopedAStatus::ok();
+}
+
+ndk::ScopedAStatus OpenfdeDisplayAidl::registerCallback(
+        const std::shared_ptr<IOpenfdeDisplayCallback>& cb) {
+    ALOGI("OpenfdeDisplayAidl::registerCallback called");
+    if (mHidlDisplayV3 == nullptr) {
+        ALOGE("HIDL IOpenfdeDisplay@1.3 is null, cannot register event callback");
+        return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
+    }
+
+    // Forward HIDL events coming from the hwcomposer process to the AIDL
+    // callback that SystemUI registered with us.
+    ::android::sp<HidlExternalDisplayCallback> hidlCb =
+        new HidlExternalDisplayCallback(cb);
+    auto ret = mHidlDisplayV3->registerCallback(hidlCb);
+    if (!ret.isOk()) {
+        ALOGE("HIDL registerCallback transaction failed");
+        return ndk::ScopedAStatus::fromExceptionCode(EX_TRANSACTION_FAILED);
+    }
+
+    ALOGI("OpenfdeDisplayAidl registered external display event callback");
     return ndk::ScopedAStatus::ok();
 }
 

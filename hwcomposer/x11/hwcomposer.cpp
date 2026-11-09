@@ -143,6 +143,12 @@ class X11Backend : public Hwc2Backend {
     void destroyExternalDisplay(void* backendData) override;
     bool isExternalDisplaySupported() override;
 
+    // Auto-close the Android external display when the x11 external becomes
+    // unsupported (unplugged or switched to mirror mode). Fired from the primary
+    // display's event thread through the on_external_unsupported hook.
+    static void onExternalUnsupported(void* userdata);
+    void closeExternalIfUnsupported();
+
     // Creates the initial "Openfde" window matching the desktop file, for
     // the primary display and for the external one when present
     void createInitialWindows();
@@ -187,6 +193,13 @@ class X11Backend : public Hwc2Backend {
     std::map<std::string, struct window*> mWindows;
     // External display, always present in the x11 backend
     struct display* mSecondaryDisplay = nullptr;
+    // Pointer to the owning Hwc2Device, set in createExternalDisplays(). Used to
+    // proactively close the Android external display when x11 can no longer host
+    // it (unplugged or mirror mode).
+    Hwc2Device* mDevice = nullptr;
+    // Tracks the last known x11 support state so we only fire support-state
+    // transitions (kSupported / kUnsupported) on change, not on every RandR event.
+    bool mLastSupported = false;
     std::map<std::string, struct window*> mSecondaryWindows;
     bool mUseSubsurface;
     bool mMultiWindows;
@@ -1532,6 +1545,13 @@ void X11Backend::createExternalDisplays(Hwc2Device& device) {
     mSecondaryDisplay->x11_windows = &mSecondaryWindows;
     mSecondaryDisplay->mouse_icon_addr = -1;
 
+    // Register the auto-close hook on the PRIMARY display only, so it fires from
+    // the primary event thread (safe w.r.t. destroy_display()'s self-join).
+    mDevice = &device;
+    mLastSupported = ::is_external_display_supported(mDisplay);
+    mDisplay->on_external_unsupported = &X11Backend::onExternalUnsupported;
+    mDisplay->external_unsupported_userdata = this;
+
     // The external display is announced to the client with a hotplug event,
     // which makes it usable through its own hwc2_display_t id
     device.createExternalDisplay(mSecondaryDisplay);
@@ -1583,6 +1603,33 @@ bool X11Backend::isExternalDisplaySupported() {
         return false;
     }
     return ::is_external_display_supported(mDisplay);
+}
+
+void X11Backend::closeExternalIfUnsupported() {
+    if (!mDevice) {
+        return;
+    }
+    bool supported = ::is_external_display_supported(mDisplay);
+    // Fire support-state transitions regardless of whether the display is open.
+    if (supported != mLastSupported) {
+        mLastSupported = supported;
+        mDevice->notifyExternalDisplayEvent(static_cast<int32_t>(
+            supported ? Hwc2Device::ExternalDisplayEvent::kSupported
+                      : Hwc2Device::ExternalDisplayEvent::kUnsupported));
+        ALOGI("x11 external display support state changed: %s",
+              supported ? "supported" : "unsupported");
+    }
+    // External display open AND x11 can no longer host it (unplugged or switched
+    // to mirror mode) -> proactively close the Android external display.
+    if (mDevice->isExternalDisplayOpen() && !supported) {
+        ALOGI("x11 external display unsupported (unplugged or mirror mode); "
+              "closing Android external display");
+        mDevice->closeExternalDisplay();
+    }
+}
+
+void X11Backend::onExternalUnsupported(void* userdata) {
+    static_cast<X11Backend*>(userdata)->closeExternalIfUnsupported();
 }
 
 void* X11Backend::windowServiceThreadEntry(void* data) {

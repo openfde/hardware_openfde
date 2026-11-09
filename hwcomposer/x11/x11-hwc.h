@@ -235,6 +235,15 @@ struct display {
     bool need_send_touch_btn_down;
     bool need_send_touch_btn_up;
     long touch_tracking_id[MAX_TOUCHPOINTS];
+
+    // Backend hook: invoked from the primary display's event thread when a RandR
+    // screen/CRTC/output change is detected, so the backend can react (e.g. close
+    // the Android external display when the x11 external becomes unsupported).
+    // Only the primary display sets these, which guarantees the callback runs on
+    // the primary event thread and never on the display being torn down (that
+    // would self-join in destroy_display()).
+    void (*on_external_unsupported)(void* userdata) = nullptr;
+    void* external_unsupported_userdata = nullptr;
 };
 
 struct buffer {

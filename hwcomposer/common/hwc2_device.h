@@ -31,6 +31,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <functional>
 
 namespace openfde {
 
@@ -305,6 +306,21 @@ class Hwc2Device : public hwc2_device_t {
     // >=2 monitors in extended mode). Serialized by stateMutex().
     bool isExternalDisplaySupported();
 
+    // External display lifecycle events delivered to IOpenfdeDisplayCallback.
+    // Keep in sync with the AIDL/HIDL callback contract and SystemUI.
+    enum class ExternalDisplayEvent : int32_t {
+        kOpened = 1,        // Android external display opened
+        kClosed = 2,        // Android external display closed
+        kSupported = 3,     // x11 side now supports opening an external display
+        kUnsupported = 4,   // x11 side no longer supports opening an external display
+    };
+
+    // Listener invoked when an external display event occurs. Set by the
+    // vendor.openfde.display HIDL service to forward events to SystemUI.
+    using ExternalDisplayEventListener = std::function<void(int32_t event)>;
+    void setExternalDisplayEventListener(ExternalDisplayEventListener listener);
+    void notifyExternalDisplayEvent(int32_t event);
+
     // Recursion is required since present()/validate() call back into the
     // backend, which may query display state that takes the same lock.
     std::recursive_mutex& stateMutex() { return mStateMutex; }
@@ -397,6 +413,9 @@ class Hwc2Device : public hwc2_device_t {
     bool mPresentFenceErrorLogged = false;
 
     std::string mDumpString;
+
+    // External display event listener (set by the HIDL extension service).
+    ExternalDisplayEventListener mExternalDisplayEventListener;
 };
 
 }  // namespace openfde

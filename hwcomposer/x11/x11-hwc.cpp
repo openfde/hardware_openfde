@@ -1170,6 +1170,13 @@ static void toggle_fullscreen_windowed(xcb_connection_t *conn, xcb_window_t wind
 
 static void handle_screen_change(struct display *display)
 {
+    // Let the backend react to monitor topology changes (e.g. auto-close the
+    // Android external display when it becomes unsupported). Only the primary
+    // display carries the hook, so this always runs on the primary event thread.
+    if (display->on_external_unsupported) {
+        display->on_external_unsupported(display->external_unsupported_userdata);
+    }
+
     // 1. 重新获取当前 Monitor 信息
     int monitor_index = (display->display_type == HWC_DISPLAY_EXTERNAL) ? 1 : 0;
 
