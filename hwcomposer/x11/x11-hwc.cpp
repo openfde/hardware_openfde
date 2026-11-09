@@ -2558,18 +2558,21 @@ create_display(const char *gralloc, int target)
     d->ptrPrvY = 0;
     d->reverseScroll = property_get_bool("persist.waydroid.reverse_scrolling", false);
 
-    d->input_fd[INPUT_POINTER] = -1;
+    // Every slot must start as -1. `new struct display()` zero-initialises
+    // the array, so an untouched slot would look like a valid fd 0 and could
+    // be confused with a real descriptor before the first ensure_pipe().
+    for (int i = 0; i < INPUT_TOTAL; i++)
+        d->input_fd[i] = -1;
+
     mkfifo(INPUT_PIPE_NAME[INPUT_POINTER], S_IRWXO | S_IRWXG | S_IRWXU);
     chown(INPUT_PIPE_NAME[INPUT_POINTER], 1000, 1000);
 
     
     // for emulate touch input event
     if(target == HWC_DISPLAY_PRIMARY){
-        d->input_fd[INPUT_TOUCH] = -1;
         mkfifo(INPUT_PIPE_NAME[INPUT_TOUCH], S_IRWXO | S_IRWXG | S_IRWXU);
         chown(INPUT_PIPE_NAME[INPUT_TOUCH], 1000, 1000);
     }else{
-        d->input_fd[INPUT_TOUCH_EXTERNAL] = -1;
         mkfifo(INPUT_PIPE_NAME[INPUT_TOUCH_EXTERNAL], S_IRWXO | S_IRWXG | S_IRWXU);
         chown(INPUT_PIPE_NAME[INPUT_TOUCH_EXTERNAL], 1000, 1000);
     }
@@ -2578,8 +2581,6 @@ create_display(const char *gralloc, int target)
     for (int i = 0; i < MAX_TOUCHPOINTS; i++)
             d->touch_id[i] = -1;
 
-    d->input_fd[INPUT_KEYBOARD] = -1;
-    d->input_fd[INPUT_TABLET] = -1;
     mkfifo(INPUT_PIPE_NAME[INPUT_KEYBOARD], S_IRWXO | S_IRWXG | S_IRWXU);
     chown(INPUT_PIPE_NAME[INPUT_KEYBOARD], 1000, 1000);
     register_key_press_callback(on_key_press);

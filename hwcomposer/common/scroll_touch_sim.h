@@ -153,8 +153,14 @@ int sim_scroll_gear_multiplier(void);
 // Lazy-open the input pipe for a given INPUT_* type. Returns 0 on success,
 // -1 on failure. The backend reuses this to write touch / pointer / keyboard
 // events in the non-scroll paths (mouse motion, button press, native wl_touch
-// dispatch, etc.).
+// dispatch, etc.). The cached fd is validated by identity (FIFO inode), not
+// just by number, so a recycled dmabuf fd is detected and replaced.
 int sim_ensure_pipe(struct display *display, int input_type);
+
+// Identity check for a cached pipe fd: true only when `fd` is still the open
+// FIFO at `pipe_path`. Use this in dumps instead of fcntl(fd, F_GETFD) --
+// the latter also succeeds when the number has been recycled by a dmabuf fd.
+bool sim_fd_is_pipe(int fd, const char *pipe_path);
 
 // Append one input_event to the local `event[]` array / `n` counter that
 // backends use to build a multi-event write into the input pipe. The macro

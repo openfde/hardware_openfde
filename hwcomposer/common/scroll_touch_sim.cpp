@@ -23,11 +23,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
@@ -137,31 +139,77 @@ static int sim_drip_divisor(void) {
     }
 }
 
-static int sim_ensure_pipe_impl(struct display *display, int input_type) {
-    // The external display delivers simulated touch/scroll events to its own
-    // dedicated pipe, so resolve the actual pipe name up front. The fd is still
-    // cached in input_fd[input_type] so every sim_* write targets the right one.
-    int pipe_index = input_type;
+// Resolve which FIFO a cached input_fd[] slot is supposed to refer to. The
+// external display routes simulated touch/scroll events to its own pipe but
+// still caches the descriptor in input_fd[INPUT_TOUCH].
+static int sim_pipe_index(const struct display *display, int input_type) {
     if (input_type == INPUT_TOUCH && display->display_type == HWC_DISPLAY_EXTERNAL)
-        pipe_index = INPUT_TOUCH_EXTERNAL;
+        return INPUT_TOUCH_EXTERNAL;
+    return input_type;
+}
 
-    // Detect fd that was closed elsewhere (e.g. stray close in hwcomposer.cpp)
-    // and force a reopen instead of writing to a stale descriptor.
-    if (display->input_fd[input_type] >= 0 &&
-        fcntl(display->input_fd[input_type], F_GETFD) == -1 && errno == EBADF) {
-        ALOGE("ensure_pipe: input_fd[%d]=%d was closed elsewhere, reopening %s",
-              input_type, display->input_fd[input_type], INPUT_PIPE_NAME[pipe_index]);
-        display->input_fd[input_type] = -1;
+// Human-readable /proc/self/fd/<fd> target, for diagnostics only. This is
+// what makes "fd 19 is actually /dmabuf:" visible in logcat.
+static void sim_fd_link_target(int fd, char *buf, size_t len) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+    ssize_t n = readlink(path, buf, len - 1);
+    if (n >= 0) {
+        buf[n] = '\0';
+    } else {
+        snprintf(buf, len, "? (%s)", strerror(errno));
     }
-    if (display->input_fd[input_type] < 0) {
-        display->input_fd[input_type] = open(INPUT_PIPE_NAME[pipe_index],
-                                            O_WRONLY | O_NONBLOCK);
-        ALOGI("ensure_pipe display->input_fd[%d]: %d",
-              input_type, display->input_fd[input_type]);
-        if (display->input_fd[input_type] < 0) {
-            ALOGE("Failed to open pipe to InputFlinger: %s", strerror(errno));
+}
+
+// A descriptor number alone is NOT an identity: once a pipe fd is closed
+// elsewhere, the kernel happily hands the same number to the next open(),
+// e.g. a dmabuf / fence / ashmem fd. Compare the inode of the open file with
+// the FIFO on disk so a recycled descriptor is never mistaken for our pipe.
+extern "C" bool sim_fd_is_pipe(int fd, const char *pipe_path) {
+    if (fd < 0 || pipe_path == nullptr)
+        return false;
+
+    struct stat fd_st, path_st;
+    if (fstat(fd, &fd_st) != 0 || !S_ISFIFO(fd_st.st_mode))
+        return false;
+    if (stat(pipe_path, &path_st) != 0 || !S_ISFIFO(path_st.st_mode))
+        return false;
+    return fd_st.st_dev == path_st.st_dev && fd_st.st_ino == path_st.st_ino;
+}
+
+static int sim_ensure_pipe_impl(struct display *display, int input_type) {
+    const int pipe_index = sim_pipe_index(display, input_type);
+    const char *pipe_path = INPUT_PIPE_NAME[pipe_index];
+    int fd = display->input_fd[input_type];
+
+    // fcntl(F_GETFD) only says "some fd with this number exists". After a
+    // stray close() the number may have been recycled by a dmabuf buffer,
+    // and writing input events to it silently loses them (or worse). Recheck
+    // the real identity on every ensure and lazily reopen the FIFO.
+    // IMPORTANT: never close() a descriptor that failed the check -- it now
+    // belongs to whoever recycled the number.
+    if (fd >= 0 && !sim_fd_is_pipe(fd, pipe_path)) {
+        char target[128];
+        sim_fd_link_target(fd, target, sizeof(target));
+        ALOGE("ensure_pipe: input_fd[%d]=%d no longer refers to %s "
+              "(currently -> %s), abandoning stale fd without closing it",
+              input_type, fd, pipe_path, target);
+        display->input_fd[input_type] = -1;
+        fd = -1;
+    }
+
+    if (fd < 0) {
+        // O_CLOEXEC keeps the pipe out of children spawned by the HAL; without
+        // it a fork()+exec() leaves the number shared with unrelated code.
+        fd = open(pipe_path, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) {
+            display->input_fd[input_type] = -1;
+            ALOGE("Failed to open pipe to InputFlinger %s: %s",
+                  pipe_path, strerror(errno));
             return -1;
         }
+        display->input_fd[input_type] = fd;
+        ALOGI("ensure_pipe: input_fd[%d]=%d -> %s", input_type, fd, pipe_path);
     }
     return 0;
 }

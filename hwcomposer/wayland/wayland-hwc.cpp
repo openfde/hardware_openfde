@@ -2327,6 +2327,11 @@ create_display(const char *gralloc, int target)
         ALOGE("out of memory");
         return NULL;
     }
+    // `new struct display()` zeroes the array, and fd 0 is a valid descriptor
+    // number. Initialise every slot explicitly before the first registry
+    // roundtrip, so no slot can be mistaken for an already-open input pipe.
+    for (int i = 0; i < INPUT_TOTAL; i++)
+        display->input_fd[i] = -1;
     wl_log_set_handler_client(wayland_log_handler);
     display->gtype = get_gralloc_type(gralloc);
     display->refresh = 0;
