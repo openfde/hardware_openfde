@@ -557,7 +557,7 @@ HWC2::Error Hwc2Device::destroyExternalDisplay(hwc2_display_t displayId) {
     hotplugEvent(displayId, false);
     mBackend->destroyExternalDisplay(backendData);
 
-    notifyExternalDisplayEvent(static_cast<int32_t>(ExternalDisplayEvent::kClosed));
+    notifyExternalDisplayEvent(static_cast<int32_t>(ExternalDisplayEvent::kExternalDisplayClosed));
     return Error::None;
 }
 
@@ -587,7 +587,7 @@ HWC2::Error Hwc2Device::openExternalDisplay() {
     Error result = mDisplays.count(1) > 0 ? Error::None : Error::NoResources;
     if (result == Error::None) {
         notifyExternalDisplayEvent(
-            static_cast<int32_t>(ExternalDisplayEvent::kOpened));
+            static_cast<int32_t>(ExternalDisplayEvent::kExternalDisplayOpened));
     }
     return result;
 }
@@ -766,21 +766,14 @@ void* Hwc2Device::extensionThreadEntry(void* data) {
 
     sp<OpenfdeDisplay> service = new OpenfdeDisplay(device);
 
-    // Register both interfaces. Declare the proxy variables before any goto so
-    // the jump to shutdown: cannot bypass their initialization.
-    sp<::vendor::openfde::display::V1_2::IOpenfdeDisplay> svcV2 = service;
+    // OpenfdeDisplay implements V1_3::IOpenfdeDisplay (which extends V1_2), so its
+    // HIDL stub is registered under @1.3::IOpenfdeDisplay. HIDL serves the same
+    // object to 1.2 clients as well (the AIDL bridge's V1_2::getService() still
+    // resolves it via the interface chain), so both the existing 1.2 path and the
+    // new 1.3 registerCallback path work. The device manifest must declare
+    // vendor.openfde.display@1.3 (in addition to @1.2).
     sp<::vendor::openfde::display::V1_3::IOpenfdeDisplay> svcV3 = service;
-
-    status_t status = svcV2->registerAsService();
-    if (status != OK) {
-        ALOGE("Could not register service for Openfde Display HAL (%d / 0x%x).",
-              status, status);
-        goto shutdown;
-    }
-
-    // Register the 1.3 interface so clients can subscribe to external display
-    // events via registerCallback().
-    status = svcV3->registerAsService();
+    status_t status = svcV3->registerAsService();
     if (status != OK) {
         ALOGE("Could not register service for Openfde Display HAL @1.3 (%d / 0x%x).",
               status, status);

@@ -146,7 +146,7 @@ class Hwc2Backend {
     virtual std::string dump(Hwc2Display& /*display*/) { return std::string(); }
 
     /*
-     * Displays beyond the primary one, if the backend has any (e.g. the x11
+     * Displays beyond the primary one, if the backend has any (e.g. the host
      * external display). Called once from Hwc2Device's constructor, before
      * any client request; the backend reports each extra display with
      * Hwc2Device::createExternalDisplay(), which in turn emits the hotplug
@@ -159,7 +159,7 @@ class Hwc2Backend {
     virtual void destroyExternalDisplay(void* /*backendData*/) {}
 
     // Whether the backend can currently host an external (secondary) display.
-    // The x11 backend requires >= 2 monitors in extended (non-mirror) mode.
+    // The host backend requires >= 2 monitors in extended (non-mirror) mode.
     virtual bool isExternalDisplaySupported() { return true; }
 
   private:
@@ -302,17 +302,17 @@ class Hwc2Device : public hwc2_device_t {
     HWC2::Error openExternalDisplay();
     HWC2::Error closeExternalDisplay();
     bool isExternalDisplayOpen();
-    // Whether opening an external display is currently possible (x11 requires
+    // Whether opening an external display is currently possible (host requires
     // >=2 monitors in extended mode). Serialized by stateMutex().
     bool isExternalDisplaySupported();
 
     // External display lifecycle events delivered to IOpenfdeDisplayCallback.
     // Keep in sync with the AIDL/HIDL callback contract and SystemUI.
     enum class ExternalDisplayEvent : int32_t {
-        kOpened = 1,        // Android external display opened
-        kClosed = 2,        // Android external display closed
-        kSupported = 3,     // x11 side now supports opening an external display
-        kUnsupported = 4,   // x11 side no longer supports opening an external display
+        kExternalDisplayOpened = 1,        // Android external display opened
+        kExternalDisplayClosed = 2,        // Android external display closed
+        kExternalDisplaySupported = 3,     // Host side now supports opening an external display
+        kExternalDisplayUnsupported = 4,   // Host side no longer supports opening an external display
     };
 
     // Listener invoked when an external display event occurs. Set by the

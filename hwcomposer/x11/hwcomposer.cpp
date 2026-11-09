@@ -1614,8 +1614,8 @@ void X11Backend::closeExternalIfUnsupported() {
     if (supported != mLastSupported) {
         mLastSupported = supported;
         mDevice->notifyExternalDisplayEvent(static_cast<int32_t>(
-            supported ? Hwc2Device::ExternalDisplayEvent::kSupported
-                      : Hwc2Device::ExternalDisplayEvent::kUnsupported));
+            supported ? Hwc2Device::ExternalDisplayEvent::kExternalDisplaySupported
+                      : Hwc2Device::ExternalDisplayEvent::kExternalDisplayUnsupported));
         ALOGI("x11 external display support state changed: %s",
               supported ? "supported" : "unsupported");
     }
