@@ -16,7 +16,8 @@
 #ifndef VENDOR_OPENFDE_DISPLAY_V1_2_OPENFDEDISPLAY_H
 #define VENDOR_OPENFDE_DISPLAY_V1_2_OPENFDEDISPLAY_H
 
-#include <vendor/openfde/display/1.2/IOpenfdeDisplay.h>
+#include <vendor/openfde/display/1.3/IOpenfdeDisplay.h>
+#include <vendor/openfde/display/1.3/IOpenfdeDisplayCallback.h>
 #include <hidl/HidlTransportSupport.h>
 #include <hidl/MQDescriptor.h>
 #include <hidl/Status.h>
@@ -33,7 +34,8 @@ using ::android::hardware::hidl_string;
 using ::android::hardware::Return;
 using ::android::hardware::graphics::composer::V2_1::Error;
 using ::android::sp;
-using ::vendor::openfde::display::V1_2::IOpenfdeDisplay;
+using ::vendor::openfde::display::V1_3::IOpenfdeDisplay;
+using ::vendor::openfde::display::V1_3::IOpenfdeDisplayCallback;
 
 /*
  * Vendor display extension shared by all hwcomposer backends.
@@ -69,8 +71,12 @@ class OpenfdeDisplay : public IOpenfdeDisplay {
     Return<bool> getExternalDisplayState() override;
     Return<bool> isExternalDisplaySupported() override;
 
+    // Methods from ::vendor::openfde::display::V1_3::IOpenfdeDisplay follow.
+    Return<void> registerCallback(const sp<IOpenfdeDisplayCallback> &cb) override;
+
   private:
     ::openfde::Hwc2Device *mDevice;
+    sp<IOpenfdeDisplayCallback> mCallback;
 };
 
 }  // namespace implementation

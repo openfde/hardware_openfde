@@ -31,6 +31,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <functional>
 
 namespace openfde {
 
@@ -145,7 +146,7 @@ class Hwc2Backend {
     virtual std::string dump(Hwc2Display& /*display*/) { return std::string(); }
 
     /*
-     * Displays beyond the primary one, if the backend has any (e.g. the x11
+     * Displays beyond the primary one, if the backend has any (e.g. the host
      * external display). Called once from Hwc2Device's constructor, before
      * any client request; the backend reports each extra display with
      * Hwc2Device::createExternalDisplay(), which in turn emits the hotplug
@@ -158,7 +159,7 @@ class Hwc2Backend {
     virtual void destroyExternalDisplay(void* /*backendData*/) {}
 
     // Whether the backend can currently host an external (secondary) display.
-    // The x11 backend requires >= 2 monitors in extended (non-mirror) mode.
+    // The host backend requires >= 2 monitors in extended (non-mirror) mode.
     virtual bool isExternalDisplaySupported() { return true; }
 
   private:
@@ -301,9 +302,24 @@ class Hwc2Device : public hwc2_device_t {
     HWC2::Error openExternalDisplay();
     HWC2::Error closeExternalDisplay();
     bool isExternalDisplayOpen();
-    // Whether opening an external display is currently possible (x11 requires
+    // Whether opening an external display is currently possible (host requires
     // >=2 monitors in extended mode). Serialized by stateMutex().
     bool isExternalDisplaySupported();
+
+    // External display lifecycle events delivered to IOpenfdeDisplayCallback.
+    // Keep in sync with the AIDL/HIDL callback contract and SystemUI.
+    enum class ExternalDisplayEvent : int32_t {
+        kExternalDisplayOpened = 1,        // Android external display opened
+        kExternalDisplayClosed = 2,        // Android external display closed
+        kExternalDisplaySupported = 3,     // Host side now supports opening an external display
+        kExternalDisplayUnsupported = 4,   // Host side no longer supports opening an external display
+    };
+
+    // Listener invoked when an external display event occurs. Set by the
+    // vendor.openfde.display HIDL service to forward events to SystemUI.
+    using ExternalDisplayEventListener = std::function<void(int32_t event)>;
+    void setExternalDisplayEventListener(ExternalDisplayEventListener listener);
+    void notifyExternalDisplayEvent(int32_t event);
 
     // Recursion is required since present()/validate() call back into the
     // backend, which may query display state that takes the same lock.
@@ -397,6 +413,9 @@ class Hwc2Device : public hwc2_device_t {
     bool mPresentFenceErrorLogged = false;
 
     std::string mDumpString;
+
+    // External display event listener (set by the HIDL extension service).
+    ExternalDisplayEventListener mExternalDisplayEventListener;
 };
 
 }  // namespace openfde

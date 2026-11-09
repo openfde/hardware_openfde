@@ -1,0 +1,14 @@
+package vendor.openfde.display@1.3;
+
+import vendor.openfde.display@1.2;
+import vendor.openfde.display@1.3::IOpenfdeDisplayCallback;
+
+interface IOpenfdeDisplay extends @1.2::IOpenfdeDisplay {
+    // Register a callback to be notified of external display lifecycle events:
+    //   1 = Android external display opened
+    //   2 = Android external display closed
+    //   3 = x11 side now supports opening an external display
+    //   4 = x11 side no longer supports opening an external display
+    // oneway so it never blocks the HAL.
+    oneway registerCallback(IOpenfdeDisplayCallback cb);
+};

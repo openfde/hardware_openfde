@@ -3,6 +3,7 @@ aidl_interface {
     vendor_available: true,
     srcs: [
         "vendor/openfde/display/IOpenfdeDisplay.aidl",
+        "vendor/openfde/display/IOpenfdeDisplayCallback.aidl",
     ],
     stability: "vintf",
     backend: {
@@ -27,6 +28,11 @@ aidl_interface {
             version: "2",
             imports: [],
         },
+        {
+            version: "3",
+            imports: [],
+        },
+
     ],
 
 }

@@ -1,5 +1,7 @@
 package vendor.openfde.display;
 
+import vendor.openfde.display.IOpenfdeDisplayCallback;
+
 /**
  * 给 Java 层使用的简化接口
  * 只暴露你真正需要的方法
@@ -10,4 +12,5 @@ interface IOpenfdeDisplay {
 	boolean closeExternalDisplay();
 	boolean getExternalDisplayState();
 	boolean isExternalDisplaySupported();
+	void registerCallback(IOpenfdeDisplayCallback cb);
 }

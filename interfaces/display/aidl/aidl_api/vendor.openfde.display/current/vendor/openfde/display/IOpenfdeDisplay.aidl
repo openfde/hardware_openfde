@@ -17,10 +17,12 @@
 // later when a module using the interface is updated, e.g., Mainline modules.
 
 package vendor.openfde.display;
+import vendor.openfde.display.IOpenfdeDisplayCallback;
 @VintfStability
 interface IOpenfdeDisplay {
   boolean openExternalDisplay();
   boolean closeExternalDisplay();
   boolean getExternalDisplayState();
   boolean isExternalDisplaySupported();
+  void registerCallback(vendor.openfde.display.IOpenfdeDisplayCallback cb);
 }

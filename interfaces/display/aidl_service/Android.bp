@@ -15,8 +15,9 @@ cc_binary {
         "liblog",
         "libutils",
         "vendor.openfde.display@1.2",   // 原 HIDL
+        "vendor.openfde.display@1.3",   // 1.3 新增 registerCallback
     ],
     static_libs: [
-        "vendor.openfde.display-V2-ndk",    // 新 AIDL NDK 后端 (V2 新增 isExternalDisplaySupported)
+        "vendor.openfde.display-V3-ndk",    // V3 AIDL NDK 后端
     ],
 }

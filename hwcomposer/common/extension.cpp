@@ -29,6 +29,14 @@ using ::openfde::Hwc2Layer;
 OpenfdeDisplay::OpenfdeDisplay(Hwc2Device *device)
     : mDevice(device)
 {
+    // Forward external display events to the registered HIDL callback so the
+    // AIDL service (and ultimately SystemUI) can be notified.
+    mDevice->setExternalDisplayEventListener(
+        [this](int32_t event) {
+            if (mCallback != nullptr) {
+                mCallback->onExternalDisplayEvent(event);
+            }
+        });
 }
 
 // Methods from ::vendor::openfde::display::V1_0::IOpenfdeDisplay follow.
@@ -129,6 +137,12 @@ Return<bool> OpenfdeDisplay::getExternalDisplayState() {
 
 Return<bool> OpenfdeDisplay::isExternalDisplaySupported() {
     return mDevice->isExternalDisplaySupported();
+}
+
+// Methods from ::vendor::openfde::display::V1_3::IOpenfdeDisplay follow.
+Return<void> OpenfdeDisplay::registerCallback(const sp<IOpenfdeDisplayCallback> &cb) {
+    mCallback = cb;
+    return ::android::hardware::Void();
 }
 
 }  // namespace implementation
