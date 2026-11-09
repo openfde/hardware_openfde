@@ -556,7 +556,9 @@ static void gps_state_thread(void*  arg)
     int         gps_fd     = state->fd;
     int         control_fd = state->control[1];
     GpsStatus gps_status;
+    memset(&gps_status, 0, sizeof(gps_status));
     gps_status.size = sizeof(gps_status);
+    gps_status.status = GPS_STATUS_NONE;
     GnssSvStatus gnss_sv_status;
     memset(&gnss_sv_status, 0, sizeof(gnss_sv_status));
     gnss_sv_status.size = sizeof(gnss_sv_status);
@@ -601,15 +603,18 @@ static void gps_state_thread(void*  arg)
 		}
 
         nevents = epoll_wait(epoll_fd, events, 2, timeout);
-        if (state->callbacks.gnss_sv_status_cb) {
-            state->callbacks.gnss_sv_status_cb(&gnss_sv_status);
-        }
-        // update satilite info
         if (nevents < 0) {
             if (errno != EINTR) {
                 D("epoll_wait() unexpected error: %s", strerror(errno));
             }
             continue;
+        }
+
+        // Only report satellite status while a fix session is active. The GNSS
+        // HIDL wrapper dereferences its client callback, which is not registered
+        // until the framework calls IGnss::setCallback()/start().
+        if (started && state->callbacks.gnss_sv_status_cb) {
+            state->callbacks.gnss_sv_status_cb(&gnss_sv_status);
         }
 
         D("gps thread received %d events", nevents);
@@ -782,14 +787,16 @@ static void gps_state_init(GpsState* state, GpsCallbacks* callbacks)
         goto Fail;
     }
 
+    // Publish callbacks before starting the thread; gps_state_thread reads
+    // state->callbacks from another thread.
+    state->callbacks = *callbacks;
+
     state->thread = callbacks->create_thread_cb("gps_state_thread", gps_state_thread, state);
 
     if (!state->thread) {
         D("could not create gps thread: %s", strerror(errno));
         goto Fail;
     }
-
-    state->callbacks = *callbacks;
 
     // Explicitly initialize capabilities
     state->callbacks.set_capabilities_cb(0);
