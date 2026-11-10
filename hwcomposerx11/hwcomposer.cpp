@@ -492,11 +492,9 @@ static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pde
         if (pixmap_error) {
            ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
            free(pixmap_error);
-           close(x11_fd);
            return ;
         }
         buf->xpicture = XRenderCreatePicture(pdev->display->x11display, buf->xcbpixmap,pdev->display->argb_format, CPRepeat, &pa);
-        close(x11_fd);
     }else{
         int x11_fd = dup(prime_fd);
         if (x11_fd >= 0) {
@@ -515,11 +513,9 @@ static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pde
         if (pixmap_error) {
            ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
            free(pixmap_error);
-           close(x11_fd);
            return ;
         }
         buf->xpicture = XRenderCreatePicture(pdev->display->x11display, buf->xcbpixmap,pdev->display->argb_format, CPRepeat, &pa);
-        close(x11_fd);
     }
 }
 
