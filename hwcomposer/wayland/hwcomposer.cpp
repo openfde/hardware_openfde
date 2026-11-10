@@ -67,6 +67,7 @@ using ::android::hardware::joinRpcThreadpool;
 using ::openfde::Hwc2Backend;
 using ::openfde::Hwc2Device;
 using ::openfde::Hwc2Display;
+using ::openfde::Hwc2DumpState;
 using ::openfde::Hwc2Layer;
 using ::openfde::handle_ext;
 
@@ -113,6 +114,7 @@ class WaylandBackend : public Hwc2Backend {
                        int32_t* outValue) override;
     Error validate(Hwc2Display& display) override;
     Error present(Hwc2Display& display) override;
+    Hwc2DumpState getDumpState(Hwc2Display& display) override;
 
     // Creates the initial "Openfde" window matching the desktop file
     void createInitialWindow();
@@ -1144,6 +1146,30 @@ Error WaylandBackend::getAttribute(Hwc2Display& /*display*/, hwc2_config_t confi
             ALOGE("unknown display attribute %d", static_cast<int32_t>(attribute));
             return Error::BadParameter;
     }
+}
+
+Hwc2DumpState WaylandBackend::getDumpState(Hwc2Display& /*display*/) {
+    Hwc2DumpState state;
+
+    {
+        std::scoped_lock lock(mDisplay->windowsMutex);
+        state.windowCount = mWindows.size();
+        state.bufferCount = mDisplay->buffer_map.size();
+    }
+
+    state.activeConfig = mDisplay->active_config;
+    state.width = mDisplay->width;
+    state.height = mDisplay->height;
+    state.fullWidth = mDisplay->full_width;
+    state.fullHeight = mDisplay->full_height;
+    state.scale = mDisplay->scale;
+    state.refresh = mDisplay->refresh;
+    state.useSubsurface = mUseSubsurface;
+    state.multiWindows = mMultiWindows;
+    state.geoChanged = mDisplay->geo_changed;
+    state.inputFdPtr = static_cast<const void*>(&mDisplay->input_fd[0]);
+    state.inputFds.assign(mDisplay->input_fd, mDisplay->input_fd + INPUT_TOTAL);
+    return state;
 }
 
 void* WaylandBackend::waylandThreadEntry(void* data) {

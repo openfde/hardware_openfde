@@ -48,6 +48,25 @@ struct handle_ext {
 class Hwc2Device;
 class Hwc2Display;
 
+// Backend-provided state used by Hwc2Backend::dump(). The common HWC2 layer
+// owns the formatting, while each window-system backend only reports values.
+struct Hwc2DumpState {
+    hwc2_config_t activeConfig = 0;
+    int32_t width = 0;
+    int32_t height = 0;
+    int32_t fullWidth = 0;
+    int32_t fullHeight = 0;
+    float scale = 0.0f;
+    int32_t refresh = 0;
+    bool useSubsurface = false;
+    bool multiWindows = false;
+    bool geoChanged = false;
+    size_t windowCount = 0;
+    size_t bufferCount = 0;
+    const void* inputFdPtr = nullptr;
+    std::vector<int> inputFds;
+};
+
 // Per-layer state, addressed by hwc2_layer_t inside its owning display.
 class Hwc2Layer {
   public:
@@ -143,7 +162,9 @@ class Hwc2Backend {
         return HWC2::Error::None;
     }
 
-    virtual std::string dump(Hwc2Display& /*display*/) { return std::string(); }
+    // Shared dump formatting. Backends supply their state through
+    // getDumpState() instead of duplicating the output code.
+    virtual std::string dump(Hwc2Display& display);
 
     /*
      * Displays beyond the primary one, if the backend has any (e.g. the host
@@ -161,6 +182,9 @@ class Hwc2Backend {
     // Whether the backend can currently host an external (secondary) display.
     // The host backend requires >= 2 monitors in extended (non-mirror) mode.
     virtual bool isExternalDisplaySupported() { return true; }
+
+  protected:
+    virtual Hwc2DumpState getDumpState(Hwc2Display& display) = 0;
 
   private:
     Hwc2Device* mDevice = nullptr;
