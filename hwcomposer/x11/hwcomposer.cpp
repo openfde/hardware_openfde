@@ -74,6 +74,7 @@ using ::android::hardware::joinRpcThreadpool;
 using ::openfde::Hwc2Backend;
 using ::openfde::Hwc2Device;
 using ::openfde::Hwc2Display;
+using ::openfde::Hwc2DumpState;
 using ::openfde::Hwc2Layer;
 using ::openfde::handle_ext;
 
@@ -136,7 +137,7 @@ class X11Backend : public Hwc2Backend {
                        int32_t* outValue) override;
     Error validate(Hwc2Display& display) override;
     Error present(Hwc2Display& display) override;
-    std::string dump(Hwc2Display& display) override;
+    Hwc2DumpState getDumpState(Hwc2Display& display) override;
 
     // The external display is always available, as in the HWC1 backend
     void createExternalDisplays(Hwc2Device& device) override;
@@ -1474,35 +1475,31 @@ Error X11Backend::getAttribute(Hwc2Display& display, hwc2_config_t config,
     }
 }
 
-std::string X11Backend::dump(Hwc2Display& display) {
+Hwc2DumpState X11Backend::getDumpState(Hwc2Display& display) {
     const BackendDisplay backend = resolve(display);
     struct display* disp = backend.disp;
     std::map<std::string, struct window*>& windows = *backend.windows;
+    Hwc2DumpState state;
 
-    size_t window_count = 0;
-    size_t buffer_count = 0;
     {
         std::scoped_lock lock(disp->windowsMutex);
-        window_count = windows.size();
-        buffer_count = disp->buffer_map.size();
+        state.windowCount = windows.size();
+        state.bufferCount = disp->buffer_map.size();
     }
 
-    std::stringstream output;
-    output << "    id=" << display.getId()
-           << " type=" << (display.isPrimary() ? "primary" : "external")
-           << " active_config=" << disp->active_config
-           << " width=" << disp->width << " height=" << disp->height
-           << " full_width=" << disp->full_width << " full_height=" << disp->full_height
-           << " scale=" << disp->scale
-           << " refresh=" << disp->refresh
-           << " use_subsurface=" << mUseSubsurface << " multi_windows=" << mMultiWindows
-           << " geo_changed=" << disp->geo_changed
-           << " windows=" << window_count << " buffers=" << buffer_count << '\n';
-    output << "    input_fd ptr=" << static_cast<void*>(disp->input_fd) << '\n';
-    for (int i = 0; i < INPUT_TOTAL; ++i) {
-        output << "    input_fd[" << i << "]=" << disp->input_fd[i] << '\n';
-    }
-    return output.str();
+    state.activeConfig = disp->active_config;
+    state.width = disp->width;
+    state.height = disp->height;
+    state.fullWidth = disp->full_width;
+    state.fullHeight = disp->full_height;
+    state.scale = disp->scale;
+    state.refresh = disp->refresh;
+    state.useSubsurface = mUseSubsurface;
+    state.multiWindows = mMultiWindows;
+    state.geoChanged = disp->geo_changed;
+    state.inputFdPtr = static_cast<const void*>(&disp->input_fd[0]);
+    state.inputFds.assign(disp->input_fd, disp->input_fd + INPUT_TOTAL);
+    return state;
 }
 
 void X11Backend::createInitialWindow(struct display* disp,

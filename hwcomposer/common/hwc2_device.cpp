@@ -427,6 +427,28 @@ Error Hwc2Display::getClientTargetSupport(uint32_t /*width*/, uint32_t /*height*
     return Error::None;
 }
 
+std::string Hwc2Backend::dump(Hwc2Display& display) {
+    const Hwc2DumpState state = getDumpState(display);
+    std::stringstream output;
+    output << "    id=" << display.getId()
+           << " type=" << (display.isPrimary() ? "primary" : "external")
+           << " active_config=" << state.activeConfig
+           << " width=" << state.width << " height=" << state.height
+           << " full_width=" << state.fullWidth << " full_height=" << state.fullHeight
+           << " scale=" << state.scale
+           << " refresh=" << state.refresh
+           << " use_subsurface=" << state.useSubsurface
+           << " multi_windows=" << state.multiWindows
+           << " geo_changed=" << state.geoChanged
+           << " windows=" << state.windowCount
+           << " buffers=" << state.bufferCount << '\n';
+    output << "    input_fd ptr=" << state.inputFdPtr << '\n';
+    for (size_t i = 0; i < state.inputFds.size(); ++i) {
+        output << "    input_fd[" << i << "]=" << state.inputFds[i] << '\n';
+    }
+    return output.str();
+}
+
 std::string Hwc2Display::dump() {
     std::stringstream output;
     output << "  Display " << mId << " (" << mName << "):\n"
