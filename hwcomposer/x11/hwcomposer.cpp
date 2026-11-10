@@ -1498,6 +1498,10 @@ std::string X11Backend::dump(Hwc2Display& display) {
            << " use_subsurface=" << mUseSubsurface << " multi_windows=" << mMultiWindows
            << " geo_changed=" << disp->geo_changed
            << " windows=" << window_count << " buffers=" << buffer_count << '\n';
+    output << "    input_fd ptr=" << static_cast<void*>(disp->input_fd) << '\n';
+    for (int i = 0; i < INPUT_TOTAL; ++i) {
+        output << "    input_fd[" << i << "]=" << disp->input_fd[i] << '\n';
+    }
     return output.str();
 }
 

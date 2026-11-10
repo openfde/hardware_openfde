@@ -113,6 +113,7 @@ class WaylandBackend : public Hwc2Backend {
                        int32_t* outValue) override;
     Error validate(Hwc2Display& display) override;
     Error present(Hwc2Display& display) override;
+    std::string dump(Hwc2Display& display) override;
 
     // Creates the initial "Openfde" window matching the desktop file
     void createInitialWindow();
@@ -1144,6 +1145,33 @@ Error WaylandBackend::getAttribute(Hwc2Display& /*display*/, hwc2_config_t confi
             ALOGE("unknown display attribute %d", static_cast<int32_t>(attribute));
             return Error::BadParameter;
     }
+}
+
+std::string WaylandBackend::dump(Hwc2Display& display) {
+    size_t window_count = 0;
+    size_t buffer_count = 0;
+    {
+        std::scoped_lock lock(mDisplay->windowsMutex);
+        window_count = mWindows.size();
+        buffer_count = mDisplay->buffer_map.size();
+    }
+
+    std::stringstream output;
+    output << "    id=" << display.getId()
+           << " type=" << (display.isPrimary() ? "primary" : "external")
+           << " active_config=" << mDisplay->active_config
+           << " width=" << mDisplay->width << " height=" << mDisplay->height
+           << " full_width=" << mDisplay->full_width << " full_height=" << mDisplay->full_height
+           << " scale=" << mDisplay->scale
+           << " refresh=" << mDisplay->refresh
+           << " use_subsurface=" << mUseSubsurface << " multi_windows=" << mMultiWindows
+           << " geo_changed=" << mDisplay->geo_changed
+           << " windows=" << window_count << " buffers=" << buffer_count << '\n';
+    output << "    input_fd ptr=" << static_cast<void*>(mDisplay->input_fd) << '\n';
+    for (int i = 0; i < INPUT_TOTAL; ++i) {
+        output << "    input_fd[" << i << "]=" << mDisplay->input_fd[i] << '\n';
+    }
+    return output.str();
 }
 
 void* WaylandBackend::waylandThreadEntry(void* data) {
