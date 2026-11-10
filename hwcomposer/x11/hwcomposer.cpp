@@ -588,11 +588,9 @@ void X11Backend::createDri3XRenderPicture(struct display* disp, buffer_handle_t 
         if (pixmap_error) {
            ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
            free(pixmap_error);
-           close(x11_fd);
            return ;
         }
         buf->xpicture = XRenderCreatePicture(disp->x11display, buf->xcbpixmap,disp->argb_format, CPRepeat, &pa);
-        close(x11_fd);
     }else{
         int x11_fd = dup(prime_fd);
         if (x11_fd >= 0) {
@@ -611,11 +609,9 @@ void X11Backend::createDri3XRenderPicture(struct display* disp, buffer_handle_t 
         if (pixmap_error) {
            ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
            free(pixmap_error);
-           close(x11_fd);
            return ;
         }
         buf->xpicture = XRenderCreatePicture(disp->x11display, buf->xcbpixmap,disp->argb_format, CPRepeat, &pa);
-        close(x11_fd);
     }
 }
 
@@ -657,7 +653,7 @@ struct buffer *X11Backend::getX11Buffer(struct display* disp, buffer_handle_t ha
         struct gralloc_handle_t *drm_handle = (struct gralloc_handle_t *)handle;
         buf->width=drm_handle->width;
         buf->height=drm_handle->height;
-	buf->pixel_stride = pixel_stride;
+        buf->pixel_stride = pixel_stride;
         createDri3XRenderPicture(disp, handle, window, buf, pixel_stride);
         if (!buf->xpicture) {
             delete buf;

@@ -145,20 +145,12 @@ static int sim_ensure_pipe_impl(struct display *display, int input_type) {
     if (input_type == INPUT_TOUCH && display->display_type == HWC_DISPLAY_EXTERNAL)
         pipe_index = INPUT_TOUCH_EXTERNAL;
 
-    // Detect fd that was closed elsewhere (e.g. stray close in hwcomposer.cpp)
-    // and force a reopen instead of writing to a stale descriptor.
-    if (display->input_fd[input_type] >= 0 &&
-        fcntl(display->input_fd[input_type], F_GETFD) == -1 && errno == EBADF) {
-        ALOGE("ensure_pipe: input_fd[%d]=%d was closed elsewhere, reopening %s",
-              input_type, display->input_fd[input_type], INPUT_PIPE_NAME[pipe_index]);
-        display->input_fd[input_type] = -1;
-    }
-    if (display->input_fd[input_type] < 0) {
-        display->input_fd[input_type] = open(INPUT_PIPE_NAME[pipe_index],
+    if (display->input_fd[pipe_index] < 0) {
+        display->input_fd[pipe_index] = open(INPUT_PIPE_NAME[pipe_index],
                                             O_WRONLY | O_NONBLOCK);
         ALOGI("ensure_pipe display->input_fd[%d]: %d",
-              input_type, display->input_fd[input_type]);
-        if (display->input_fd[input_type] < 0) {
+              input_type, display->input_fd[pipe_index]);
+        if (display->input_fd[pipe_index] < 0) {
             ALOGE("Failed to open pipe to InputFlinger: %s", strerror(errno));
             return -1;
         }
