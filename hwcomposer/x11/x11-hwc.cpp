@@ -2142,8 +2142,25 @@ static int get_primary_monitor_index(struct display *display)
     }
     free(res_reply);
 
-    // 可选：按 x 坐标排序后重新计算 primary_idx
-    // （如果你希望索引按从左到右排列）
+    // 与 get_monitor_info 保持一致的排序：按 x 坐标从左到右排列，使返回的
+    // 索引空间与 get_monitor_info 内部排序后的索引对齐，外部屏才能正确取到
+    // “另一个” monitor（而不是写死 index 1 取到主屏）。
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = i + 1; j < count; j++) {
+            if (monitors[j].x < monitors[i].x) {
+                auto tmp = monitors[i];
+                monitors[i] = monitors[j];
+                monitors[j] = tmp;
+            }
+        }
+    }
+    primary_idx = 0;
+    for (int i = 0; i < count; i++) {
+        if (monitors[i].is_primary) {
+            primary_idx = i;
+            break;
+        }
+    }
 
     ALOGI("Primary monitor index = %d (total %d monitors)", primary_idx, count);
     return primary_idx;
@@ -2530,7 +2547,15 @@ create_display(const char *gralloc, int target)
     // Get screen resolution and scale
     display->scale = 1;
 
-    int monitor_index = (target == HWC_DISPLAY_EXTERNAL) ? 1 : 0;
+    int monitor_index;
+    if (target == HWC_DISPLAY_EXTERNAL) {
+        // 外部屏取“非主屏”的 monitor。主屏位置不固定（可能排在 index 1），
+        // 写死 1 会取到主屏分辨率，导致外部屏尺寸与主屏一致。
+        int primary = get_primary_monitor_index(display);
+        monitor_index = (primary == 0) ? 1 : 0;
+    } else {
+        monitor_index = get_primary_monitor_index(display);
+    }
 
     // use randr to get the primary display resolution (prioritize the primary display when using multiple display device).
     if (!get_monitor_info(display, monitor_index)) {
