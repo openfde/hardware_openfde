@@ -144,6 +144,13 @@ class X11Backend : public Hwc2Backend {
     void destroyExternalDisplay(void* backendData) override;
     bool isExternalDisplaySupported() override;
 
+    // Registers the external-display support detection hook and pushes the
+    // initial support state to the framework. Called once at backend init,
+    // BEFORE the external display is ever opened, so support-state
+    // notifications (kSupported / kUnsupported) are delivered up front rather
+    // than only after the external display has been opened once.
+    void initExternalSupport(Hwc2Device& device);
+
     // Auto-close the Android external display when the x11 external becomes
     // unsupported (unplugged or switched to mirror mode). Fired from the primary
     // display's event thread through the on_external_unsupported hook.
@@ -1542,12 +1549,10 @@ void X11Backend::createExternalDisplays(Hwc2Device& device) {
     mSecondaryDisplay->x11_windows = &mSecondaryWindows;
     mSecondaryDisplay->mouse_icon_addr = -1;
 
-    // Register the auto-close hook on the PRIMARY display only, so it fires from
-    // the primary event thread (safe w.r.t. destroy_display()'s self-join).
-    mDevice = &device;
-    mLastSupported = ::is_external_display_supported(mDisplay);
-    mDisplay->on_external_unsupported = &X11Backend::onExternalUnsupported;
-    mDisplay->external_unsupported_userdata = this;
+    // NOTE: the on_external_unsupported hook (which drives support-state
+    // notifications and auto-close) is registered once at backend init in
+    // initExternalSupport(), so it is active before the external display is
+    // first opened. Do not re-register it here.
 
     // The external display is announced to the client with a hotplug event,
     // which makes it usable through its own hwc2_display_t id
@@ -1603,6 +1608,7 @@ bool X11Backend::isExternalDisplaySupported() {
 }
 
 void X11Backend::closeExternalIfUnsupported() {
+    ALOGI("X11Backend::closeExternalIfUnsupported called");
     if (!mDevice) {
         return;
     }
@@ -1613,7 +1619,7 @@ void X11Backend::closeExternalIfUnsupported() {
         mDevice->notifyExternalDisplayEvent(static_cast<int32_t>(
             supported ? Hwc2Device::ExternalDisplayEvent::kExternalDisplaySupported
                       : Hwc2Device::ExternalDisplayEvent::kExternalDisplayUnsupported));
-        ALOGI("x11 external display support state changed: %s",
+        ALOGI("notifyExternalDisplayEvent: x11 external display support state changed: %s",
               supported ? "supported" : "unsupported");
     }
     // External display open AND x11 can no longer host it (unplugged or switched
@@ -1622,6 +1628,29 @@ void X11Backend::closeExternalIfUnsupported() {
         ALOGI("x11 external display unsupported (unplugged or mirror mode); "
               "closing Android external display");
         mDevice->closeExternalDisplay();
+    }
+}
+
+void X11Backend::initExternalSupport(Hwc2Device& device) {
+    mDevice = &device;
+    mLastSupported = ::is_external_display_supported(mDisplay);
+
+    // Register the auto-close / support-state hook on the PRIMARY display so it
+    // fires from the primary event thread on every RandR screen change, starting
+    // immediately -- before any external display has been opened. Previously this
+    // was done only inside createExternalDisplays(), which meant the framework
+    // could not receive "external display supported/unsupported" notifications
+    // until the external display had been opened at least once.
+    mDisplay->on_external_unsupported = &X11Backend::onExternalUnsupported;
+    mDisplay->external_unsupported_userdata = this;
+
+    // Push the initial support state to the framework right away so the UI knows
+    // whether opening is currently possible (later topology changes also deliver
+    // a transition event).
+    if (mDevice) {
+        mDevice->notifyExternalDisplayEvent(static_cast<int32_t>(
+            mLastSupported ? Hwc2Device::ExternalDisplayEvent::kExternalDisplaySupported
+                          : Hwc2Device::ExternalDisplayEvent::kExternalDisplayUnsupported));
     }
 }
 
@@ -1725,6 +1754,12 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
 
     auto* x11Backend = static_cast<X11Backend*>(&dev->backend());
     x11Backend->createInitialWindows();
+
+    // Register the external-display support detection hook up front so the
+    // framework receives support-state notifications before the external display
+    // is ever opened (previously this only happened inside createExternalDisplays,
+    // i.e. after the first open).
+    x11Backend->initExternalSupport(*dev);
 
     if (x11_display->refresh > 1000 && x11_display->refresh < 1000000)
         dev->setVsyncPeriod(1000 * 1000 * 1000 / (x11_display->refresh / 1000));
