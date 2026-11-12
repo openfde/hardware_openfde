@@ -34,7 +34,10 @@ OpenfdeDisplay::OpenfdeDisplay(Hwc2Device *device)
     mDevice->setExternalDisplayEventListener(
         [this](int32_t event) {
             if (mCallback != nullptr) {
+                ALOGI("callbck onExternalDisplayEvent called");
                 mCallback->onExternalDisplayEvent(event);
+            }else{
+                ALOGE("onExternalDisplayEvent callbck is null");
             }
         });
 }

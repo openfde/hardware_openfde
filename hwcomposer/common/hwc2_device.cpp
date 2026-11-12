@@ -650,7 +650,10 @@ void Hwc2Device::notifyExternalDisplayEvent(int32_t event) {
         listener = mExternalDisplayEventListener;
     }
     if (listener) {
+        ALOGE("ExternalDisplayEventListener called");
         listener(event);
+    }else{
+        ALOGE("ExternalDisplayEventListener is null");
     }
 }
 
