@@ -78,6 +78,8 @@
 #include "fractional-scale-v1-client-protocol.h"
 #include <pointer-gestures-unstable-v1-client-protocol.h>
 
+#include "x11-hybris.h"
+
 using ::android::hardware::hidl_string;
 
 const int AXIS_TOUCH_SLOT_ID = 8;
@@ -253,8 +255,10 @@ void choose_width_height(struct display* display, int32_t hint_width, int32_t hi
 }
 
 void
-destroy_window(struct window *window, bool keep)
+destroy_window(struct window *window, bool is_nvidia, bool keep)
 {
+    if (is_nvidia)
+        x11_hybris_release_window(window);
     if (window->backxpicture) {
         XRenderFreePicture(window->display->x11display, window->backxpicture);
         window->backxpicture = 0;
@@ -1912,7 +1916,7 @@ bool isStartWithTidSymbols(const std::string& layer_name){
 }
 
 struct window *
-create_window(struct display *display, bool use_subsurfaces, std::string appID, std::string taskID, hwc_color_t color)
+create_window(struct display *display, bool use_subsurfaces, std::string appID, std::string taskID, hwc_color_t color, bool is_nvidia)
 {
     struct window *window = new struct window();
     if (!window)
@@ -1952,8 +1956,37 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
         if (!display->width)
             display->width = display->full_width / display->scale;
     }
+    /*
+     * 选窗口的 visual —— 这一步决定「窗口是不是天然不透明」。
+     *
+     * 任何 Linux 窗口，靠的就是窗口用**屏幕自己的 24 位 visual（没有 alpha
+     * 通道）**。而 hwcomposer 原来固定用 ARGB32（depth 32 / visual 0x23），于是：
+     *   · 合成器按**每个像素的 alpha** 把窗口混合到桌面之上；
+     *   · 上屏走 eglSwapBuffers(DRI3)，presented buffer 里的 alpha 由
+     *     驱动决定，glClear 写 alpha 在 NVIDIA 上并不可靠；
+     *   · 只要某个像素 alpha 不是 255，底下的 Linux 桌面 / 面板 / 其它窗口就
+     *     从那一块透出来 —— 表现为"任务栏还在显示但点不到"
+     * 换成 24 位 visual 之后窗口没有 alpha 通道，桌面没有任何机会透出来。
+     *
+     * window_visualid 由 host 侧按 EGLConfig 反推
+     * 得出 —— 必须用它，不能另选：EGL_NATIVE_VISUAL_ID 必须等于窗口 visual，
+     * 否则 eglCreateWindowSurface 只会返回 EGL_BAD_MATCH。拿不到就保持原来的 ARGB32。
+     *
+     * subsurface / 多窗口模式必须保留 ARGB32 —— 那边靠 alpha 做圆角和透明。
+     */
+    xcb_visualid_t win_visual = display->visualid;
+    int win_depth = 32;
+    if (is_nvidia) {
+        if (!use_subsurfaces && !display->multi_windows && display->window_visualid) {
+            win_visual = display->window_visualid;
+            win_depth = display->window_depth ? display->window_depth : 24;
+        }
+        display->window_visualid = win_visual;
+	    display->window_depth = win_depth;
+    }
+
      display->colormap = xcb_generate_id(display->xcbconnection);
-     xcb_create_colormap(display->xcbconnection, XCB_COLORMAP_ALLOC_NONE, display->colormap, display->xcbscreen->root, display->visualid);
+     xcb_create_colormap(display->xcbconnection, XCB_COLORMAP_ALLOC_NONE, display->colormap, display->xcbscreen->root, win_visual);
 
     uint32_t value_mask = XCB_CW_BACK_PIXEL | XCB_CW_BORDER_PIXEL | XCB_CW_EVENT_MASK | XCB_CW_COLORMAP;
     uint32_t value_list[] = {
@@ -1968,12 +2001,12 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
     ALOGE("xcb create window window->xcbwindow: %u", window->xcbwindow);
 
     xcb_create_window(display->xcbconnection,
-                    32,
+                    win_depth,
                     window->xcbwindow,
                     display->xcbscreen->root,
                     display->primary_x, display->primary_y, display->width, display->height, 0,
                     XCB_WINDOW_CLASS_INPUT_OUTPUT,
-                    display->visualid,
+                    win_visual,
                     value_mask, value_list);
     if (!use_subsurfaces) {
 	    // 设置窗口全屏
@@ -2005,7 +2038,26 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
 	}
     XRenderPictureAttributes pa;
     pa.repeat = False;
-    window->xpicture = XRenderCreatePicture(display->x11display, window->xcbwindow,display->argb_format, CPRepeat, &pa);
+    /*
+     * 窗口 picture 的格式必须跟窗口自己的 depth 一致，否则 XRenderCreatePicture
+     * 会直接报 BadMatch（Xlib 默认错误处理会直接退出进程）。窗口可能是不透明的
+     * 24 位 visual，所以这里按 visual 查格式，不能无条件用 ARGB32。
+     */
+    XRenderPictFormat *win_fmt = display->argb_format;
+    if (is_nvidia) {
+        XVisualInfo vtmpl;
+        memset(&vtmpl, 0, sizeof(vtmpl));
+        vtmpl.visualid = win_visual;
+        int nvi = 0;
+        XVisualInfo *vi = XGetVisualInfo(display->x11display, VisualIDMask, &vtmpl, &nvi);
+        if (vi) {
+            XRenderPictFormat *f = XRenderFindVisualFormat(display->x11display, vi->visual);
+            if (f)
+                win_fmt = f;
+            XFree(vi);
+        }
+    }
+    window->xpicture = XRenderCreatePicture(display->x11display, window->xcbwindow, win_fmt, CPRepeat, &pa);
     window->backpixmap = XCreatePixmap(display->x11display, window->xcbwindow, display->width, display->height, 32);
     if (window->backpixmap == None1) {
         return NULL;
@@ -2317,7 +2369,7 @@ cleanup:
 
 
 struct display *
-create_display(const char *gralloc)
+create_display(const char *gralloc, bool is_nvidia)
 {
     struct display *display = new struct display();
     if (display == NULL) {
@@ -2429,6 +2481,15 @@ create_display(const char *gralloc)
 
     display->argb_format = XRenderFindStandardFormat(display->x11display, PictStandardARGB32);
 
+    /*
+     * 送显后端探测（visual 已确定后立刻做，结果缓存）。
+     *
+     * 必须在 event_loop_thread 启动之前完成：宿主 EGL 初始化要收发 X 请求并
+     * 等 reply，和事件线程抢读同一个连接会卡死。
+     */
+    if (is_nvidia)
+        (void)x11_hybris_get_ready(display);
+
     display->last_mouse_send_time = 0;
     display->accumulated_relx = 0;
     display->accumulated_rely = 0;
@@ -2456,7 +2517,7 @@ create_display(const char *gralloc)
 }
 
 void
-destroy_display(struct display *display)
+destroy_display(struct display *display, bool is_nvidia)
 {
 
     if (display->ic) {
@@ -2478,6 +2539,10 @@ destroy_display(struct display *display)
         xcb_free_colormap(display->xcbconnection, display->colormap);
         display->colormap = 0;
     }
+
+    /* 进程内上屏的 EGL 上下文/纹理/glibc X 连接必须在 X 资源拆掉之前释放 */
+    if (is_nvidia)
+        x11_hybris_display_destroy(display);
 
      if (display->xcbconnection) {
         xcb_flush(display->xcbconnection);
