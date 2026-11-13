@@ -130,6 +130,15 @@ struct window;
 
 struct display {
     xcb_visualid_t visualid;
+    /*
+     * 实际用于建窗口的 visual / depth。
+     * 单窗口全屏时用屏幕自己的不透明 visual（24 位，没有 alpha 通道），
+     * 这样窗口天然不透明，合成器不可能把底下的 Linux 桌面/面板混出来；
+     * subsurface / 多窗口模式仍然用 ARGB32（圆角和透明靠它）。
+     * 见 tools/x11-egl-sphere 的 README：「默认 visual 是不透明的前提」。
+     */
+    xcb_visualid_t window_visualid;
+    int window_depth;
     xcb_colormap_t colormap;
     Display * x11display;
     xcb_connection_t *xcbconnection;
@@ -318,15 +327,15 @@ void
 snapshot_inactive_app_window(struct display *display, struct window *window);
 
 struct display *
-create_display(const char* gralloc);
+create_display(const char* gralloc, bool is_nvidia);
 void
-destroy_display(struct display *display);
+destroy_display(struct display *display, bool is_nvidia);
 int remove_title(xcb_connection_t *conn, xcb_window_t main_win);
 
 void
-destroy_window(struct window *window, bool keep = false);
+destroy_window(struct window *window, bool is_nvidia, bool keep = false);
 struct window *
-create_window(struct display *display, bool with_dummy, std::string appID, std::string taskID, hwc_color_t color);
+create_window(struct display *display, bool with_dummy, std::string appID, std::string taskID, hwc_color_t color, bool is_nvidia);
 void
 choose_width_height(struct display* display, int32_t hint_width, int32_t hint_height);
 
