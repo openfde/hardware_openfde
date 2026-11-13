@@ -414,7 +414,7 @@ cc_library_shared {
     },
 
     cflags: [
-        "-DLOG_TAG=\"hwcomposer\"",
+        "-DLOG_TAG=\"hwcomposerx11\"",
         "-Wall",
         "-Werror",
         "-Wno-writable-strings",
