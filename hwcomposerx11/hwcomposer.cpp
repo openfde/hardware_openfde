@@ -23,6 +23,7 @@
 #include <unistd.h>
 #include <wayland-client.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <string>
 #include <sstream>
@@ -59,6 +60,7 @@
 #include "extension.h"
 #include "WaydroidWindow.h"
 #include "egl-tools.h"
+#include "x11-hybris.h"
 
 //using ::android::hardware::configureRpcThreadpool;
 using ::android::hardware::joinRpcThreadpool;
@@ -91,6 +93,7 @@ struct waydroid_hwc_composer_device_1 {
     int next_sync_point;
     bool use_subsurface;
     bool multi_windows;
+    bool is_nvidia;
 };
 
 int cancel_maximum(xcb_connection_t *conn,xcb_screen_t * screen, xcb_window_t main_win);
@@ -324,10 +327,10 @@ static int hwc_prepare(hwc_composer_device_1_t* dev,
     return 0;
 }
 
-static void update_shm_buffer(struct display* display, struct buffer *buffer)
+static void update_shm_buffer(struct display* display, struct buffer *buffer, bool is_nvidia)
 {
     // Slower but always correct
-    if (display->gtype != GRALLOC_DEFAULT) {
+    if (display->gtype != GRALLOC_DEFAULT && !is_nvidia) {
         display->egl_work_queue.push_back(std::bind(egl_render_to_pixels, display, buffer));
         sem_post(&display->egl_go);
         sem_wait(&display->egl_done);
@@ -357,10 +360,10 @@ static void update_shm_buffer(struct display* display, struct buffer *buffer)
     }
 }
 
-static int update_shm_pixmap(struct display * display, struct buffer *buffer, struct window *window) {
+static int update_shm_pixmap(struct display * display, struct buffer *buffer, struct window *window, bool is_nvidia) {
 	int width = buffer->width;
 	int height = buffer->height;
-	update_shm_buffer(display,buffer);
+	update_shm_buffer(display,buffer,is_nvidia);
 	if (window != NULL){
 		xcb_put_image(display->xcbconnection, XCB_IMAGE_FORMAT_Z_PIXMAP,
 		    buffer->xcbpixmap, window->xcbgc, width, height, 0, 0, 0, 32,
@@ -384,9 +387,225 @@ static void * produce_BGRA_8888(struct waydroid_hwc_composer_device_1 *pdev, sp<
 	return (void *)dst_gb->getNativeBuffer()->handle;
 }
 
+#define __gbm_fourcc_code(a,b,c,d) ((uint32_t)(a) | ((uint32_t)(b) << 8) | \
+			      ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
+#define GBM_FORMAT_ARGB8888	__gbm_fourcc_code('A', 'R', '2', '4') /* [31:0] A:R:G:B 8:8:8:8 little endian */
+#define GBM_FORMAT_ABGR8888	__gbm_fourcc_code('A', 'B', '2', '4') /* [31:0] A:B:G:R 8:8:8:8 little endian */
+#define GBM_FORMAT_XRGB8888	__gbm_fourcc_code('X', 'R', '2', '4') /* [31:0] x:R:G:B 8:8:8:8 little endian */
+#define GBM_FORMAT_XBGR8888	__gbm_fourcc_code('X', 'B', '2', '4') /* [31:0] x:B:G:R 8:8:8:8 little endian */
+
+#define DRI3_MAX_X_MODIFIERS 32
+static uint64_t s_dri3_x_modifiers[DRI3_MAX_X_MODIFIERS];
+static int s_dri3_x_modifier_count = 0;
+
+static void buffer_info_from_handle(buffer_handle_t handle, struct buffer *buf)
+{
+    const struct gralloc_handle_t *h = (const struct gralloc_handle_t *)handle;
+    buf->width = h->width;
+    buf->height = h->height;
+    buf->format = h->format;
+    if (!buf->pixel_stride && h->stride > 0)
+        buf->pixel_stride = h->stride / 4;
+    buf->hal_format = buf->format;
+    if (!buf->pixel_stride)
+        buf->pixel_stride = buf->width;
+    buf->handle = handle;
+}
+
+/*
+ * dma-buf 的稳定标识，用作纹理缓存的 key（x11-hybris 里 16 项 LRU）。
+ *
+ * 不能用 gralloc handle 指针：gralloc 的 handle 从固定池分配，buffer 释放后
+ * 同一地址会被新 buffer 复用，缓存就会命中一块已经不再更新的旧 dma-buf
+ * （表现为画面卡在旧帧）。fd 也不能用 —— 每帧 dup 出来的号都不一样。
+ *
+ * dma-buf 是 anon inode，内核给每个 dma-buf 分配唯一 inode 编号；只要缓存还
+ * 持有 EGLImage 引用，旧 dma-buf 就不会被回收，编号也就不会被复用。所以
+ * (st_dev, st_ino) 是可靠的实例标识。fstat 开销在微秒级，每层每帧一次可接受。
+ */
+static uint64_t dmabuf_id_from_fd(int fd)
+{
+    if (fd < 0)
+        return 0;
+    struct stat st;
+    if (fstat(fd, &st) != 0)
+        return 0;
+    return (uint64_t)st.st_ino ^ (((uint64_t)st.st_dev) << 56);
+}
+
+/* 把一层 HWC layer 翻译成送显描述（源裁剪 + 目标矩形 + 变换）。
+ * dma-buf 三项（fd / modifier / buffer_id）由调用方补 —— 那里才拿得到 handle。 */
+static void fill_present_layer(struct waydroid_hwc_composer_device_1 *pdev,
+                           hwc_layer_1_t *layer, struct buffer *buf,
+                           struct x11_hybris_layer *out, bool use_subsurface)
+{
+    out->buf_w = buf->width;
+    out->buf_h = buf->height;
+    out->stride_px = buf->pixel_stride > 0 ? (int)buf->pixel_stride : buf->width;
+    out->hal_format = buf->hal_format ? buf->hal_format : buf->format;
+    out->transform = layer->transform;
+
+    /*
+     * RGBX / RGB 系格式**没有 alpha 通道**，缓冲里的第 4 个字节是垃圾值。
+     * 标成不透明后，host 侧的片元会直接输出 alpha=1 —— 万一窗口仍是 ARGB32
+     * 这些垃圾 alpha 就不会把底下的 Linux 桌面混出来。
+     */
+    switch (out->hal_format) {
+        case HAL_PIXEL_FORMAT_RGBX_8888:
+        case HAL_PIXEL_FORMAT_RGB_888:
+        case HAL_PIXEL_FORMAT_RGB_565:
+            out->opaque = true;
+            break;
+        default:
+            out->opaque = false;
+            break;
+    }
+
+    /* dma-buf 三项由调用方补（这里没有 handle 的 allocator 细节） */
+    out->dmabuf_fd = -1;
+    out->modifier = 0;
+    out->buffer_id = 0;
+
+    int sx = layer->sourceCropi.left;
+    int sy = layer->sourceCropi.top;
+    int sw = layer->sourceCropi.right - layer->sourceCropi.left;
+    int sh = layer->sourceCropi.bottom - layer->sourceCropi.top;
+    if (sw <= 0 || sh <= 0) {
+        sx = 0;
+        sy = 0;
+        sw = buf->width;
+        sh = buf->height;
+    }
+    if (sx < 0) {
+        sw += sx;
+        sx = 0;
+    }
+    if (sy < 0) {
+        sh += sy;
+        sy = 0;
+    }
+    if (buf->width > 0 && sx + sw > buf->width)
+        sw = buf->width - sx;
+    if (buf->height > 0 && sy + sh > buf->height)
+        sh = buf->height - sy;
+    if (sw <= 0 || sh <= 0) {
+        sx = 0;
+        sy = 0;
+        sw = buf->width;
+        sh = buf->height;
+    }
+    out->src_x = sx;
+    out->src_y = sy;
+    out->src_w = sw;
+    out->src_h = sh;
+
+    if (use_subsurface) {
+        double scale = pdev->display->scale > 0 ? pdev->display->scale : 1.0;
+        out->dst_x = (int)floor(layer->displayFrame.left / scale);
+        out->dst_y = (int)floor(layer->displayFrame.top / scale);
+        out->dst_w = (int)fmax(1, ceil((layer->displayFrame.right - layer->displayFrame.left) / scale));
+        out->dst_h = (int)fmax(1, ceil((layer->displayFrame.bottom - layer->displayFrame.top) / scale));
+    } else {
+        /* 非 subsurface 模式只有 HWC_FRAMEBUFFER_TARGET，铺满整个窗口 */
+        out->dst_x = 0;
+        out->dst_y = 0;
+        out->dst_w = pdev->display->width;
+        out->dst_h = pdev->display->height;
+    }
+}
+
+/* 输入形状记账：等价 adjust_window_geo 的尾部逻辑，但不碰任何 XRender picture。 */
+static void record_present_geometry(struct window *window, const struct x11_hybris_layer *gl)
+{
+    if (window->lastLayer == 0) {
+        window->rects.clear();
+        window->crops.clear();
+    }
+    xcb_rectangle_t rect = {(int16_t)gl->dst_x, (int16_t)gl->dst_y,
+                            (uint16_t)gl->dst_w, (uint16_t)gl->dst_h};
+    window->rects.push_back(rect);
+
+    hwc_rect_t crop;
+    crop.left = gl->src_x;
+    crop.top = gl->src_y;
+    crop.right = gl->src_x + gl->src_w;
+    crop.bottom = gl->src_y + gl->src_h;
+    window->crops.push_back(crop);
+}
+
+static int dri3QueryXModifiers(struct display *display) {
+    if (!display || !display->xcbconnection || !display->xcbscreen) {
+        ALOGE("dri3Probe: X connection not ready, cannot query modifiers");
+        return 0;
+    }
+    if (xcb_connection_has_error(display->xcbconnection)) {
+        ALOGE("dri3Probe: XCB connection has error, skip modifier query");
+        return 0;
+    }
+
+    xcb_connection_t *conn = display->xcbconnection;
+    xcb_generic_error_t *mod_err = NULL;
+    xcb_dri3_get_supported_modifiers_reply_t *mod_reply =
+        xcb_dri3_get_supported_modifiers_reply(conn,
+            xcb_dri3_get_supported_modifiers(conn, display->xcbscreen->root, 32, 32),
+            &mod_err);
+    if (!mod_reply) {
+        ALOGE("dri3Probe: GetSupportedModifiers failed err=%d",
+              mod_err ? mod_err->error_code : -1);
+        free(mod_err);
+        return 0;
+    }
+    free(mod_err);
+
+    const uint64_t *scr_mods =
+        xcb_dri3_get_supported_modifiers_screen_modifiers(mod_reply);
+    s_dri3_x_modifier_count =
+        xcb_dri3_get_supported_modifiers_screen_modifiers_length(mod_reply);
+
+    for (int i = 0; i < s_dri3_x_modifier_count; i++) {
+        ALOGI("dri3Probe: screen_modifiers[%d]=0x%llx", i,
+              (unsigned long long)scr_mods[i]);
+        if (i < DRI3_MAX_X_MODIFIERS)
+            s_dri3_x_modifiers[i] = scr_mods[i];
+    }
+
+    ALOGI("dri3Probe: listed %d screen modifiers", s_dri3_x_modifier_count);
+    free(mod_reply);
+    return s_dri3_x_modifier_count;
+}
+
+static void dri3PublishModifiersToGralloc(struct display *display) {
+    const int count = dri3QueryXModifiers(display);
+    if (count <= 0) {
+        ALOGW("dri3Publish: no X-declared modifiers, nothing to publish");
+        return;
+    }
+
+    static const uint32_t kFormats[] = {
+        GBM_FORMAT_ARGB8888,
+        GBM_FORMAT_ABGR8888,
+        GBM_FORMAT_XRGB8888,
+        GBM_FORMAT_XBGR8888,
+    };
+    const int nformats = (int)(sizeof(kFormats) / sizeof(kFormats[0]));
+
+    for (int f = 0; f < nformats; ++f) {
+        const unsigned int fourcc = (unsigned int)kFormats[f];
+        for (int i = 0; i < count; ++i) {
+            char name[128], value[64];
+            snprintf(name, sizeof(name), "openfde.modifiers.%x.%d", fourcc, i);
+            snprintf(value, sizeof(value), "%llx",
+                     (unsigned long long)s_dri3_x_modifiers[i]);
+            if (property_set(name, value) != 0)
+                ALOGW("dri3Publish: property_set(%s) failed", name);
+        }
+    }
+}
+
 static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, struct window *window, struct buffer *buf, int pixel_stride) {
 	int width,height, stride, format, prime_fd, size;
 	int usage = GRALLOC_USAGE_HW_TEXTURE;
+	buffer_handle_t import_handle = layer->handle;
     if (pdev->display->gtype == GRALLOC_GBM) {
         struct gralloc_handle_t *drm_handle = (struct gralloc_handle_t *)layer->handle;
         width = drm_handle->width;
@@ -425,8 +644,8 @@ static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pde
        width, height, HAL_PIXEL_FORMAT_BGRA_8888,
        GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_RENDER);
     if (dst_gb->initCheck() != android::NO_ERROR) {
-	ALOGE("Failed to create destination GraphicBuffer");
-	return ;
+        ALOGE("Failed to create destination GraphicBuffer");
+        return ;
     }
     if (format != HAL_PIXEL_FORMAT_BGRA_8888) {
 	    sp<android::GraphicBuffer> gb_for_stride = new android::GraphicBuffer(width, height,
@@ -467,11 +686,13 @@ static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pde
                 return ;
             }
 		const native_handle_t* native_handle = dst_gb->getNativeBuffer()->handle;
+		import_handle = native_handle;
 		struct gralloc_handle_t * drm_handle = (struct gralloc_handle_t*)native_handle;
 		prime_fd = drm_handle->prime_fd;
 		size = dst_gb->getStride() * height * 4;
 		stride = dst_gb->getStride() * 4 ;
     }
+
     if (window != NULL ) {
 	//ALOGE("Found  app: %s layer  ,drop %d", window->appID.c_str(), lastlayer);
         xcb_window_t xcbwindow = window->xcbwindow;
@@ -486,17 +707,27 @@ static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pde
         buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
         XRenderPictureAttributes pa;
         pa.repeat = False;
-        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(pdev->display->xcbconnection,
-            buf->xcbpixmap, xcbwindow, size, width, height, stride, 32, 32, x11_fd);
-        xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        xcb_generic_error_t *pixmap_error = NULL;
+        if (pdev->is_nvidia) {
+            int32_t fds[1] = { (int32_t) x11_fd };
+            xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffers_checked(pdev->display->xcbconnection,
+                buf->xcbpixmap, xcbwindow, 1, width, height, stride,
+                0, 0, 0, 0, 0, 0, 0, 32, 32, ((const struct gralloc_handle_t *)import_handle)->modifier, fds);
+            pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        } else {
+	        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(pdev->display->xcbconnection,
+                buf->xcbpixmap, xcbwindow, size, width, height, stride, 32, 32, x11_fd);
+            pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        }
         if (pixmap_error) {
-           ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
+           ALOGE("XCB error in %s: %d, %dx%d",
+                 pdev->is_nvidia ? "xcb_dri3_pixmap_from_buffers_checked"
+                                        : "xcb_dri3_pixmap_from_buffer",
+                 pixmap_error->error_code, width, height);
            free(pixmap_error);
-           close(x11_fd);
            return ;
         }
         buf->xpicture = XRenderCreatePicture(pdev->display->x11display, buf->xcbpixmap,pdev->display->argb_format, CPRepeat, &pa);
-        close(x11_fd);
     }else{
         int x11_fd = dup(prime_fd);
         if (x11_fd >= 0) {
@@ -509,17 +740,27 @@ static void createDri3XRenderPicture (struct waydroid_hwc_composer_device_1 *pde
         buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
         XRenderPictureAttributes pa;
         pa.repeat = False;
-        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(pdev->display->xcbconnection,
-            buf->xcbpixmap, pdev->display->xcbscreen->root, size, width, height, stride, 32, 32, x11_fd);
-        xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        xcb_generic_error_t *pixmap_error = NULL;
+        if (pdev->is_nvidia) {
+            int32_t fds[1] = { (int32_t) x11_fd };
+            xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffers_checked(pdev->display->xcbconnection,
+                buf->xcbpixmap, pdev->display->xcbscreen->root, 1, width, height, stride,
+                0, 0, 0, 0, 0, 0, 0, 32, 32, ((const struct gralloc_handle_t *)import_handle)->modifier, fds);
+            pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        } else {
+	        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(pdev->display->xcbconnection,
+	            buf->xcbpixmap, pdev->display->xcbscreen->root, size, width, height, stride, 32, 32, x11_fd);
+            pixmap_error = xcb_request_check(pdev->display->xcbconnection, pixmap_cookie);
+        }
         if (pixmap_error) {
-           ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
+           ALOGE("No win XCB error in %s: %d",
+                 pdev->is_nvidia ? "xcb_dri3_pixmap_from_buffers_checked"
+                                        : "xcb_dri3_pixmap_from_buffer",
+                 pixmap_error->error_code);
            free(pixmap_error);
-           close(x11_fd);
            return ;
         }
         buf->xpicture = XRenderCreatePicture(pdev->display->x11display, buf->xcbpixmap,pdev->display->argb_format, CPRepeat, &pa);
-        close(x11_fd);
     }
 }
 
@@ -553,12 +794,12 @@ static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev,
                 destroy_buffer(pdev->display, it->second);
                 pdev->display->buffer_map.erase(it);
             } else {
-                update_shm_pixmap(pdev->display, it->second,window);
+                update_shm_pixmap(pdev->display, it->second,window, pdev->is_nvidia);
                 return it->second;
             }
         } else {
             return it->second;
-	}
+	    }
     }
 
     struct buffer *buf;
@@ -572,35 +813,77 @@ static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev,
         struct gralloc_handle_t *drm_handle = (struct gralloc_handle_t *)layer->handle;
         buf->width=drm_handle->width;
         buf->height=drm_handle->height;
-	buf->pixel_stride = pixel_stride;
-        createDri3XRenderPicture(pdev, layer, window, buf,pixel_stride);
+	    buf->pixel_stride = pixel_stride;
+
+        std::string layer_name = pdev->display->layer_names[pos];
+        bool is_cursor = 0;
+        if (layer_name.substr(0, 6) == "Sprite") {
+            is_cursor = 1;
+        }
+        if (pdev->is_nvidia) {
+            buffer_info_from_handle(layer->handle, buf);
+            if (window != NULL && x11_hybris_get_ready(pdev->display)) {
+                pdev->display->buffer_map[layer->handle] = buf;
+                return buf;
+            }
+        } else if (!(is_cursor && pdev->is_nvidia)) {
+            createDri3XRenderPicture(pdev, layer, window, buf,pixel_stride);
+        }
         if (!buf->xpicture) {
-            delete buf;
-            return NULL;
+            if (create_shm_buffer(buf, drm_handle->width, drm_handle->height,
+                                  drm_handle->format, pixel_stride, layer->handle) == 0) {
+                buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
+                xcb_void_cookie_t create_pixmap_cookie;
+                if (window != NULL) {
+                    create_pixmap_cookie = xcb_create_pixmap(
+                        pdev->display->xcbconnection, 32, buf->xcbpixmap, window->xcbwindow,
+                        drm_handle->width, drm_handle->height);
+                } else {
+                    create_pixmap_cookie = xcb_create_pixmap(
+                        pdev->display->xcbconnection, 32, buf->xcbpixmap, pdev->display->xcbscreen->root,
+                        drm_handle->width, drm_handle->height);
+                }
+                xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, create_pixmap_cookie);
+                if (pixmap_error) {
+                    ALOGE("XCB error in xcb_create_pixmap (shm fallback): %d\n", pixmap_error->error_code);
+                    free(pixmap_error);
+                    delete buf;
+                    return NULL;
+                }
+                update_shm_pixmap(pdev->display, buf, window, pdev->is_nvidia);
+                XRenderPictureAttributes pa;
+                pa.repeat = False;
+                buf->xpicture = XRenderCreatePicture(pdev->display->x11display, buf->xcbpixmap,
+                    pdev->display->argb_format, CPRepeat, &pa);
+            }
+            if (!buf->xpicture) {
+                delete buf;
+                return NULL;
+            }
         }
     } else if (pdev->display->gtype == GRALLOC_RANCHU) {
         struct cb_handle_t* cb_handle = (struct cb_handle_t*)layer->handle;
         auto width = cb_handle->width;
         auto height = cb_handle->height;
         auto hal_format = cb_handle->format;
-	create_shm_buffer(buf, width, height, hal_format,pixel_stride,layer->handle);
-	buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
-	xcb_void_cookie_t create_pixmap_cookie;
-	if (window != NULL){
-		create_pixmap_cookie = xcb_create_pixmap(
-		    pdev->display->xcbconnection, 32, buf->xcbpixmap, window->xcbwindow, width, height);
-	}else {
-		create_pixmap_cookie = xcb_create_pixmap(
-		    pdev->display->xcbconnection, 32, buf->xcbpixmap, pdev->display->xcbscreen->root, width, height);
-	}
-	xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, create_pixmap_cookie);
-	if (pixmap_error) {
-	    ALOGE("XCB error in xcb_create_pixmap: %d\n", pixmap_error->error_code);
-	    free(pixmap_error);
-	    delete buf;
-	    return NULL;
-	}
-	update_shm_pixmap(pdev->display, buf,window);
+        create_shm_buffer(buf, width, height, hal_format,pixel_stride,layer->handle);
+        buf->xcbpixmap = xcb_generate_id(pdev->display->xcbconnection);
+        xcb_void_cookie_t create_pixmap_cookie;
+        if (window != NULL){
+            create_pixmap_cookie = xcb_create_pixmap(
+                pdev->display->xcbconnection, 32, buf->xcbpixmap, window->xcbwindow, width, height);
+        }else {
+            create_pixmap_cookie = xcb_create_pixmap(
+                pdev->display->xcbconnection, 32, buf->xcbpixmap, pdev->display->xcbscreen->root, width, height);
+        }
+        xcb_generic_error_t *pixmap_error = xcb_request_check(pdev->display->xcbconnection, create_pixmap_cookie);
+        if (pixmap_error) {
+            ALOGE("XCB error in xcb_create_pixmap: %d\n", pixmap_error->error_code);
+            free(pixmap_error);
+            delete buf;
+            return NULL;
+        }
+        update_shm_pixmap(pdev->display, buf,window, pdev->is_nvidia);
         XRenderPictureAttributes pa;
         pa.repeat = False;
         buf->xpicture = XRenderCreatePicture(pdev->display->x11display, buf->xcbpixmap,
@@ -892,13 +1175,15 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         // Clear all open windows
         for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
             if (it->second)
-                destroy_window(it->second);
+                destroy_window(it->second, pdev->is_nvidia);
         }
         pdev->windows.clear();
         for (size_t layer = 0; layer < contents->numHwLayers; layer++) {
             hwc_layer_1_t* fb_layer = &contents->hwLayers[layer];
-            if (fb_layer->acquireFenceFd != -1)
+            if (fb_layer->acquireFenceFd != -1) {
                 close(fb_layer->acquireFenceFd);
+                fb_layer->acquireFenceFd = -1;
+            }
         }
 
         property_set("openfde.open_windows", "0");
@@ -908,7 +1193,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         if (pdev->windows.find(active_apps) == pdev->windows.end() || !pdev->windows[active_apps]->isActive) {
             for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
                 if (it->second) {
-                    destroy_window(it->second);
+                    destroy_window(it->second, pdev->is_nvidia);
                 }
             }
             pdev->windows.clear();
@@ -949,13 +1234,15 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         if (!showWindow) {
             for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
                 if (it->second)
-                    destroy_window(it->second);
+                    destroy_window(it->second, pdev->is_nvidia);
             }
             pdev->windows.clear();
             for (size_t layer = 0; layer < contents->numHwLayers; layer++) {
                 hwc_layer_1_t* fb_layer = &contents->hwLayers[layer];
-                if (fb_layer->acquireFenceFd != -1)
+                if (fb_layer->acquireFenceFd != -1) {
                     close(fb_layer->acquireFenceFd);
+                    fb_layer->acquireFenceFd = -1;
+                }
             }
 
             property_set("openfde.open_windows", "0");
@@ -977,7 +1264,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                         }
                     }
                     if (shouldCloseLeftover) {
-                        destroy_window(it->second);
+                        destroy_window(it->second, pdev->is_nvidia);
                         pdev->windows.erase(it++);
                         shouldCloseLeftover = true;
                         std::string windows_size_str = std::to_string(pdev->windows.size());
@@ -1021,7 +1308,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             // This window ID doesn't match with any selected app IDs from prop, so kill it
             if (!foundApp || (it->second && !it->second->isActive)) {
                 if (it->second)
-                    destroy_window(it->second);
+                    destroy_window(it->second, pdev->is_nvidia);
                 pdev->windows.erase(it++);
                 std::string windows_size_str = std::to_string(pdev->windows.size());
                 property_set("openfde.open_windows", windows_size_str.c_str());
@@ -1045,6 +1332,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             // draw framebuffer target instead of skipped layers
             if (contents->hwLayers[layer].acquireFenceFd != -1) {
                 close(contents->hwLayers[layer].acquireFenceFd);
+                contents->hwLayers[layer].acquireFenceFd = -1;
             }
             layer = fb_target;
         }
@@ -1058,15 +1346,17 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         if (fb_layer->flags & HWC_SKIP_LAYER) {
             if (fb_layer->acquireFenceFd != -1) {
                 close(fb_layer->acquireFenceFd);
+                fb_layer->acquireFenceFd = -1;
             }
             continue;
         }
 
-	//if ((fb_layer->flags & HWC_IS_CURSOR_LAYER) && pdev->display->cursor_surface) {
-	if (fb_layer->flags & HWC_IS_CURSOR_LAYER)  {
+        //if ((fb_layer->flags & HWC_IS_CURSOR_LAYER) && pdev->display->cursor_surface) {
+        if (fb_layer->flags & HWC_IS_CURSOR_LAYER)  {
             // Cursor was already handled separately
             if (fb_layer->acquireFenceFd != -1) {
                 close(fb_layer->acquireFenceFd);
+                fb_layer->acquireFenceFd = -1;
             }
             continue;
         }
@@ -1075,6 +1365,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             (pdev->use_subsurface ? HWC_OVERLAY : HWC_FRAMEBUFFER_TARGET) && layer == l) {
             if (fb_layer->acquireFenceFd != -1) {
                 close(fb_layer->acquireFenceFd);
+                fb_layer->acquireFenceFd = -1;
             }
             continue;
         }
@@ -1082,6 +1373,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         if (!fb_layer->handle) {
             if (fb_layer->acquireFenceFd != -1) {
                 close(fb_layer->acquireFenceFd);
+                fb_layer->acquireFenceFd = -1;
             }
             continue;
         }
@@ -1092,7 +1384,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         if (active_apps == "Openfde") {
             // Show everything in a single window
             if (pdev->windows.find(active_apps) == pdev->windows.end()) {
-                pdev->windows[active_apps] = create_window(pdev->display, pdev->use_subsurface, active_apps, "0", {0, 0, 0, 255});
+                pdev->windows[active_apps] = create_window(pdev->display, pdev->use_subsurface, active_apps, "0", {0, 0, 0, 255}, pdev->is_nvidia);
                 std::string windows_size_str = std::to_string(pdev->windows.size());
                 property_set("openfde.open_windows", windows_size_str.c_str());
             }
@@ -1100,7 +1392,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         } else if (!pdev->multi_windows) {
             if (single_layer_tid.length()) {
                 if (pdev->windows.find(single_layer_tid) == pdev->windows.end()) {
-                    pdev->windows[single_layer_tid] = create_window(pdev->display, pdev->use_subsurface, single_layer_aid, single_layer_tid, {0, 0, 0, 255});
+                    pdev->windows[single_layer_tid] = create_window(pdev->display, pdev->use_subsurface, single_layer_aid, single_layer_tid, {0, 0, 0, 255}, pdev->is_nvidia);
                     std::string windows_size_str = std::to_string(pdev->windows.size());
                     property_set("openfde.open_windows", windows_size_str.c_str());
                 }
@@ -1125,7 +1417,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
 
                 if (showWindow) {
                     if (pdev->windows.find(layer_tid) == pdev->windows.end()) {
-                        pdev->windows[layer_tid] = create_window(pdev->display, pdev->use_subsurface, layer_aid, layer_tid, {0, 0, 0, 0});
+                        pdev->windows[layer_tid] = create_window(pdev->display, pdev->use_subsurface, layer_aid, layer_tid, {0, 0, 0, 0}, pdev->is_nvidia);
                         std::string windows_size_str = std::to_string(pdev->windows.size());
                         property_set("openfde.open_windows", windows_size_str.c_str());
                     }
@@ -1142,7 +1434,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
 	        if (pdev->multi_windows && ((LayerRawName == "Toast")
 	            || (LayerRawName.find("Application Not Responding:") !=  std::string::npos))) {
                 if (pdev->windows.find(LayerRawName) == pdev->windows.end()) {
-                    pdev->windows[LayerRawName] = create_window(pdev->display, pdev->use_subsurface, LayerRawName, "none", {0, 0, 0, 0});
+                    pdev->windows[LayerRawName] = create_window(pdev->display, pdev->use_subsurface, LayerRawName, "none", {0, 0, 0, 0}, pdev->is_nvidia);
                     std::string windows_size_str = std::to_string(pdev->windows.size());
                     property_set("openfde.open_windows", windows_size_str.c_str());
                 }
@@ -1155,6 +1447,7 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
         if (!window || !window->isActive) {
             if (fb_layer->acquireFenceFd != -1) {
                 close(fb_layer->acquireFenceFd);
+                fb_layer->acquireFenceFd = -1;
             }
             continue;
         }
@@ -1164,12 +1457,56 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             ALOGE("Failed to get wayland buffer");
             if (fb_layer->acquireFenceFd != -1) {
                close(fb_layer->acquireFenceFd);
+               fb_layer->acquireFenceFd = -1;
             }
             continue;
         }
 
         // TODO: Implement per-layer explicit synchronization
         fb_layer->releaseFenceFd = -1;
+
+        if (pdev->is_nvidia) {
+            if (x11_hybris_get_ready(pdev->display)) {
+                if (fb_layer->acquireFenceFd > 0) {
+                    const int kAcquireWarningMS = 100;
+                    err = sync_wait(fb_layer->acquireFenceFd, kAcquireWarningMS);
+                    if (err < 0 && errno == ETIME) {
+                        ALOGE("EGL: sync_wait timeout on fence %d for %d ms",
+                            fb_layer->acquireFenceFd, kAcquireWarningMS);
+                    }
+                    close(fb_layer->acquireFenceFd);
+                    fb_layer->acquireFenceFd = -1;
+                }
+
+                struct x11_hybris_layer gl;
+                fill_present_layer(pdev, fb_layer, buf, &gl, pdev->use_subsurface);
+                if (pdev->use_subsurface)
+                    record_present_geometry(window, &gl);
+
+                /*
+                * dma-buf fd 用于零拷贝导入；buffer_id（dma-buf inode）是纹理缓存的
+                * key —— 同一块 buffer 多帧复用只 import 一次。取不到 fd 时这一层
+                * 不会显示（add_layer 会打日志跳过）。
+                */
+                gl.dmabuf_fd = ((const struct gralloc_handle_t *)fb_layer->handle)->prime_fd;
+                gl.modifier = ((const struct gralloc_handle_t *)fb_layer->handle)->modifier;
+                gl.buffer_id = dmabuf_id_from_fd(gl.dmabuf_fd);
+
+                if (!x11_hybris_add_layer(window, &gl)) {
+                    ALOGE("x11_hybris_add_layer fail, app=%s %dx%d", window->appID.c_str(),
+                        gl.buf_w, gl.buf_h);
+                }
+
+                window->last_layer_buffer = buf;
+                window->lastLayer++;
+
+                if (window->snapshot_buffer) {
+                    destroy_buffer(pdev->display, window->snapshot_buffer);
+                    window->snapshot_buffer = nullptr;
+                }
+                continue;
+            }
+        }
 
 	    XTransform transform;
         switch (fb_layer->transform) {
@@ -1276,17 +1613,43 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
             window->snapshot_buffer = nullptr;
         }
 
-        const int kAcquireWarningMS = 100;
-        err = sync_wait(fb_layer->acquireFenceFd, kAcquireWarningMS);
-        if (err < 0 && errno == ETIME) {
-            ALOGE("hwcomposer waited on fence %d for %d ms",
-            fb_layer->acquireFenceFd, kAcquireWarningMS);
+        if (fb_layer->acquireFenceFd > 0) {
+            const int kAcquireWarningMS = 100;
+            err = sync_wait(fb_layer->acquireFenceFd, kAcquireWarningMS);
+            if (err < 0 && errno == ETIME) {
+                ALOGE("sync_wait timeout on fence %d for %d ms",
+                    fb_layer->acquireFenceFd, kAcquireWarningMS);
+            }
+            close(fb_layer->acquireFenceFd);
+            fb_layer->acquireFenceFd = -1;
         }
-        close(fb_layer->acquireFenceFd);
     }
 
     // Layers order is changed from SF so we rearrange wayland surfaces
-     if (pdev->use_subsurface)
+    if (pdev->is_nvidia) {
+        if (x11_hybris_get_ready(pdev->display)) {
+            /*
+            * 逐窗口 make current -> clear -> 贴层 -> eglSwapBuffers。
+            * 顺序要点：swap 会整帧覆盖窗口内容，所以它必须是这一帧对窗口的最后一个
+            * 绘制动作；输入形状用 XCB 发在 swap 之后。
+            */
+            for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++) {
+                if (!it->second)
+                    continue;
+                x11_hybris_flush(it->second);
+                if (pdev->use_subsurface && !it->second->rects.empty()) {
+                    xcb_shape_rectangles(pdev->display->xcbconnection,
+                                        XCB_SHAPE_SO_SET,      // 设置操作
+                                        XCB_SHAPE_SK_INPUT,    // 输入形状
+                                        XCB_CLIP_ORDERING_UNSORTED,
+                                        it->second->xcbwindow,
+                                        0, 0,
+                                        it->second->rects.size(),
+                                        it->second->rects.data());
+                }
+            }
+        }
+    } else if (pdev->use_subsurface)
         for (auto it = pdev->windows.begin(); it != pdev->windows.end(); it++)
             if (it->second){
                 if (it->second->rects.size() > 1)
@@ -1314,11 +1677,11 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
                 if (!it->second->lastLayer)
                     continue;
                 // Clear the window's back xpicture
-		if (it->second->backxpicture) {
-			XRenderColor clear_color = {0, 0, 0, 0}; // Transparent black
-			XRenderFillRectangle(pdev->display->x11display, PictOpClear, it->second->backxpicture, &clear_color, 
-			    0, 0, pdev->display->width, pdev->display->height);
-		}
+                if (it->second->backxpicture) {
+                    XRenderColor clear_color = {0, 0, 0, 0}; // Transparent black
+                    XRenderFillRectangle(pdev->display->x11display, PictOpClear, it->second->backxpicture, &clear_color, 
+                        0, 0, pdev->display->width, pdev->display->height);
+                }
             }
         }
         pdev->display->geo_changed = false;
@@ -1326,8 +1689,11 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
     xcb_flush(pdev->display->xcbconnection); // 确保请求发送
 
 sync:
+
+    contents->retireFenceFd = sw_sync_fence_create(pdev->timeline_fd,
+                          "hwc_contents_release", pdev->next_sync_point);
+    pdev->next_sync_point++;
     sw_sync_timeline_inc(pdev->timeline_fd, 1);
-    contents->retireFenceFd = sw_sync_fence_create(pdev->timeline_fd, "hwc_contents_release", ++pdev->next_sync_point);
 
     return err;
 }
@@ -1460,7 +1826,7 @@ static int hwc_close(hw_device_t* dev) {
     }
     pdev->display->buffer_map.clear();
 
-    destroy_display(pdev->display);
+    destroy_display(pdev->display, pdev->is_nvidia);
 
     delete dev;
     return 0;
@@ -1570,6 +1936,14 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     pdev->timeline_fd = sw_sync_timeline_create();
     pdev->next_sync_point = 1;
 
+    pdev->is_nvidia = false;
+    if (property_get("ro.hardware.gpu.model", property, "default") > 0) {
+        if (strcmp(property, "nvidia") == 0) {
+            ALOGD("GPU Model : NVIDIA");
+            pdev->is_nvidia = true;
+        }
+    }
+
     if(pdev->multi_windows){
         if (property_get("openfde.xmodifiers", property, "@im=fcitx") > 0) {
             setenv("XMODIFIERS", property, 1);
@@ -1585,7 +1959,7 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
         setenv("DISPLAY", property, 1);
     }
     if (property_get("ro.hardware.gralloc", property, "default") > 0) {
-        pdev->display = create_display(property);
+        pdev->display = create_display(property, pdev->is_nvidia);
     }
     if (!pdev->display) {
         ALOGE("failed to open x11 connection");
@@ -1599,16 +1973,23 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     pthread_mutex_init(&pdev->vsync_lock, NULL);
     pdev->vsync_callback_enabled = true;
 
-    //create Openfde window to match desktop file openfde.desktop
-    auto first_window = create_window(pdev->display, pdev->use_subsurface, "Openfde", "0", {0, 0, 0, 255});
-    if (!property_get_bool("openfde.background_start", true)) {
-        pdev->windows["Openfde"] = first_window;
-        property_set("openfde.active_apps", "Openfde");
-        property_set("openfde.open_windows", "1");
+    if (pdev->is_nvidia) {
+        dri3PublishModifiersToGralloc(pdev->display);
+        // 等有效画面出现再创建窗口，否则会先显示全黑的窗口
+        // 把路由属性清成 none，避免上一次会话的残留值
+        property_set("openfde.active_apps", "none");
+        property_set("openfde.open_windows", "0");
     } else {
-        destroy_window(first_window);
+        //create Openfde window to match desktop file openfde.desktop
+        auto first_window = create_window(pdev->display, pdev->use_subsurface, "Openfde", "0", {0, 0, 0, 255}, pdev->is_nvidia);
+        if (!property_get_bool("openfde.background_start", true)) {
+            pdev->windows["Openfde"] = first_window;
+            property_set("openfde.active_apps", "Openfde");
+            property_set("openfde.open_windows", "1");
+        } else {
+            destroy_window(first_window, pdev->is_nvidia);
+        }
     }
-
     if (pdev->display->refresh > 1000 && pdev->display->refresh < 1000000)
         pdev->vsync_period_ns = 1000 * 1000 * 1000 / (pdev->display->refresh / 1000);
 

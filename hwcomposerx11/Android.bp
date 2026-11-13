@@ -349,6 +349,7 @@ cc_library_shared {
         "libsync",
         "libui",
         "libdrm",
+        "libdl",
         "libEGL",
         "libGLESv2",
         "libX11",
@@ -378,6 +379,7 @@ cc_library_shared {
         "extension.cpp",
         "hwcomposer.cpp",
         "x11-hwc.cpp",
+        "x11-hybris.cpp",
         "WaydroidWindow.cpp",
         "egl-tools.cpp",
     ],
@@ -414,7 +416,7 @@ cc_library_shared {
     },
 
     cflags: [
-        "-DLOG_TAG=\"hwcomposer\"",
+        "-DLOG_TAG=\"hwcomposerx11\"",
         "-Wall",
         "-Werror",
         "-Wno-writable-strings",
