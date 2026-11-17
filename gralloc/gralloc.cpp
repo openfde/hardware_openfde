@@ -255,8 +255,16 @@ static int gbm_mod_alloc_gpu0(alloc_device_t *dev,
 	pthread_mutex_lock(&dmod->mutex);
 
 	*handle = gralloc_gbm_bo_create(dmod->gbm, w, h, format, usage, stride);
-	if (!*handle)
-		err = -errno;
+	if (!*handle) {
+		/* 记录事实：请求尺寸/格式/usage 和 errno。
+		 * 上层 allocator 的行为取决于 err：errno 为 0 时旧代码返回 0（"成功"），
+		 * 于是 NULL handle 被当成有效 buffer 收下，最后在 freeBuffers ->
+		 * gbm_free(NULL) 崩掉。现在：日志里能确认到底是不是 1x1 的请求失败、
+		 * 以及失败原因；同时保证返回负值，避免把 NULL 当成功。 */
+		ALOGE("allocate failed: %dx%d fmt=%d(0x%x) usage=0x%x errno=%d",
+		      w, h, format, format, usage, errno);
+		err = errno ? -errno : -ENOMEM;
+	}
 
 	ALOGV("buffer %p usage = %08x", *handle, usage);
 	pthread_mutex_unlock(&dmod->mutex);

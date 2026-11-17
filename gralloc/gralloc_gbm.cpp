@@ -309,17 +309,32 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 	ALOGV("create BO, size=%dx%d, fmt=%d, usage=%x",
 	      handle->width, handle->height, handle->format, usage);
 	std::vector<uint64_t> modifiers = get_supported_modifiers(gbm, format);
+	int firstErrno = 0;
 	if (modifiers.size() > 0) {
 		bo = gbm_bo_create_with_modifiers2(gbm, width, height, format, modifiers.data(), modifiers.size(), usage);
+		if (!bo) {
+			firstErrno = errno;
+		}
 	}
 	if (!bo) {
 		ALOGV("fallback to gbm_bo_create without modifiers");
 		bo = gbm_bo_create(gbm, width, height, format, usage);
 	}
 	if (!bo) {
-		ALOGE("failed to create BO, size=%dx%d, fmt=%d, usage=%x",
-		      handle->width, handle->height, handle->format, usage);
+		/* 只记录事实，不做任何"重试/放大"。用这行日志确认：
+		 *   1) 1x1 到底是不是创建失败；
+		 *   2) 失败时的 errno 是什么（errno 为 0 正是上层把 NULL 当成功的原因）；
+		 *   3) 失败是否只发生在带 modifier 的那次尝试。 */
+		ALOGE("create BO failed: %dx%d fmt=%d(0x%x) usage=0x%x modifiers=%zu "
+		      "errnoModifiers=%d errnoPlain=%d",
+		      width, height, handle->format, handle->format, usage,
+		      modifiers.size(), firstErrno, errno);
 		return NULL;
+	}
+	if ((handle->width <= 4 || handle->height <= 4)
+			&& (handle->width > 0 && handle->height > 0)) {
+		ALOGW("tiny BO created: %dx%d stride=%d",
+		      handle->width, handle->height, gbm_bo_get_stride(bo));
 	}
 
 	handle->prime_fd = gbm_bo_get_fd(bo);
@@ -333,14 +348,27 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 
 void gbm_free(buffer_handle_t handle)
 {
+	/* 防御：调用方（allocator HAL 的 freeBuffers）在分配失败时可能把 NULL
+	 * handle 也传进来。原来这里直接 gralloc_handle(handle)->format，等价于读
+	 * NULL+0x20，vendor 进程整段崩溃（日志里就是 gbm_free+28 / fault 0x20）。 */
+	if (!handle) {
+		ALOGE("gbm_free(NULL) ignored - upstream passed a null handle");
+		return;
+	}
     struct gralloc_handle_t *hnd = gralloc_handle(handle);
     if (hnd->format == HAL_PIXEL_FORMAT_BLOB) {
         return;
     }
 	struct gbm_bo *bo = gralloc_gbm_bo_from_handle(handle);
 
-	if (!bo)
+	if (!bo) {
+		/* 句柄不在 map 里：可能是重复 free，也可能是别人创建的 handle。
+		 * 记录下尺寸/格式，方便判断是不是我们自己的 tiny buffer。 */
+		ALOGW("gbm_free: handle %p not tracked (w=%d h=%d fmt=%d stride=%d) - "
+		      "double free or foreign handle", handle,
+		      hnd->width, hnd->height, hnd->format, hnd->stride);
 		return;
+	}
 
 	gbm_bo_handle_map.erase(handle);
 	gbm_bo_destroy(bo);
