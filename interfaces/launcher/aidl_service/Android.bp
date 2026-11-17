@@ -1,0 +1,20 @@
+cc_binary {
+    name: "vendor.openfde.launcher-service",
+    relative_install_path: "hw",
+    init_rc: ["vendor.openfde.launcher-service.rc"],
+    vintf_fragments: ["vendor.openfde.launcher-service.xml"],
+    vendor: true,
+    srcs: [
+        "main.cpp",
+        "OpenfdeLauncherAidl.cpp",
+    ],
+    shared_libs: [
+        "libbase",
+        "libbinder_ndk",
+        "liblog",
+        "libutils",
+    ],
+    static_libs: [
+        "vendor.openfde.launcher-V1-ndk",
+    ],
+}

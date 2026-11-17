@@ -1,0 +1,27 @@
+aidl_interface {
+    name: "vendor.openfde.launcher",
+    vendor_available: true,
+    srcs: [
+        "vendor/openfde/launcher/IOpenfdeLauncher.aidl",
+    ],
+    stability: "vintf",
+    backend: {
+        ndk: {
+            enabled: true,
+        },
+        cpp: {
+            enabled: true,
+        },
+        java: {
+            enabled: true,
+            platform_apis: true,
+        },
+    },
+    frozen: true,
+    versions_with_info: [
+        {
+            version: "1",
+            imports: [],
+        },
+    ],
+}
