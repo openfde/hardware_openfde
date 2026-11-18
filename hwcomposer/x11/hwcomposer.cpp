@@ -89,10 +89,11 @@ namespace {
 
 class X11Backend : public Hwc2Backend {
   public:
-    X11Backend(struct display* display, bool useSubsurface, bool multiWindows)
+    X11Backend(struct display* display, bool useSubsurface, bool multiWindows, bool is_nvidia)
         : mDisplay(display),
           mUseSubsurface(useSubsurface),
-          mMultiWindows(multiWindows) {
+          mMultiWindows(multiWindows),
+          mIsNvidia(is_nvidia) {
         mDisplay->x11_windows = &mWindows;
     }
 
@@ -211,6 +212,7 @@ class X11Backend : public Hwc2Backend {
     std::map<std::string, struct window*> mSecondaryWindows;
     bool mUseSubsurface;
     bool mMultiWindows;
+    bool mIsNvidia;
 
     pthread_t mWindowServiceThread = 0;
     pthread_t mEglWorkerThread = 0;
@@ -488,11 +490,93 @@ void* X11Backend::produceBGRA8888(struct display* disp,
 	return (void *)dst_gb->getNativeBuffer()->handle;
 }
 
+#define __gbm_fourcc_code(a,b,c,d) ((uint32_t)(a) | ((uint32_t)(b) << 8) | \
+			      ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
+#define GBM_FORMAT_ARGB8888	__gbm_fourcc_code('A', 'R', '2', '4') /* [31:0] A:R:G:B 8:8:8:8 little endian */
+#define GBM_FORMAT_ABGR8888	__gbm_fourcc_code('A', 'B', '2', '4') /* [31:0] A:B:G:R 8:8:8:8 little endian */
+#define GBM_FORMAT_XRGB8888	__gbm_fourcc_code('X', 'R', '2', '4') /* [31:0] x:R:G:B 8:8:8:8 little endian */
+#define GBM_FORMAT_XBGR8888	__gbm_fourcc_code('X', 'B', '2', '4') /* [31:0] x:B:G:R 8:8:8:8 little endian */
+
+#define DRI3_MAX_X_MODIFIERS 32
+static uint64_t s_dri3_x_modifiers[DRI3_MAX_X_MODIFIERS];
+static int s_dri3_x_modifier_count = 0;
+
+
+static int dri3QueryXModifiers(struct display *display) {
+    if (!display || !display->xcbconnection || !display->xcbscreen) {
+        ALOGE("dri3Probe: X connection not ready, cannot query modifiers");
+        return 0;
+    }
+    if (xcb_connection_has_error(display->xcbconnection)) {
+        ALOGE("dri3Probe: XCB connection has error, skip modifier query");
+        return 0;
+    }
+
+    xcb_connection_t *conn = display->xcbconnection;
+    xcb_generic_error_t *mod_err = NULL;
+    xcb_dri3_get_supported_modifiers_reply_t *mod_reply =
+        xcb_dri3_get_supported_modifiers_reply(conn,
+            xcb_dri3_get_supported_modifiers(conn, display->xcbscreen->root, 32, 32),
+            &mod_err);
+    if (!mod_reply) {
+        ALOGE("dri3Probe: GetSupportedModifiers failed err=%d",
+              mod_err ? mod_err->error_code : -1);
+        free(mod_err);
+        return 0;
+    }
+    free(mod_err);
+
+    const uint64_t *scr_mods =
+        xcb_dri3_get_supported_modifiers_screen_modifiers(mod_reply);
+    s_dri3_x_modifier_count =
+        xcb_dri3_get_supported_modifiers_screen_modifiers_length(mod_reply);
+
+    for (int i = 0; i < s_dri3_x_modifier_count; i++) {
+        ALOGI("dri3Probe: screen_modifiers[%d]=0x%llx", i,
+              (unsigned long long)scr_mods[i]);
+        if (i < DRI3_MAX_X_MODIFIERS)
+            s_dri3_x_modifiers[i] = scr_mods[i];
+    }
+
+    ALOGI("dri3Probe: listed %d screen modifiers", s_dri3_x_modifier_count);
+    free(mod_reply);
+    return s_dri3_x_modifier_count;
+}
+
+static void dri3PublishModifiersToGralloc(struct display *display) {
+    const int count = dri3QueryXModifiers(display);
+    if (count <= 0) {
+        ALOGW("dri3Publish: no X-declared modifiers, nothing to publish");
+        return;
+    }
+
+    static const uint32_t kFormats[] = {
+        GBM_FORMAT_ARGB8888,
+        GBM_FORMAT_ABGR8888,
+        GBM_FORMAT_XRGB8888,
+        GBM_FORMAT_XBGR8888,
+    };
+    const int nformats = (int)(sizeof(kFormats) / sizeof(kFormats[0]));
+
+    for (int f = 0; f < nformats; ++f) {
+        const unsigned int fourcc = (unsigned int)kFormats[f];
+        for (int i = 0; i < count; ++i) {
+            char name[128], value[64];
+            snprintf(name, sizeof(name), "openfde.modifiers.%x.%d", fourcc, i);
+            snprintf(value, sizeof(value), "%llx",
+                     (unsigned long long)s_dri3_x_modifiers[i]);
+            if (property_set(name, value) != 0)
+                ALOGW("dri3Publish: property_set(%s) failed", name);
+        }
+    }
+}
+
 void X11Backend::createDri3XRenderPicture(struct display* disp, buffer_handle_t handle,
                                           struct window *window, struct buffer *buf,
                                           int pixel_stride) {
 	int width,height, stride, format, prime_fd, size;
 	int usage = GRALLOC_USAGE_HW_TEXTURE;
+	buffer_handle_t import_handle = handle;
     if (disp->gtype == GRALLOC_GBM) {
         struct gralloc_handle_t *drm_handle = (struct gralloc_handle_t *)handle;
         width = drm_handle->width;
@@ -572,6 +656,7 @@ void X11Backend::createDri3XRenderPicture(struct display* disp, buffer_handle_t 
                 return ;
             }
 		const native_handle_t* native_handle = dst_gb->getNativeBuffer()->handle;
+		import_handle = native_handle;
 		struct gralloc_handle_t * drm_handle = (struct gralloc_handle_t*)native_handle;
 		prime_fd = drm_handle->prime_fd;
 		size = dst_gb->getStride() * height * 4;
@@ -590,11 +675,23 @@ void X11Backend::createDri3XRenderPicture(struct display* disp, buffer_handle_t 
         buf->xcbpixmap = xcb_generate_id(disp->xcbconnection);
         XRenderPictureAttributes pa;
         pa.repeat = False;
-        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(disp->xcbconnection,
-            buf->xcbpixmap, xcbwindow, size, width, height, stride, 32, 32, x11_fd);
-        xcb_generic_error_t *pixmap_error = xcb_request_check(disp->xcbconnection, pixmap_cookie);
+        xcb_generic_error_t *pixmap_error = NULL;
+        if (mIsNvidia) {
+            int32_t fds[1] = { (int32_t) x11_fd };
+            xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffers_checked(disp->xcbconnection,
+                buf->xcbpixmap, xcbwindow, 1, width, height, stride,
+                0, 0, 0, 0, 0, 0, 0, 32, 32, ((const struct gralloc_handle_t *)import_handle)->modifier, fds);
+            pixmap_error = xcb_request_check(disp->xcbconnection, pixmap_cookie);
+        } else {
+	        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(disp->xcbconnection,
+	            buf->xcbpixmap, xcbwindow, size, width, height, stride, 32, 32, x11_fd);
+	        pixmap_error = xcb_request_check(disp->xcbconnection, pixmap_cookie);
+        }
         if (pixmap_error) {
-           ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
+           ALOGE("XCB error in %s: %d, %dx%d",
+                 mIsNvidia ? "xcb_dri3_pixmap_from_buffers_checked"
+                                        : "xcb_dri3_pixmap_from_buffer",
+                 pixmap_error->error_code, width, height);
            free(pixmap_error);
            return ;
         }
@@ -611,11 +708,23 @@ void X11Backend::createDri3XRenderPicture(struct display* disp, buffer_handle_t 
         buf->xcbpixmap = xcb_generate_id(disp->xcbconnection);
         XRenderPictureAttributes pa;
         pa.repeat = False;
-        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(disp->xcbconnection,
-            buf->xcbpixmap, disp->xcbscreen->root, size, width, height, stride, 32, 32, x11_fd);
-        xcb_generic_error_t *pixmap_error = xcb_request_check(disp->xcbconnection, pixmap_cookie);
+        xcb_generic_error_t *pixmap_error = NULL;
+        if (mIsNvidia) {
+            int32_t fds[1] = { (int32_t) x11_fd };
+            xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffers_checked(disp->xcbconnection,
+                buf->xcbpixmap, disp->xcbscreen->root, 1, width, height, stride,
+                0, 0, 0, 0, 0, 0, 0, 32, 32, ((const struct gralloc_handle_t *)import_handle)->modifier, fds);
+            pixmap_error = xcb_request_check(disp->xcbconnection, pixmap_cookie);
+        } else {
+	        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(disp->xcbconnection,
+	            buf->xcbpixmap, disp->xcbscreen->root, size, width, height, stride, 32, 32, x11_fd);
+	        pixmap_error = xcb_request_check(disp->xcbconnection, pixmap_cookie);
+        }
         if (pixmap_error) {
-           ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
+           ALOGE("No win XCB error in %s: %d",
+                 mIsNvidia ? "xcb_dri3_pixmap_from_buffers_checked"
+                                        : "xcb_dri3_pixmap_from_buffer",
+                 pixmap_error->error_code);
            free(pixmap_error);
            return ;
         }
@@ -1721,6 +1830,13 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     bool multi_windows = property_get_bool("persist.openfde.multi_windows", false);
     bool use_subsurface = property_get_bool("persist.openfde.use_subsurface", false) || multi_windows;
 
+    bool is_nvidia = false;
+    if (property_get("ro.hardware.gpu.model", property, "default") > 0) {
+        if (strcmp(property, "nvidia") == 0) {
+            ALOGD("GPU Model : NVIDIA");
+            is_nvidia = true;
+        }
+    }
     if (multi_windows) {
         if (property_get("openfde.xmodifiers", property, "@im=fcitx") > 0) {
             setenv("XMODIFIERS", property, 1);
@@ -1746,7 +1862,7 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     }
     x11_display->mouse_icon_addr = -1;
 
-    auto backend = std::make_unique<X11Backend>(x11_display, use_subsurface, multi_windows);
+    auto backend = std::make_unique<X11Backend>(x11_display, use_subsurface, multi_windows, is_nvidia);
     // The device constructor also lets the backend create the external
     // display, which is reported to the client with a hotplug event
     auto* dev = new Hwc2Device(std::move(backend), x11_display);
@@ -1761,6 +1877,9 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     // i.e. after the first open).
     x11Backend->initExternalSupport(*dev);
 
+	if (is_nvidia) {
+        dri3PublishModifiersToGralloc(x11_display);
+    }
     if (x11_display->refresh > 1000 && x11_display->refresh < 1000000)
         dev->setVsyncPeriod(1000 * 1000 * 1000 / (x11_display->refresh / 1000));
 
