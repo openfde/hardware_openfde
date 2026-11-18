@@ -1,4 +1,4 @@
-﻿cc_binary {
+cc_binary {
     name: "vendor.openfde.launcher-service",
     relative_install_path: "hw",
     init_rc: ["vendor.openfde.launcher-service.rc"],

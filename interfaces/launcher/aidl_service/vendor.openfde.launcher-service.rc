@@ -1,4 +1,4 @@
-﻿service vendor.openfde.launcher /vendor/bin/hw/vendor.openfde.launcher-service
+service vendor.openfde.launcher /vendor/bin/hw/vendor.openfde.launcher-service
     class hal
     user system
     group system

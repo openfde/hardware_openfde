@@ -1,4 +1,4 @@
-﻿aidl_interface {
+aidl_interface {
     name: "vendor.openfde.launcher",
     vendor_available: true,
     srcs: [
