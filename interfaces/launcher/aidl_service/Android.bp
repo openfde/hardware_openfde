@@ -15,7 +15,7 @@ cc_binary {
         "libutils",
     ],
     static_libs: [
-        // 未冻结版本：模块名不带 -V<n>；执行 freeze-api 之后再改成 -V1-ndk
-        "vendor.openfde.launcher-ndk",
+        // 未冻结的 current 版本，Soong 生成的模块名就是 -V1-ndk
+        "vendor.openfde.launcher-V1-ndk",
     ],
 }
