@@ -1,8 +1,7 @@
-cc_binary {
+﻿cc_binary {
     name: "vendor.openfde.launcher-service",
     relative_install_path: "hw",
     init_rc: ["vendor.openfde.launcher-service.rc"],
-    vintf_fragments: ["vendor.openfde.launcher-service.xml"],
     vendor: true,
     srcs: [
         "main.cpp",
@@ -15,7 +14,6 @@ cc_binary {
         "libutils",
     ],
     static_libs: [
-        // 未冻结的 current 版本，Soong 生成的模块名就是 -V1-ndk
-        "vendor.openfde.launcher-V1-ndk",
+        "vendor.openfde.launcher-ndk",
     ],
 }

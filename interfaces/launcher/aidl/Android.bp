@@ -1,10 +1,13 @@
-aidl_interface {
+﻿aidl_interface {
     name: "vendor.openfde.launcher",
     vendor_available: true,
     srcs: [
         "vendor/openfde/launcher/IOpenfdeLauncher.aidl",
     ],
-    stability: "vintf",
+    // 开发阶段不版本化：不需要 aidl_api dump，也不会出现 "checkapi" 失败。
+    // 接口定型后去掉 unstable，执行 `m vendor.openfde.launcher-freeze-api` 生成 v1，
+    // 再把调用方依赖改成 -V1-ndk 即可。
+    unstable: true,
     backend: {
         ndk: {
             enabled: true,
@@ -17,7 +20,4 @@ aidl_interface {
             platform_apis: true,
         },
     },
-    // 新接口首次接入：先不声明 versions（声明了 Soong 就会去找 aidl_api/<name>/1 目录，
-    // 而该目录只有执行 `m <name>-freeze-api` 之后才会生成）。
-    // 接口定型后执行 freeze-api，它会自动补上 versions 和 aidl_api 目录。
 }
