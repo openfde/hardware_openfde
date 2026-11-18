@@ -17,14 +17,7 @@ aidl_interface {
             platform_apis: true,
         },
     },
-    // 首次开发阶段先不冻结：冻结后 v1 会被当成已发布版本，当前实现会被 Soong
-    // 编成 V2（-V2-ndk），服务端引用 -V1-ndk 就会报 undefined module。
-    // 接口定型、需要生成 aidl_api hash 时再改回 frozen: true。
-    frozen: false,
-    versions_with_info: [
-        {
-            version: "1",
-            imports: [],
-        },
-    ],
+    // 新接口首次接入：先不声明 versions（声明了 Soong 就会去找 aidl_api/<name>/1 目录，
+    // 而该目录只有执行 `m <name>-freeze-api` 之后才会生成）。
+    // 接口定型后执行 freeze-api，它会自动补上 versions 和 aidl_api 目录。
 }
