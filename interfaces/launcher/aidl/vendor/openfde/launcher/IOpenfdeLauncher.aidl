@@ -17,18 +17,21 @@
 package vendor.openfde.launcher;
 
 /**
- * 在宿主机上启动 Linux（X11）程序，替代原来的 HTTP -> fde_ctrl 路径。
+ * Launch a Linux (X11) program on the host, replacing the HTTP -> fde_ctrl path.
  *
- * 参数与 fde_ctrl 的 POST /v1/xserver 一一对应：
- *   app          应用名（.desktop 的 Name / linuxInfo.name），用于脚本名和日志
- *   path         .desktop 的 Exec 命令行（可带参数，%U 之类会被去掉）
- *   display      X display，例如 ":1001"
- *   workingPath  启动前 cd 的目录，可为空
- *   withOutTheme 是否去掉 QT_QPA_PLATFORMTHEME / XDG_CURRENT_DESKTOP
+ * Parameters match fde_ctrl's POST /v1/xserver:
+ *   app          application name (.desktop Name / linuxInfo.name)
+ *   path         .desktop Exec line (args like %U are stripped)
+ *   display      X display, e.g. ":1001"
+ *   workingPath  directory to cd into before launch, may be empty
+ *   withOutTheme drop QT_QPA_PLATFORMTHEME / XDG_CURRENT_DESKTOP when true
  *
- * 返回启动进程的 pid；失败返回负数。
+ * Returns the pid of the launched process, or a negative value on failure.
+ *
+ * Note: the aidl_interface is currently unstable (not versioned), so this
+ * interface must NOT carry @VintfStability. Add it back once the interface is
+ * frozen with stability: "vintf".
  */
-@VintfStability
 interface IOpenfdeLauncher {
     int launchLinuxApp(in String app, in String path, in String display,
                        in String workingPath, in boolean withOutTheme);
