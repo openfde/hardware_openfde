@@ -120,6 +120,15 @@ struct window;
 
 struct display {
     xcb_visualid_t visualid;
+    /*
+     * 实际用于建窗口的 visual / depth。
+     * NVIDIA 单窗口全屏时用 host EGLConfig 反推出的不透明 visual（通常 24 位，
+     * 没有 alpha 通道），这样窗口天然不透明，合成器不可能把底下的 Linux
+     * 桌面/面板混出来；subsurface / 多窗口模式仍用 ARGB32（圆角/透明靠它）。
+     * 由 x11-hybris 在 x11_hybris_get_ready() 中选定，create_window() 使用。
+     */
+    xcb_visualid_t window_visualid = 0;
+    int window_depth = 0;
     xcb_colormap_t colormap;
     Display * x11display;
     xcb_connection_t *xcbconnection;
@@ -352,18 +361,19 @@ void
 snapshot_inactive_app_window(struct display *display, struct window *window);
 
 struct display *
-create_display(const char* gralloc, int target);
+create_display(const char* gralloc, int target, bool is_nvidia);
 bool is_external_display_supported(struct display* display);
 void *event_loop_thread(void *arg);
 
 void
-destroy_display(struct display *display);
+destroy_display(struct display *display, bool is_nvidia);
 int remove_title(xcb_connection_t *conn, xcb_window_t main_win);
 
 void
-destroy_window(struct window *window, bool keep = false);
+destroy_window(struct window *window, bool is_nvidia, bool keep = false);
 struct window *
-create_window(struct display *display, bool with_dummy, std::string appID, std::string taskID, hwc_color_t color);
+create_window(struct display *display, bool with_dummy, std::string appID, std::string taskID,
+              hwc_color_t color, bool is_nvidia);
 void
 choose_width_height(struct display* display, int32_t hint_width, int32_t hint_height);
 
