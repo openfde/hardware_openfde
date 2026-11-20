@@ -61,6 +61,7 @@ Return<bool> OpenfdeWindow::minimize(const hidl_string& packageName) {
 Return<void> OpenfdeWindow::setPointerCapture(const hidl_string& packageName, bool enabled) {
     char property[PROPERTY_VALUE_MAX];
     std::string windowName = packageName;
+    ALOGI("OpenfdeWindow::setPointerCapture windowName: %s, enabled: %d", windowName.c_str(), enabled);
 
     if (!mDisplay->pointer_constraints)
         return Void();
@@ -86,6 +87,9 @@ Return<void> OpenfdeWindow::setPointerCapture(const hidl_string& packageName, bo
                             mDisplay->relative_pointer_manager, mDisplay->pointer);
                     zwp_relative_pointer_v1_add_listener(mDisplay->relative_pointer, &relative_pointer_listener, mDisplay);
                 }
+                // 锁定后宿主停发 wl_pointer.motion,改由 relative_motion 提供原始
+                // 位移,handle_relative_motion 依赖此标志决定是否注入。
+                mDisplay->pointer_locked = true;
             } else if (!enabled && window->locked_pointer != nullptr) {
                 zwp_locked_pointer_v1_destroy(window->locked_pointer);
                 window->locked_pointer = nullptr;
@@ -100,6 +104,7 @@ Return<void> OpenfdeWindow::setPointerCapture(const hidl_string& packageName, bo
                 if (!anyLocks) {
                     zwp_relative_pointer_v1_destroy(mDisplay->relative_pointer);
                     mDisplay->relative_pointer = nullptr;
+                    mDisplay->pointer_locked = false;
                 }
             }
             break;

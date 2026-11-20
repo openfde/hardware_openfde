@@ -102,6 +102,9 @@ struct window;
 
 struct output {
     uint32_t registry_id;
+    // 回指所属 display:wl_output/xdg_output 事件的 listener data 是 output
+    // 本身,done 热插拔重选 primary、触发变更回调都要用它找到 display。
+    struct display *display = nullptr;
     struct wl_output *wl_output;
     struct zxdg_output_v1 *xdg_output;
     int32_t logical_x, logical_y;
@@ -114,6 +117,10 @@ struct output {
     int32_t pixel_width;     // pixel width (physical pixel resolution) of the current mode.
     int32_t pixel_height;    // Pixel height (physical pixel resolution) of the current mode.
     int done;
+    // 热插拔移除标记:outputs[] 槽位固定不前移(前移会让 d->primary、
+    // mSecondaryOutput、window->output 等指向数组元素的指针全部悬垂),
+    // 移除时只置位 removed 并清 done,遍历方跳过,新 output 复用该槽位。
+    bool removed = false;
     int32_t refresh;
 };
 
@@ -140,6 +147,12 @@ struct display {
     struct zwp_pointer_constraints_v1 *pointer_constraints;
     struct zwp_relative_pointer_manager_v1 *relative_pointer_manager;
     struct zwp_relative_pointer_v1 *relative_pointer;
+    // 是否处于指针锁定(游戏捕获)模式。仅此时宿主才停发 wl_pointer.motion、
+    // 只剩 zwp_relative_pointer 的原始位移可用;平时 relative_motion 与
+    // wl_pointer.motion 并行发送,若两条路径都注入 REL,Android 会收到双份
+    // 相对位移——光标被 ABS 每帧钉住看不出来,但按 REL 增量拖动的窗口会
+    // 2 倍速跑,与光标的差距越来越大。
+    bool pointer_locked = false;
     struct zwp_idle_inhibit_manager_v1 *idle_manager;
     struct wp_fractional_scale_manager_v1 *fractional_scale_manager;
     struct zwp_pointer_gestures_v1 *pointer_gestures;
@@ -156,11 +169,19 @@ struct display {
     int input_fd[INPUT_TOTAL];
     int ptrPrvX;
     int ptrPrvY;
+    // 上一帧指针所在的物理 output:跨屏帧检测(REL 合成越界量)与
+    // "物理屏 vs Android 焦点屏"分叉判定(强推兜底)都要用它。
+    struct output *ptrOutput = nullptr;
     double wheelAccumulatorX;
     double wheelAccumulatorY;
     bool wheelEvtIsDiscrete;
     bool reverseScroll;
     bool isTouchDown;
+    // 模拟触摸(click_as_touch / 滚轮转触摸)写哪个设备:主屏设备被 EventHub
+    // 绑到 display 0,外接屏设备绑到外接屏 viewport。x11 每屏一个 display,
+    // 创建时按 display_type 定死;wayland 单 display,由 pointer_handle_motion
+    // 按指针所在物理屏动态更新。
+    bool touch_on_external = false;
     bool isMouseLeftDown;
     int axisY;
     int axisX;
@@ -199,6 +220,13 @@ struct display {
     uint32_t serial;
     int64_t mouse_icon_addr;
     int additional_refresh_cursor_times;     //In order to get the final cursor shape
+    // 全局光标 show/hide 仲裁:wl_pointer 光标是所有 display 的 validate() 共享的
+    // 单一资源。某条 display 本帧没有光标图层时,不能据此隐藏光标——另一条
+    // display 可能正持有光标图层并每帧 show,否则两者互相打架造成闪烁。
+    // cursor_found_round 记录最近一次"任意 display 看到光标图层"的 validate 序号,
+    // 只有连续多次(≥2 次 validate 调用)没有任何 display 看到光标图层才隐藏。
+    int64_t validate_seq = 0;
+    int64_t cursor_found_round = -1;
     bool ctrl_key_pressed;
     wl_fixed_t gesture_scale;
     bool axis_simulation_two_finger_started;
@@ -210,6 +238,12 @@ struct display {
     struct output outputs[MAX_OUTPUTS];
     int num_outputs;
     struct output *primary;
+
+    // Hook invoked when the set of wayland outputs changes (hotplug). The
+    // backend installs it to re-evaluate external-display support and to
+    // auto-close the Android external display when the secondary output goes.
+    void (*on_external_display_changed)(void*);
+    void *external_display_changed_userdata;
 
     int   touch_x[MAX_TOUCHPOINTS];
     int   touch_y[MAX_TOUCHPOINTS];
@@ -249,6 +283,10 @@ struct buffer {
 struct window {
     struct display *display;
     struct wl_surface *surface;
+    // 该窗口全屏所在的 output(xdg_output 逻辑桌面偏移的来源)。
+    // pointer_handle_motion 用它把 surface-local 坐标还原成全局坐标——
+    // 等价于 x11 后端的 root_x/root_y(wayland 协议没有全局坐标)。
+    struct output *output = nullptr;
     struct wp_viewport *viewport;
     struct wl_shell_surface *shell_surface;
     struct xdg_surface *xdg_surface;
@@ -362,7 +400,14 @@ destroy_display(struct display *display);
 void
 destroy_window(struct window *window, bool keep = false);
 struct window *
-create_window(struct display *display, bool with_dummy, std::string appID, std::string taskID, hwc_color_t color);
+create_window(struct display *display, bool with_dummy, std::string appID, std::string taskID, hwc_color_t color,
+              bool map_with_empty_input = false);
+// 线程安全地等待合成器处理完此前提交的全部请求(wl_display_sync 往返)。
+// sync 回调挂在私有事件队列上,不与 wayland 派发线程的默认队列冲突;done
+// 事件由派发线程的 read_events 分发进来。返回 false 表示超时(派发线程
+// 卡死或合成器无响应),调用方应继续但不指望放置已生效。
+bool
+wl_wait_server_sync(struct display *display, int timeout_ms);
 void
 choose_width_height(struct display* display, int32_t hint_width, int32_t hint_height);
 

@@ -77,6 +77,14 @@ extern "C" void sim_timer_handler(int sig);
 // Active display, used by the SIGALRM drip-timer handler.
 static struct display *sim_mDisplay = nullptr;
 
+// 模拟触摸写入哪个管道:INPUT_TOUCH 设备被 EventHub 绑到主屏(display 0),
+// INPUT_TOUCH_EXTERNAL 设备绑到外接屏。路由来源是 display->touch_on_external
+// ——x11 每屏一个 display,创建时按 display_type 定死;wayland 单 display,
+// 由 pointer_handle_motion 按指针所在物理屏动态更新。
+static int touch_pipe_index(struct display *display) {
+    return display->touch_on_external ? INPUT_TOUCH_EXTERNAL : INPUT_TOUCH;
+}
+
 // Direction of the most recent wheel axis event.
 static bool sim_mVerticalScroll = true;
 
@@ -247,13 +255,8 @@ extern "C" void sim_pointer_button_to_touch_down(struct display *display) {
     struct timespec rt;
     ssize_t res;
     unsigned int n = 0;
-    if(display->display_type == HWC_DISPLAY_PRIMARY){
-        if (sim_ensure_pipe(display, INPUT_TOUCH))
-            return;
-    }else{
-        if (sim_ensure_pipe(display, INPUT_TOUCH_EXTERNAL))
-            return;
-    }
+    if (sim_ensure_pipe(display, touch_pipe_index(display)))
+        return;
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
         ALOGE("%s:%d error in touch clock_gettime: %s",
               __FILE__, __LINE__, strerror(errno));
@@ -266,11 +269,7 @@ extern "C" void sim_pointer_button_to_touch_down(struct display *display) {
     SIM_ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
     SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
     display->isTouchDown = true;
-    if(display->display_type == HWC_DISPLAY_PRIMARY){
-        res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-    }else{
-        res = write(display->input_fd[INPUT_TOUCH_EXTERNAL], &event, sizeof(event));
-    }
+    res = write(display->input_fd[touch_pipe_index(display)], &event, sizeof(event));
 
     if (res < (ssize_t)sizeof(event))
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -282,13 +281,8 @@ extern "C" void sim_pointer_button_to_touch_up(struct display *display) {
     ssize_t res;
     unsigned int n = 0;
 
-    if(display->display_type == HWC_DISPLAY_PRIMARY){
-        if (sim_ensure_pipe(display, INPUT_TOUCH))
-            return;
-    }else{
-        if (sim_ensure_pipe(display, INPUT_TOUCH_EXTERNAL))
-            return;
-    }
+    if (sim_ensure_pipe(display, touch_pipe_index(display)))
+        return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
         ALOGE("%s:%d error in touch clock_gettime: %s",
@@ -299,11 +293,7 @@ extern "C" void sim_pointer_button_to_touch_up(struct display *display) {
     SIM_ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
     SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
     display->isTouchDown = false;
-    if(display->display_type == HWC_DISPLAY_PRIMARY){
-        res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-    }else{
-        res = write(display->input_fd[INPUT_TOUCH_EXTERNAL], &event, sizeof(event));
-    }
+    res = write(display->input_fd[touch_pipe_index(display)], &event, sizeof(event));
 
     if (res < (ssize_t)sizeof(event))
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
@@ -315,13 +305,8 @@ extern "C" void sim_pointer_cancel_axis_to_two_finger_touch(struct display *disp
     ssize_t res;
     unsigned int n = 0;
 
-    if(display->display_type == HWC_DISPLAY_PRIMARY){
-        if (sim_ensure_pipe(display, INPUT_TOUCH))
-            return;
-    }else{
-        if (sim_ensure_pipe(display, INPUT_TOUCH_EXTERNAL))
-            return;
-    }
+    if (sim_ensure_pipe(display, touch_pipe_index(display)))
+        return;
 
     display->axis_simulation_two_finger_started = false;
     display->gesture_scale = 160;
@@ -337,11 +322,7 @@ extern "C" void sim_pointer_cancel_axis_to_two_finger_touch(struct display *disp
     SIM_ADD_EVENT(EV_ABS, ABS_MT_SLOT, 1);
     SIM_ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
     SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-    if(display->display_type == HWC_DISPLAY_PRIMARY){
-        res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-    }else{
-        res = write(display->input_fd[INPUT_TOUCH_EXTERNAL], &event, sizeof(event));
-    }
+    res = write(display->input_fd[touch_pipe_index(display)], &event, sizeof(event));
     if (res < (ssize_t)sizeof(event))
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
 }
@@ -366,13 +347,8 @@ extern "C" bool sim_pointer_cancel_axis_to_touch(struct display *display,
     ssize_t res;
     unsigned int n = 0;
 
-    if(display->display_type == HWC_DISPLAY_PRIMARY){
-        if (sim_ensure_pipe(display, INPUT_TOUCH))
-            return false;
-    }else{
-        if (sim_ensure_pipe(display, INPUT_TOUCH_EXTERNAL))
-            return false;
-    }
+    if (sim_ensure_pipe(display, touch_pipe_index(display)))
+        return false;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
         ALOGE("%s:%d error in touch clock_gettime: %s",
@@ -444,13 +420,8 @@ extern "C" bool sim_pointer_cancel_axis_to_touch(struct display *display,
         SIM_ADD_EVENT(EV_ABS, ABS_MT_TRACKING_ID, -1);
         SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
     }
-    if(display->display_type == HWC_DISPLAY_PRIMARY){
-        res = write(display->input_fd[INPUT_TOUCH], &event,
-                n * sizeof(struct input_event));
-    }else{
-        res = write(display->input_fd[INPUT_TOUCH_EXTERNAL], &event,
-                n * sizeof(struct input_event));
-    }
+    res = write(display->input_fd[touch_pipe_index(display)], &event,
+            n * sizeof(struct input_event));
     if (res < (ssize_t)(n * sizeof(struct input_event))) {
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
         return false;
@@ -467,13 +438,8 @@ extern "C" void sim_pointer_axis_to_touch(struct display *display,
     ssize_t res;
     unsigned int n = 0;
 
-    if(display->display_type == HWC_DISPLAY_PRIMARY){
-        if (sim_ensure_pipe(display, INPUT_TOUCH))
-            return;
-    }else{
-        if (sim_ensure_pipe(display, INPUT_TOUCH_EXTERNAL))
-            return;
-    }
+    if (sim_ensure_pipe(display, touch_pipe_index(display)))
+        return;
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
         ALOGE("%s:%d error in touch clock_gettime: %s",
@@ -503,11 +469,7 @@ extern "C" void sim_pointer_axis_to_touch(struct display *display,
         }
         SIM_ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
         SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-        if(display->display_type == HWC_DISPLAY_PRIMARY){
-            res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-        }else{
-            res = write(display->input_fd[INPUT_TOUCH_EXTERNAL], &event, sizeof(event));
-        }
+        res = write(display->input_fd[touch_pipe_index(display)], &event, sizeof(event));
         if (res < (ssize_t)sizeof(event)) {
             ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
             return;
@@ -530,11 +492,7 @@ extern "C" void sim_pointer_axis_to_touch(struct display *display,
     SIM_ADD_EVENT(EV_ABS, ABS_MT_PRESSURE, 50);
     SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
-    if(display->display_type == HWC_DISPLAY_PRIMARY){
-        res = write(display->input_fd[INPUT_TOUCH], &event, sizeof(event));
-    }else{
-        res = write(display->input_fd[INPUT_TOUCH_EXTERNAL], &event, sizeof(event));
-    }
+    res = write(display->input_fd[touch_pipe_index(display)], &event, sizeof(event));
     if (res < (ssize_t)sizeof(event))
         ALOGE("Failed to write event for InputFlinger: %s", strerror(errno));
 }
@@ -544,13 +502,8 @@ extern "C" void sim_pointer_axis_to_touch(struct display *display,
 // ---------------------------------------------------------------------------
 
 extern "C" void sim_send_multi_touch_frame(struct display *display) {
-    if(display->display_type == HWC_DISPLAY_PRIMARY){
-        if (sim_ensure_pipe(display, INPUT_TOUCH))
-            return;
-    }else{
-        if (sim_ensure_pipe(display, INPUT_TOUCH_EXTERNAL))
-            return;
-    }
+    if (sim_ensure_pipe(display, touch_pipe_index(display)))
+        return;
 
     struct input_event event[128];
     struct timespec rt;
@@ -596,11 +549,7 @@ extern "C" void sim_send_multi_touch_frame(struct display *display) {
     SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
     size_t bytes = n * sizeof(struct input_event);
     ALOGD("send_multi_touch_frame write INPUT_TOUCH");
-    if(display->display_type == HWC_DISPLAY_PRIMARY){
-        write(display->input_fd[INPUT_TOUCH], event, bytes);
-    }else{
-        write(display->input_fd[INPUT_TOUCH_EXTERNAL], event, bytes);
-    }
+    write(display->input_fd[touch_pipe_index(display)], event, bytes);
 }
 
 extern "C" int sim_get_touch_id(struct display *display, uint32_t id) {

@@ -2596,6 +2596,9 @@ create_display(const char *gralloc, int target)
 
     
     // for emulate touch input event
+    // 模拟触摸路由:x11 每屏一个 display,按本 display 的类型定死
+    // (与下方 INPUT_TOUCH/INPUT_TOUCH_EXTERNAL 的创建分支语义一致)。
+    d->touch_on_external = (target != HWC_DISPLAY_PRIMARY);
     if(target == HWC_DISPLAY_PRIMARY){
         d->input_fd[INPUT_TOUCH] = -1;
         mkfifo(INPUT_PIPE_NAME[INPUT_TOUCH], S_IRWXO | S_IRWXG | S_IRWXU);

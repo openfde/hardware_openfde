@@ -140,6 +140,18 @@ static void xdg_output_done(void *data, struct zxdg_output_v1 *xdg_output) {
     (void)xdg_output;
     struct output *out = (struct output *)data;
     out->done = 1;
+    // 热插拔重新接入的收尾:拔空后 primary 为 NULL,插回时此前没有任何
+    // 路径重选,导致 isExternalDisplaySupported 把唯一显示器误判成外接屏。
+    // 另外 bind 时触发的变更回调此刻 done 还是 0,支持状态无法在配置完成
+    // 后翻转——在这里(输出真正 ready 时)补一次重选 + 回调。回调内部
+    // updateSupported 有去重,重复触发无害。
+    if (out->display) {
+        if (!out->display->primary)
+            find_primary(out->display);
+        if (out->display->on_external_display_changed)
+            out->display->on_external_display_changed(
+                    out->display->external_display_changed_userdata);
+    }
 }
 
 static void xdg_output_name(void *data, struct zxdg_output_v1 *xdg_output,
@@ -587,12 +599,60 @@ destroy_window(struct window *window, bool keep)
         wl_surface_destroy(window->surface);
         wl_display_flush(window->display->display);
 
-        window->display->windows.erase(window->surface);
+        // 清理全局反查表中本窗口的全部 surface 条目。layers/windows 都以
+        // wl_surface 指针为 key,wayland 连接的分配器会复用已释放 proxy 的
+        // 地址:频繁开关外部屏/应用窗口时,新建 surface(尤其副屏窗口的
+        // toplevel)极易撞上已销毁窗口的残留条目——pointer_handle_motion 的
+        // layers[pointer_surface] 偏移查询拿到旧窗口的图层位置,全局坐标
+        // 重建被整体平移,点击落点的 display 判定左右分叉(外部屏左半边
+        // 正常、右半边点进主屏)。这里逐一擦除 toplevel/bg/全部 subsurface。
+        struct display *d = window->display;
+        d->windows.erase(window->surface);
+        d->layers.erase(window->surface);
+        if (window->bg_surface) {
+            d->windows.erase(window->bg_surface);
+            d->layers.erase(window->bg_surface);
+        }
+        for (auto it = window->surfaces.begin(); it != window->surfaces.end(); it++) {
+            d->windows.erase(it->second);
+            d->layers.erase(it->second);
+        }
     }
     if (keep)
         window->isActive = false;
     else
         delete window;
+}
+
+bool
+wl_wait_server_sync(struct display *display, int timeout_ms)
+{
+    struct wl_event_queue *queue = wl_display_create_queue(display->display);
+    if (!queue)
+        return false;
+    struct wl_callback *cb = wl_display_sync(display->display);
+    if (!cb) {
+        wl_event_queue_destroy(queue);
+        return false;
+    }
+    // sync 回调挂私有队列:本线程只派发私有队列里已读入的事件,与 wayland
+    // 派发线程的默认队列互不干扰(dispatch_queue_pending 线程安全)。done
+    // 事件由派发线程 read_events 后分发到私有队列;done 到达即代表服务器
+    // 已按序处理完 sync 之前的全部请求(全屏、commit 等)。
+    wl_proxy_set_queue((struct wl_proxy *)cb, queue);
+    int waited = 0;
+    bool done = false;
+    while (waited < timeout_ms) {
+        if (wl_display_dispatch_queue_pending(display->display, queue) > 0) {
+            done = true;
+            break;
+        }
+        usleep(1000);
+        waited++;
+    }
+    wl_callback_destroy(cb);
+    wl_event_queue_destroy(queue);
+    return done;
 }
 
 static void fractional_scale_handle_preferred_scale(void *data, struct wp_fractional_scale_v1 *,
@@ -618,7 +678,8 @@ static const struct wp_fractional_scale_v1_listener fractional_scale_listener = 
 };
 
 struct window *
-create_window(struct display *display, bool use_subsurfaces, std::string appID, std::string taskID, hwc_color_t color)
+create_window(struct display *display, bool use_subsurfaces, std::string appID, std::string taskID, hwc_color_t color,
+              bool map_with_empty_input)
 {
     struct window *window = new struct window();
     if (!window)
@@ -657,6 +718,22 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
                                       { xdg_toplevel_set_title(window->xdg_toplevel, value.c_str()); });
         else
             xdg_toplevel_set_title(window->xdg_toplevel, appID.c_str());
+        if (map_with_empty_input) {
+            // 副屏窗口专用:映射时输入区域为空。create_window 在返回前就会
+            // commit 映射窗口,若此时输入区域非空,窗口会先以普通窗口形态
+            // 出现在主屏 output 上(正好盖住指针)→ pointer_enter(副屏
+            // surface);随后的 set_fullscreen 挪到外接屏时合成器不发
+            // leave,pointer_surface 从此永久卡在副屏 surface 上——全局坐标
+            // 重建把主屏上的指针算成外部屏,鼠标事件全部路由到外部屏,且
+            // phys_on_primary 恒 false 导致分叉强推(boost)反而把 Android
+            // 指针也推过去,永不自愈。空输入区域让映射阶段不产生任何
+            // pointer 事件;挪到外接屏后由调用方恢复输入区域。
+            // (实测宿主合成器不支持映射前的 output 定向全屏,所以不能用
+            // "映射前 set_fullscreen" 消灭这个窗口期。)
+            struct wl_region *empty = wl_compositor_create_region(display->compositor);
+            wl_surface_set_input_region(window->surface, empty);
+            wl_region_destroy(empty);
+        }
         if(!display->multi_windows){
             if(display->primary){
                 xdg_toplevel_set_fullscreen(window->xdg_toplevel, display->primary->wl_output);
@@ -664,6 +741,9 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
                 xdg_toplevel_set_fullscreen(window->xdg_toplevel, NULL);
             }
         }
+        // 记录窗口所属 output:默认主屏,副屏窗口在创建后会被覆盖为
+        // mSecondaryOutput(WaylandBackend::onExternalDisplayChanged 路径)。
+        window->output = display->primary;
 
         if (appID != "Openfde")
             appID = "openfde." + appID;
@@ -695,12 +775,24 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
         window->fractional_scale = wp_fractional_scale_manager_v1_get_fractional_scale(
                 display->fractional_scale_manager, window->surface);
         wp_fractional_scale_v1_add_listener(window->fractional_scale, &fractional_scale_listener, display);
-        wl_display_roundtrip(display->display);
+        // 旧实现用 wl_display_roundtrip 在本线程同步派发 preferred_scale 事件,
+        // 与 wayland 派发线程并发派发同一队列(libwayland 禁止),频繁开关窗口
+        // 时偶发闪烁。改为单读线程协作:等服务器处理完请求(preferred_scale 已
+        // 发出)再等派发线程把事件处理完;超时则与"合成器不发该事件"一样走
+        // finished_computing_scale 的回退。
+        int waited = 0;
+        while (!display->preferred_scale && waited < 500) {
+            wl_wait_server_sync(display, 50);
+            usleep(2000);
+            waited += 2;
+        }
     }
     finished_computing_scale(display);
 
-    /* Here we retrieve objects if executed without immed, or error */
-    wl_display_roundtrip(display->display);
+    /* 等待服务器处理完 commit 及此前的全部请求(旧实现为 roundtrip,见上)。
+     * configure 的尺寸回调在派发线程异步处理,不影响这里——calibrating 时
+     * 的尺寸回退逻辑照旧。 */
+    wl_wait_server_sync(display, 100);
     wl_surface_commit(window->surface);
 
     if (calibrating) {
@@ -926,6 +1018,95 @@ pointer_handle_motion(void *data, struct wl_pointer *,
     x += display->layers[display->pointer_surface].x;
     y += display->layers[display->pointer_surface].y;
 
+    // ==== 全局坐标重建(对齐 x11 后端的 px/py)====
+    // wayland 协议没有等价于 X11 root_x/root_y 的全局坐标:wl_pointer.motion
+    // 只给 surface-local 的 sx/sy。普通移动时 surface 就是所在屏的窗口,sx 即
+    // 本屏局部坐标;但拖动(隐式 grab)时事件始终以"按下时窗口"的坐标系发送,
+    // sx 会越过窗口边界变成"起点屏的全局值",直接注入会把 ABS 送进错误屏的
+    // 坐标系——光标被钳在屏边不再移动,窗口跟随原始坐标越跑越偏。这里用
+    // "窗口所属 output 的 xdg_output 逻辑桌面偏移"把坐标还原成全局值,再反查
+    // 指针所在的物理 output,得到等价于 x11 px/py 的真实局部坐标。
+    struct window *hover_win = nullptr;
+    {
+        std::scoped_lock lock(display->windowsMutex);
+        auto it = display->windows.find(display->pointer_surface);
+        if (it != display->windows.end())
+            hover_win = it->second;
+    }
+    struct output *org = hover_win ? hover_win->output : nullptr;
+    if (!org)
+        org = display->primary;
+    int gx = x, gy = y;  // 全局坐标(display->scale 像素单位)
+    if (org) {
+        gx += org->logical_x * display->scale;
+        gy += org->logical_y * display->scale;
+    }
+    // 反查指针所在的物理 output
+    struct output *cur = nullptr;
+    for (int i = 0; i < display->num_outputs; i++) {
+        struct output *out = &display->outputs[i];
+        if (!out->done || !out->logical_width)
+            continue;
+        if (gx >= out->logical_x * display->scale &&
+            gx < (out->logical_x + out->logical_width) * display->scale &&
+            gy >= out->logical_y * display->scale &&
+            gy < (out->logical_y + out->logical_height) * display->scale) {
+            cur = out;
+            break;
+        }
+    }
+    if (!cur)
+        cur = org;
+    if (cur) {
+        // 所在屏局部坐标(ABS 用它;普通移动时与旧算法结果一致)
+        x = gx - cur->logical_x * display->scale;
+        y = gy - cur->logical_y * display->scale;
+    }
+
+    // REL:同屏内用局部差值(与 ABS 同单位);跨屏帧的局部差值是假位移,合成
+    // 恰好越过上一屏边缘的量(与 x11 后端同款),保证 unconsumedDelta 必然触发
+    // Android 自己的拓扑切屏。free-movement 的 leave/enter 之间的 motion 不
+    // 注入,但 ptrOutput/ptrPrv 连续保留,跨屏后的第一个 motion 同样走这里。
+    int relx = 0, rely = 0;
+    const bool crossed = (display->ptrOutput != cur);
+    if (!crossed && display->ptrOutput) {
+        relx = x - display->ptrPrvX;
+        rely = y - display->ptrPrvY;
+    } else if (display->ptrOutput && cur) {
+        if (cur->logical_x > display->ptrOutput->logical_x) {
+            relx = (display->ptrOutput->logical_width * display->scale - display->ptrPrvX) + 2;
+        } else {
+            relx = -(display->ptrPrvX + 2);
+        }
+        rely = 0;  // 跨屏帧 Y 的单位归属不明确,交给同批 ABS 纠正
+    }
+    // 分叉兜底:物理屏与 Android 焦点屏不一致(跨屏当帧没切过去)时强推,
+    // 方向与 x11 后端一致;ABS 恒为真实局部坐标,切屏后由同批/下批 ABS 落位。
+    const bool android_on_primary = (property_get_int32("fde.last_display_id", 0) == 0);
+    const bool phys_on_primary = (cur == display->primary);
+    bool boost_cross_rel = false;
+    double boost_relx = 0;
+    if (display->ptrOutput && (phys_on_primary != android_on_primary)) {
+        boost_cross_rel = true;
+        boost_relx = phys_on_primary ? -4500 : 4000;
+    }
+    display->ptrOutput = cur;
+    // 模拟触摸路由跟随指针所在物理屏:click_as_touch 的按下/移动/抬起与
+    // 滚轮转触摸都经 touch_pipe_index 读取该标志写入对应屏的触摸设备
+    // (EventHub 把两台设备分别绑到 display 0 与外接屏)。
+    const bool on_external = (cur != display->primary);
+    if (on_external != display->touch_on_external) {
+        // 诊断:点击路由判定翻转时打印重建链路。若频繁开关外部屏后出现
+        // "外部屏左半边正常、右半边点进主屏"的左右分叉,核对这里 gx 是否
+        // 被额外偏移(layers 残留条目命中被复用的 surface 地址)。
+        ALOGI("pointer route -> %s: orglx=%d orglw=%d curlx=%d curw=%d gx=%d gy=%d local=(%d,%d)",
+              on_external ? "external" : "primary",
+              org ? org->logical_x : -1, org ? org->logical_width : -1,
+              cur ? cur->logical_x : -1, cur ? cur->logical_width : -1,
+              gx, gy, x, y);
+    }
+    display->touch_on_external = on_external;
+
     if (display->isTouchDown) {
         display->ptrPrvX = x;
         display->ptrPrvY = y;
@@ -940,10 +1121,12 @@ pointer_handle_motion(void *data, struct wl_pointer *,
                 __FILE__, __LINE__, strerror(errno));
         }
 
+        if (boost_cross_rel)
+            relx += boost_relx;
         SIM_ADD_EVENT(EV_ABS, ABS_X, x);
         SIM_ADD_EVENT(EV_ABS, ABS_Y, y);
-        SIM_ADD_EVENT(EV_REL, REL_X, x - display->ptrPrvX);
-        SIM_ADD_EVENT(EV_REL, REL_Y, y - display->ptrPrvY);
+        SIM_ADD_EVENT(EV_REL, REL_X, relx);
+        SIM_ADD_EVENT(EV_REL, REL_Y, rely);
         SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
         display->ptrPrvX = x;
         display->ptrPrvY = y;
@@ -968,6 +1151,15 @@ handle_relative_motion(void *data, struct zwp_relative_pointer_v1*,
 {
     struct display *display = (struct display *)data;
     if(display->axis_simulation_two_finger_started){
+        return;
+    }
+    // 平时 wl_pointer.motion(pointer_handle_motion,ABS+REL)已经覆盖全部移动,
+    // 且协议规定 relative_motion 与之并行发送;若这里再注入一份 REL,Android
+    // 的相对位移流会翻倍:光标被 ABS 每帧钉位看不出来,但按 REL 增量拖动的
+    // 窗口会 2 倍速跑。x11 后端只有单一注入路径,此处对齐它:
+    // relative_motion 的原始 REL 仅在指针锁定(捕获)模式下注入——那时
+    // wl_pointer.motion 停发,只有这份原始位移可用。
+    if(!display->pointer_locked){
         return;
     }
 
@@ -1599,6 +1791,13 @@ seat_handle_capabilities(void *data, struct wl_seat *seat, uint32_t wl_caps)
         d->input_fd[INPUT_TOUCH] = -1;
         mkfifo(INPUT_PIPE_NAME[INPUT_TOUCH], S_IRWXO | S_IRWXG | S_IRWXU);
         chown(INPUT_PIPE_NAME[INPUT_TOUCH], 1000, 1000);
+        // 外接屏的模拟触摸设备:EventHub 把 wl_touch_external_events 绑到
+        // 外接屏 viewport(x11 版每屏一个 display 天然有两个设备,wayland
+        // 单 display 必须两个都建);路由由 pointer_handle_motion 按指针
+        // 所在物理屏动态更新(touch_on_external)。
+        d->input_fd[INPUT_TOUCH_EXTERNAL] = -1;
+        mkfifo(INPUT_PIPE_NAME[INPUT_TOUCH_EXTERNAL], S_IRWXO | S_IRWXG | S_IRWXU);
+        chown(INPUT_PIPE_NAME[INPUT_TOUCH_EXTERNAL], 1000, 1000);
     } else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && d->pointer) {
         remove(INPUT_PIPE_NAME[INPUT_POINTER]);
         wl_pointer_destroy(d->pointer);
@@ -1731,6 +1930,15 @@ output_handle_done(void *data, struct wl_output *)
     struct output *out = (struct output *)data;
     out->done = 1;
 
+    // 同 xdg_output_done:重选 primary(无 xdg_output_manager 的环境下
+    // 只有这里会触发)+ 让支持状态在输出配置完成后有机会翻转。
+    if (out->display) {
+        if (!out->display->primary)
+            find_primary(out->display);
+        if (out->display->on_external_display_changed)
+            out->display->on_external_display_changed(
+                    out->display->external_display_changed_userdata);
+    }
 }
 
 static void
@@ -2173,16 +2381,36 @@ registry_handle_global(void *data, struct wl_registry *registry,
     } else if (strcmp(interface, "wl_shm") == 0) {
 		d->shm = (struct wl_shm *)wl_registry_bind(registry, id,
                 &wl_shm_interface, 1);
-    } else if (strcmp(interface, "wl_output") == 0  && d->num_outputs < MAX_OUTPUTS) {
+    } else if (strcmp(interface, "wl_output") == 0) {
         ALOGE("wl_output version: %d",version);
-        struct output *out = &d->outputs[d->num_outputs++];
-        out->registry_id = id;
-        out->wl_output = (struct wl_output*)wl_registry_bind(registry, id, &wl_output_interface, std::min(version, 3U));
-        wl_output_add_listener(out->wl_output, &output_listener, out);
+        // 槽位固定方案:优先复用热插拔置脏的槽位(指针保持稳定的代价是
+        // 需要显式复用),没有脏槽位且未满才追加。
+        struct output *out = NULL;
+        for (int i = 0; i < d->num_outputs; i++) {
+            if (d->outputs[i].removed) {
+                out = &d->outputs[i];
+                break;
+            }
+        }
+        if (!out && d->num_outputs < MAX_OUTPUTS) {
+            out = &d->outputs[d->num_outputs++];
+        }
+        if (!out) {
+            ALOGE("too many wl_output globals, ignore id=%u", id);
+        } else {
+            out->removed = false;
+            out->done = 0;
+            out->display = d;
+            out->registry_id = id;
+            out->wl_output = (struct wl_output*)wl_registry_bind(registry, id, &wl_output_interface, std::min(version, 3U));
+            wl_output_add_listener(out->wl_output, &output_listener, out);
 
-        if (d->xdg_output_manager) {
-            out->xdg_output = zxdg_output_manager_v1_get_xdg_output(d->xdg_output_manager, out->wl_output);
-            zxdg_output_v1_add_listener(out->xdg_output, &xdg_output_listener, out);
+            if (d->xdg_output_manager) {
+                out->xdg_output = zxdg_output_manager_v1_get_xdg_output(d->xdg_output_manager, out->wl_output);
+                zxdg_output_v1_add_listener(out->xdg_output, &xdg_output_listener, out);
+            }
+            if (d->on_external_display_changed)
+                d->on_external_display_changed(d->external_display_changed_userdata);
         }
     } else if (strcmp(interface, "zxdg_output_manager_v1") == 0) {
         ALOGE("zxdg_output_manager_v1 version: %d", version);
@@ -2190,7 +2418,7 @@ registry_handle_global(void *data, struct wl_registry *registry,
 
         for (int i = 0; i < d->num_outputs; i++) {
             struct output *out = &d->outputs[i];
-            if (out->wl_output && !out->xdg_output) {
+            if (out->wl_output && !out->xdg_output && !out->removed) {
                 out->xdg_output = zxdg_output_manager_v1_get_xdg_output(d->xdg_output_manager, out->wl_output);
                 zxdg_output_v1_add_listener(out->xdg_output, &xdg_output_listener, out);
             }
@@ -2263,15 +2491,29 @@ registry_handle_global_remove(void *data, struct wl_registry *, uint32_t id)
                 out->wl_output = NULL;
             }*/
 
-            for (int j = i; j < d->num_outputs - 1; j++) {
-                d->outputs[j] = d->outputs[j + 1];
-            }
-            d->num_outputs--;
+            // 置脏代替前移:槽位固定,所有指向 outputs[] 元素的指针
+            // (d->primary、mSecondaryOutput、window->output)保持有效。
+            // 旧的前移方案会让这些指针指向内容已被覆盖的槽位——primary
+            // 指针比较在"被移除的 output 位于 primary 之前"时漏判,导致
+            // isExternalDisplaySupported 把唯一显示器误判成外接屏、外接屏
+            // 无法自动关闭。置脏后遍历方按 removed/done 跳过,新 output
+            // 复用该槽位。
+            out->removed = true;
+            out->done = 0;
+            // 指针所在屏的缓存同步失效:该槽位会被新 output 复用,继续沿用
+            // 旧指针会让跨屏合成 REL 用到已被覆盖的几何。
+            if (d->ptrOutput == out)
+                d->ptrOutput = NULL;
 
-            if (d->primary == out || d->primary == NULL) {
+            // 被移除的是 primary 才需要重选;其余指针(如 mSecondaryOutput)
+            // 仍指向自己的槽位,天然有效。
+            if (d->primary == out) {
                 d->primary = NULL;
                 find_primary(d);
             }
+
+            if (d->on_external_display_changed)
+                d->on_external_display_changed(d->external_display_changed_userdata);
 
             return;
         }
@@ -2382,13 +2624,21 @@ create_display(const char *gralloc, int target)
         if (display->primary->description) ALOGW("  description: %s", display->primary->description);
     } else {
         ALOGE("Output not found for logical (0,0)");
-        if (display->num_outputs > 0) {
+        // 槽位固定后 outputs[0] 可能是热插拔留下的脏槽位,取第一个活槽位。
+        struct output *fallback = NULL;
+        for (int i = 0; i < display->num_outputs; i++) {
+            if (!display->outputs[i].removed && display->outputs[i].done) {
+                fallback = &display->outputs[i];
+                break;
+            }
+        }
+        if (fallback) {
             ALOGW("Use the first output as the fallback:");
-            ALOGW("  Current pixel resolution: %d × %d", display->outputs[0].pixel_width, display->outputs[0].pixel_height);
-            ALOGW("  Logical resolution: %d × %d", display->outputs[0].logical_width, display->outputs[0].logical_height);
-            ALOGW("  scaling factor: %d", display->outputs[0].scale);
-            display->full_width = display->outputs[0].pixel_width;
-            display->full_height = display->outputs[0].pixel_height;
+            ALOGW("  Current pixel resolution: %d × %d", fallback->pixel_width, fallback->pixel_height);
+            ALOGW("  Logical resolution: %d × %d", fallback->logical_width, fallback->logical_height);
+            ALOGW("  scaling factor: %d", fallback->scale);
+            display->full_width = fallback->pixel_width;
+            display->full_height = fallback->pixel_height;
         }
     }
 
