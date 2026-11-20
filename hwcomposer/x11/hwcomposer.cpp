@@ -22,6 +22,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdlib.h>
@@ -30,6 +31,7 @@
 #include <unistd.h>
 #include <wayland-client.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <string>
 #include <sstream>
@@ -63,6 +65,7 @@
 #include "../common/hwc2_device.h"
 #include "WaydroidWindow.h"
 #include "egl-tools.h"
+#include "x11-hybris.h"
 
 #include <hidl/HidlTransportSupport.h>
 
@@ -89,10 +92,11 @@ namespace {
 
 class X11Backend : public Hwc2Backend {
   public:
-    X11Backend(struct display* display, bool useSubsurface, bool multiWindows)
+    X11Backend(struct display* display, bool useSubsurface, bool multiWindows, bool is_nvidia)
         : mDisplay(display),
           mUseSubsurface(useSubsurface),
-          mMultiWindows(multiWindows) {
+          mMultiWindows(multiWindows),
+          mIsNvidia(is_nvidia) {
         mDisplay->x11_windows = &mWindows;
     }
 
@@ -107,7 +111,7 @@ class X11Backend : public Hwc2Backend {
                 }
             }
             disp->buffer_map.clear();
-            destroy_display(disp);
+            destroy_display(disp, mIsNvidia);
         }
     }
 
@@ -211,6 +215,7 @@ class X11Backend : public Hwc2Backend {
     std::map<std::string, struct window*> mSecondaryWindows;
     bool mUseSubsurface;
     bool mMultiWindows;
+    bool mIsNvidia;
 
     pthread_t mWindowServiceThread = 0;
     pthread_t mEglWorkerThread = 0;
@@ -488,11 +493,241 @@ void* X11Backend::produceBGRA8888(struct display* disp,
 	return (void *)dst_gb->getNativeBuffer()->handle;
 }
 
+#define __gbm_fourcc_code(a,b,c,d) ((uint32_t)(a) | ((uint32_t)(b) << 8) | \
+			      ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
+#define GBM_FORMAT_ARGB8888	__gbm_fourcc_code('A', 'R', '2', '4') /* [31:0] A:R:G:B 8:8:8:8 little endian */
+#define GBM_FORMAT_ABGR8888	__gbm_fourcc_code('A', 'B', '2', '4') /* [31:0] A:B:G:R 8:8:8:8 little endian */
+#define GBM_FORMAT_XRGB8888	__gbm_fourcc_code('X', 'R', '2', '4') /* [31:0] x:R:G:B 8:8:8:8 little endian */
+#define GBM_FORMAT_XBGR8888	__gbm_fourcc_code('X', 'B', '2', '4') /* [31:0] x:B:G:R 8:8:8:8 little endian */
+
+#define DRI3_MAX_X_MODIFIERS 32
+static uint64_t s_dri3_x_modifiers[DRI3_MAX_X_MODIFIERS];
+static int s_dri3_x_modifier_count = 0;
+
+/*
+ * NVIDIA 送显后端（x11-hybris）辅助函数。
+ *
+ * 与 hwcomposer.cpp 里既有的 DRI3+modifier 路径一样，NVIDIA 平台的 buffer
+ * handle 使用 gralloc_handle_t 布局；这里取 dma-buf fd 和 modifier 给
+ * eglCreateImageKHR 做零拷贝导入。
+ */
+static void hybris_dma_from_handle(buffer_handle_t handle, int* dmabuf_fd,
+                                   uint64_t* modifier)
+{
+    const struct gralloc_handle_t* h = (const struct gralloc_handle_t*)handle;
+    *dmabuf_fd = h->prime_fd;
+    *modifier = h->modifier;
+}
+
+/* 把一层 HWC2 layer 的元数据填进 buffer，供 x11-hybris 纹理缓存使用。 */
+static void buffer_info_from_handle(struct display* disp, buffer_handle_t handle,
+                                    const handle_ext& ext, struct buffer* buf)
+{
+    const struct gralloc_handle_t* h = (const struct gralloc_handle_t*)handle;
+    buf->handle = handle;
+    buf->width = (disp->gtype == GRALLOC_GBM && h->width) ? (int)h->width : (int)ext.width;
+    buf->height = (disp->gtype == GRALLOC_GBM && h->height) ? (int)h->height : (int)ext.height;
+    uint32_t stride_bytes = (disp->gtype == GRALLOC_GBM && h->stride) ? h->stride : ext.stride;
+    buf->pixel_stride = stride_bytes > 0 ? stride_bytes / 4 : (unsigned long)buf->width;
+    buf->format = (disp->gtype == GRALLOC_GBM && h->format) ? (int)h->format : (int)ext.format;
+    buf->hal_format = (uint32_t)buf->format;
+    buf->xpicture = 0;
+    buf->xcbpixmap = 0;
+    buf->isShm = false;
+}
+
+/*
+ * dma-buf 的稳定标识，用作纹理缓存 key（x11-hybris 中是 16 项 LRU）。
+ * 不能用 gralloc handle 指针（释放后地址会被复用），也不能用 fd（每帧 dup
+ * 号码不同）；dma-buf 是 anon inode，只要缓存还持有引用，inode 就不会复用。
+ */
+static uint64_t dmabuf_id_from_fd(int fd)
+{
+    if (fd < 0)
+        return 0;
+    struct stat st;
+    if (fstat(fd, &st) != 0)
+        return 0;
+    return (uint64_t)st.st_ino ^ (((uint64_t)st.st_dev) << 56);
+}
+
+/* 把一层 HWC2 layer 翻译成送显描述（源裁剪 + 目标矩形 + 变换）。 */
+static void fill_present_layer(struct display* disp, hwc_rect_t frame, hwc_frect_t crop,
+                               Transform transform, const struct buffer* buf,
+                               struct x11_hybris_layer* out, bool use_subsurface)
+{
+    out->buf_w = buf->width;
+    out->buf_h = buf->height;
+    out->stride_px = buf->pixel_stride > 0 ? (int)buf->pixel_stride : buf->width;
+    out->hal_format = buf->hal_format ? buf->hal_format : buf->format;
+    out->transform = static_cast<uint32_t>(transform);
+
+    /* RGBX / RGB 没有有效 alpha，片元直接输出 alpha=1，避免桌面透出来。 */
+    switch (out->hal_format) {
+        case HAL_PIXEL_FORMAT_RGBX_8888:
+        case HAL_PIXEL_FORMAT_RGB_888:
+        case HAL_PIXEL_FORMAT_RGB_565:
+            out->opaque = true;
+            break;
+        default:
+            out->opaque = false;
+            break;
+    }
+
+    /* dma-buf 三项由调用方补（这里拿不到 handle 的 allocator 细节）。 */
+    out->dmabuf_fd = -1;
+    out->modifier = 0;
+    out->buffer_id = 0;
+
+    hwc_rect_t sourceCrop = {
+        .left = (int)lroundf(crop.left),
+        .top = (int)lroundf(crop.top),
+        .right = (int)lroundf(crop.right),
+        .bottom = (int)lroundf(crop.bottom),
+    };
+    if (static_cast<int>(transform) & HWC_TRANSFORM_ROT_90) {
+        sourceCrop.left = (int)lroundf(crop.top);
+        sourceCrop.top = (int)lroundf(crop.left);
+        sourceCrop.right = (int)lroundf(crop.bottom);
+        sourceCrop.bottom = (int)lroundf(crop.right);
+    }
+
+    int sx = sourceCrop.left;
+    int sy = sourceCrop.top;
+    int sw = sourceCrop.right - sourceCrop.left;
+    int sh = sourceCrop.bottom - sourceCrop.top;
+    if (sw <= 0 || sh <= 0) {
+        sx = 0;
+        sy = 0;
+        sw = frame.right - frame.left;
+        sh = frame.bottom - frame.top;
+    }
+    if (sx < 0) { sw += sx; sx = 0; }
+    if (sy < 0) { sh += sy; sy = 0; }
+    if (buf->width > 0 && sx + sw > buf->width)
+        sw = buf->width - sx;
+    if (buf->height > 0 && sy + sh > buf->height)
+        sh = buf->height - sy;
+    if (sw <= 0 || sh <= 0) {
+        sx = 0;
+        sy = 0;
+        sw = buf->width;
+        sh = buf->height;
+    }
+    out->src_x = sx;
+    out->src_y = sy;
+    out->src_w = sw;
+    out->src_h = sh;
+
+    if (use_subsurface) {
+        double scale = disp->scale > 0 ? disp->scale : 1.0;
+        out->dst_x = (int)floor(frame.left / scale);
+        out->dst_y = (int)floor(frame.top / scale);
+        out->dst_w = (int)fmax(1, ceil((frame.right - frame.left) / scale));
+        out->dst_h = (int)fmax(1, ceil((frame.bottom - frame.top) / scale));
+    } else {
+        /* 非 subsurface 模式只有 client target，铺满整个窗口。 */
+        out->dst_x = 0;
+        out->dst_y = 0;
+        out->dst_w = disp->width;
+        out->dst_h = disp->height;
+    }
+}
+
+/* 输入形状记账：等价 adjustWindowGeo 的尾部逻辑，但不碰任何 XRender picture。 */
+static void record_present_geometry(struct window* window, const struct x11_hybris_layer* gl)
+{
+    if (window->lastLayer == 0) {
+        window->rects.clear();
+        window->crops.clear();
+    }
+    xcb_rectangle_t rect = {(int16_t)gl->dst_x, (int16_t)gl->dst_y,
+                            (uint16_t)gl->dst_w, (uint16_t)gl->dst_h};
+    window->rects.push_back(rect);
+
+    hwc_rect_t crop;
+    crop.left = gl->src_x;
+    crop.top = gl->src_y;
+    crop.right = gl->src_x + gl->src_w;
+    crop.bottom = gl->src_y + gl->src_h;
+    window->crops.push_back(crop);
+}
+
+static int dri3QueryXModifiers(struct display *display) {
+    if (!display || !display->xcbconnection || !display->xcbscreen) {
+        ALOGE("dri3Probe: X connection not ready, cannot query modifiers");
+        return 0;
+    }
+    if (xcb_connection_has_error(display->xcbconnection)) {
+        ALOGE("dri3Probe: XCB connection has error, skip modifier query");
+        return 0;
+    }
+
+    xcb_connection_t *conn = display->xcbconnection;
+    xcb_generic_error_t *mod_err = NULL;
+    xcb_dri3_get_supported_modifiers_reply_t *mod_reply =
+        xcb_dri3_get_supported_modifiers_reply(conn,
+            xcb_dri3_get_supported_modifiers(conn, display->xcbscreen->root, 32, 32),
+            &mod_err);
+    if (!mod_reply) {
+        ALOGE("dri3Probe: GetSupportedModifiers failed err=%d",
+              mod_err ? mod_err->error_code : -1);
+        free(mod_err);
+        return 0;
+    }
+    free(mod_err);
+
+    const uint64_t *scr_mods =
+        xcb_dri3_get_supported_modifiers_screen_modifiers(mod_reply);
+    s_dri3_x_modifier_count =
+        xcb_dri3_get_supported_modifiers_screen_modifiers_length(mod_reply);
+
+    for (int i = 0; i < s_dri3_x_modifier_count; i++) {
+        ALOGI("dri3Probe: screen_modifiers[%d]=0x%llx", i,
+              (unsigned long long)scr_mods[i]);
+        if (i < DRI3_MAX_X_MODIFIERS)
+            s_dri3_x_modifiers[i] = scr_mods[i];
+    }
+
+    ALOGI("dri3Probe: listed %d screen modifiers", s_dri3_x_modifier_count);
+    free(mod_reply);
+    return s_dri3_x_modifier_count;
+}
+
+static void dri3PublishModifiersToGralloc(struct display *display) {
+    const int count = dri3QueryXModifiers(display);
+    if (count <= 0) {
+        ALOGW("dri3Publish: no X-declared modifiers, nothing to publish");
+        return;
+    }
+
+    static const uint32_t kFormats[] = {
+        GBM_FORMAT_ARGB8888,
+        GBM_FORMAT_ABGR8888,
+        GBM_FORMAT_XRGB8888,
+        GBM_FORMAT_XBGR8888,
+    };
+    const int nformats = (int)(sizeof(kFormats) / sizeof(kFormats[0]));
+
+    for (int f = 0; f < nformats; ++f) {
+        const unsigned int fourcc = (unsigned int)kFormats[f];
+        for (int i = 0; i < count; ++i) {
+            char name[128], value[64];
+            snprintf(name, sizeof(name), "openfde.modifiers.%x.%d", fourcc, i);
+            snprintf(value, sizeof(value), "%llx",
+                     (unsigned long long)s_dri3_x_modifiers[i]);
+            if (property_set(name, value) != 0)
+                ALOGW("dri3Publish: property_set(%s) failed", name);
+        }
+    }
+}
+
 void X11Backend::createDri3XRenderPicture(struct display* disp, buffer_handle_t handle,
                                           struct window *window, struct buffer *buf,
                                           int pixel_stride) {
 	int width,height, stride, format, prime_fd, size;
 	int usage = GRALLOC_USAGE_HW_TEXTURE;
+	buffer_handle_t import_handle = handle;
     if (disp->gtype == GRALLOC_GBM) {
         struct gralloc_handle_t *drm_handle = (struct gralloc_handle_t *)handle;
         width = drm_handle->width;
@@ -572,6 +807,7 @@ void X11Backend::createDri3XRenderPicture(struct display* disp, buffer_handle_t 
                 return ;
             }
 		const native_handle_t* native_handle = dst_gb->getNativeBuffer()->handle;
+		import_handle = native_handle;
 		struct gralloc_handle_t * drm_handle = (struct gralloc_handle_t*)native_handle;
 		prime_fd = drm_handle->prime_fd;
 		size = dst_gb->getStride() * height * 4;
@@ -590,11 +826,23 @@ void X11Backend::createDri3XRenderPicture(struct display* disp, buffer_handle_t 
         buf->xcbpixmap = xcb_generate_id(disp->xcbconnection);
         XRenderPictureAttributes pa;
         pa.repeat = False;
-        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(disp->xcbconnection,
-            buf->xcbpixmap, xcbwindow, size, width, height, stride, 32, 32, x11_fd);
-        xcb_generic_error_t *pixmap_error = xcb_request_check(disp->xcbconnection, pixmap_cookie);
+        xcb_generic_error_t *pixmap_error = NULL;
+        if (mIsNvidia) {
+            int32_t fds[1] = { (int32_t) x11_fd };
+            xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffers_checked(disp->xcbconnection,
+                buf->xcbpixmap, xcbwindow, 1, width, height, stride,
+                0, 0, 0, 0, 0, 0, 0, 32, 32, ((const struct gralloc_handle_t *)import_handle)->modifier, fds);
+            pixmap_error = xcb_request_check(disp->xcbconnection, pixmap_cookie);
+        } else {
+	        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(disp->xcbconnection,
+	            buf->xcbpixmap, xcbwindow, size, width, height, stride, 32, 32, x11_fd);
+	        pixmap_error = xcb_request_check(disp->xcbconnection, pixmap_cookie);
+        }
         if (pixmap_error) {
-           ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
+           ALOGE("XCB error in %s: %d, %dx%d",
+                 mIsNvidia ? "xcb_dri3_pixmap_from_buffers_checked"
+                                        : "xcb_dri3_pixmap_from_buffer",
+                 pixmap_error->error_code, width, height);
            free(pixmap_error);
            return ;
         }
@@ -611,11 +859,23 @@ void X11Backend::createDri3XRenderPicture(struct display* disp, buffer_handle_t 
         buf->xcbpixmap = xcb_generate_id(disp->xcbconnection);
         XRenderPictureAttributes pa;
         pa.repeat = False;
-        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(disp->xcbconnection,
-            buf->xcbpixmap, disp->xcbscreen->root, size, width, height, stride, 32, 32, x11_fd);
-        xcb_generic_error_t *pixmap_error = xcb_request_check(disp->xcbconnection, pixmap_cookie);
+        xcb_generic_error_t *pixmap_error = NULL;
+        if (mIsNvidia) {
+            int32_t fds[1] = { (int32_t) x11_fd };
+            xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffers_checked(disp->xcbconnection,
+                buf->xcbpixmap, disp->xcbscreen->root, 1, width, height, stride,
+                0, 0, 0, 0, 0, 0, 0, 32, 32, ((const struct gralloc_handle_t *)import_handle)->modifier, fds);
+            pixmap_error = xcb_request_check(disp->xcbconnection, pixmap_cookie);
+        } else {
+	        xcb_void_cookie_t pixmap_cookie = xcb_dri3_pixmap_from_buffer(disp->xcbconnection,
+	            buf->xcbpixmap, disp->xcbscreen->root, size, width, height, stride, 32, 32, x11_fd);
+	        pixmap_error = xcb_request_check(disp->xcbconnection, pixmap_cookie);
+        }
         if (pixmap_error) {
-           ALOGE("XCB error in xcb_dri3_pixmap_from_buffer: %d", pixmap_error->error_code);
+           ALOGE("No win XCB error in %s: %d",
+                 mIsNvidia ? "xcb_dri3_pixmap_from_buffers_checked"
+                                        : "xcb_dri3_pixmap_from_buffer",
+                 pixmap_error->error_code);
            free(pixmap_error);
            return ;
         }
@@ -649,6 +909,21 @@ struct buffer *X11Backend::getX11Buffer(struct display* disp, buffer_handle_t ha
         } else {
             return it->second;
 	}
+    }
+
+    /*
+     * NVIDIA 走进程内 EGL + dma-buf 导入的送显路径：不需要 DRI3 pixmap /
+     * XRender picture，只记录 buffer 元数据，真正上屏在 present() 末尾的
+     * x11_hybris_flush() 中完成。光标层（window == NULL）仍走原来的
+     * shm + XRender 路径，由 updateCursorSurface() 设置到 X 光标。
+     */
+    if (mIsNvidia) {
+        if (window != NULL && x11_hybris_get_ready(disp)) {
+            struct buffer* buf = new struct buffer();
+            buffer_info_from_handle(disp, handle, ext, buf);
+            disp->buffer_map[handle] = buf;
+            return buf;
+        }
     }
 
     struct buffer *buf;
@@ -860,7 +1135,7 @@ Error X11Backend::present(Hwc2Display& display) {
         // Clear all open windows
         for (auto it = windows.begin(); it != windows.end(); it++) {
             if (it->second)
-                destroy_window(it->second);
+                destroy_window(it->second, mIsNvidia);
         }
         windows.clear();
 
@@ -871,7 +1146,7 @@ Error X11Backend::present(Hwc2Display& display) {
         if (windows.find(active_apps) == windows.end() || !windows[active_apps]->isActive) {
             for (auto it = windows.begin(); it != windows.end(); it++) {
                 if (it->second) {
-                    destroy_window(it->second);
+                    destroy_window(it->second, mIsNvidia);
                 }
             }
             windows.clear();
@@ -912,7 +1187,7 @@ Error X11Backend::present(Hwc2Display& display) {
         if (!showWindow) {
             for (auto it = windows.begin(); it != windows.end(); it++) {
                 if (it->second)
-                    destroy_window(it->second);
+                    destroy_window(it->second, mIsNvidia);
             }
             windows.clear();
 
@@ -935,7 +1210,7 @@ Error X11Backend::present(Hwc2Display& display) {
                         }
                     }
                     if (shouldCloseLeftover) {
-                        destroy_window(it->second);
+                        destroy_window(it->second, mIsNvidia);
                         windows.erase(it++);
                         shouldCloseLeftover = true;
                         std::string windows_size_str = std::to_string(windows.size());
@@ -979,7 +1254,7 @@ Error X11Backend::present(Hwc2Display& display) {
             // This window ID doesn't match with any selected app IDs from prop, so kill it
             if (!foundApp || (it->second && !it->second->isActive)) {
                 if (it->second)
-                    destroy_window(it->second);
+                    destroy_window(it->second, mIsNvidia);
                 windows.erase(it++);
                 std::string windows_size_str = std::to_string(windows.size());
                 property_set("openfde.open_windows", windows_size_str.c_str());
@@ -1001,7 +1276,8 @@ Error X11Backend::present(Hwc2Display& display) {
         if (active_apps == "Openfde") {
             // Show everything in a single window
             if (windows.find(active_apps) == windows.end()) {
-                windows[active_apps] = create_window(disp, mUseSubsurface, active_apps, "0", {0, 0, 0, 255});
+                windows[active_apps] = create_window(disp, mUseSubsurface, active_apps, "0",
+                                                     {0, 0, 0, 255}, mIsNvidia);
                 std::string windows_size_str = std::to_string(windows.size());
                 property_set("openfde.open_windows", windows_size_str.c_str());
             }
@@ -1009,7 +1285,8 @@ Error X11Backend::present(Hwc2Display& display) {
         } else if (!mMultiWindows) {
             if (single_layer_tid.length()) {
                 if (windows.find(single_layer_tid) == windows.end()) {
-                    windows[single_layer_tid] = create_window(disp, mUseSubsurface, single_layer_aid, single_layer_tid, {0, 0, 0, 255});
+                    windows[single_layer_tid] = create_window(disp, mUseSubsurface, single_layer_aid,
+                                                              single_layer_tid, {0, 0, 0, 255}, mIsNvidia);
                     std::string windows_size_str = std::to_string(windows.size());
                     property_set("openfde.open_windows", windows_size_str.c_str());
                 }
@@ -1034,7 +1311,8 @@ Error X11Backend::present(Hwc2Display& display) {
 
                 if (showWindow) {
                     if (windows.find(layer_tid) == windows.end()) {
-                        windows[layer_tid] = create_window(disp, mUseSubsurface, layer_aid, layer_tid, {0, 0, 0, 0});
+                        windows[layer_tid] = create_window(disp, mUseSubsurface, layer_aid,
+                                                           layer_tid, {0, 0, 0, 0}, mIsNvidia);
                         std::string windows_size_str = std::to_string(windows.size());
                         property_set("openfde.open_windows", windows_size_str.c_str());
                     }
@@ -1051,7 +1329,8 @@ Error X11Backend::present(Hwc2Display& display) {
             if (mMultiWindows && ((LayerRawName == "Toast")
                 || (LayerRawName.find("Application Not Responding:") !=  std::string::npos))) {
                 if (windows.find(LayerRawName) == windows.end()) {
-                    windows[LayerRawName] = create_window(disp, mUseSubsurface, LayerRawName, "none", {0, 0, 0, 0});
+                    windows[LayerRawName] = create_window(disp, mUseSubsurface, LayerRawName,
+                                                          "none", {0, 0, 0, 0}, mIsNvidia);
                     std::string windows_size_str = std::to_string(windows.size());
                     property_set("openfde.open_windows", windows_size_str.c_str());
                 }
@@ -1075,6 +1354,56 @@ Error X11Backend::present(Hwc2Display& display) {
                close(acquireFence);
             }
             return;
+        }
+
+        if (mIsNvidia) {
+            if (x11_hybris_get_ready(disp)) {
+                /*
+                * NVIDIA: dma-buf 直接导入 host EGL 做零拷贝上屏，不走 DRI3
+                * pixmap + XRender。交换 fence 在这里等（和原 XRender 路径时机
+                * 一致），随后只把这一层排进窗口的送显队列，swap 延到本帧末尾。
+                */
+                if (acquireFence > 0) {
+                    const int kAcquireWarningMS = 100;
+                    int err = sync_wait(acquireFence, kAcquireWarningMS);
+                    if (err < 0 && errno == ETIME) {
+                        ALOGE("EGL: sync_wait timeout on fence %d for %d ms",
+                            acquireFence, kAcquireWarningMS);
+                    }
+                    close(acquireFence);
+                    acquireFence = -1;
+                }
+
+                struct x11_hybris_layer gl;
+                fill_present_layer(disp, frame, crop, transform, buf, &gl, mUseSubsurface);
+
+                /*
+                * buffer_id（dma-buf inode）是纹理缓存的 key —— 同一块 buffer
+                * 多帧复用只 import 一次；取不到 fd 时该层会被 add_layer 跳过。
+                */
+                int dmabuf_fd = -1;
+                uint64_t modifier = 0;
+                hybris_dma_from_handle(handle, &dmabuf_fd, &modifier);
+                gl.dmabuf_fd = dmabuf_fd;
+                gl.modifier = modifier;
+                gl.buffer_id = dmabuf_id_from_fd(dmabuf_fd);
+
+                if (!x11_hybris_add_layer(window, &gl)) {
+                    ALOGE("x11_hybris_add_layer fail, app=%s %dx%d",
+                        window->appID.c_str(), gl.buf_w, gl.buf_h);
+                }
+                if (mUseSubsurface)
+                    record_present_geometry(window, &gl);
+
+                window->last_layer_buffer = buf;
+                window->lastLayer++;
+
+                if (window->snapshot_buffer) {
+                    destroy_buffer(disp, window->snapshot_buffer);
+                    window->snapshot_buffer = nullptr;
+                }
+                return;
+            }
         }
 
 	XTransform xtransform;
@@ -1230,7 +1559,30 @@ Error X11Backend::present(Hwc2Display& display) {
     }
 
     // Layers order is changed from SF so we rearrange window contents
-    if (mUseSubsurface)
+    if (mIsNvidia) {
+        if (x11_hybris_get_ready(disp)) {
+            /*
+             * 逐窗口 make current -> clear -> 贴层 -> eglSwapBuffers。
+             * swap 会整帧覆盖窗口内容，所以必须是这一帧对窗口的最后一个绘制
+             * 动作；输入形状用 XCB 发在 swap 之后。
+             */
+            for (auto it = windows.begin(); it != windows.end(); it++) {
+                if (!it->second)
+                    continue;
+                x11_hybris_flush(it->second);
+                if (mUseSubsurface && !it->second->rects.empty()) {
+                    xcb_shape_rectangles(disp->xcbconnection,
+                                         XCB_SHAPE_SO_SET,
+                                         XCB_SHAPE_SK_INPUT,
+                                         XCB_CLIP_ORDERING_UNSORTED,
+                                         it->second->xcbwindow,
+                                         0, 0,
+                                         it->second->rects.size(),
+                                         it->second->rects.data());
+                }
+            }
+        }
+    } else if (mUseSubsurface)
         for (auto it = windows.begin(); it != windows.end(); it++)
             if (it->second){
                 if (it->second->rects.size() > 1)
@@ -1258,7 +1610,7 @@ Error X11Backend::present(Hwc2Display& display) {
                 if (!it->second->lastLayer)
                     continue;
                 // Clear the window's back xpicture
-		if (it->second->backxpicture) {
+		if (!mIsNvidia && it->second->backxpicture) {
 			XRenderColor clear_color = {0, 0, 0, 0}; // Transparent black
 			XRenderFillRectangle(disp->x11display, PictOpClear, it->second->backxpicture, &clear_color,
 			    0, 0, disp->width, disp->height);
@@ -1307,7 +1659,7 @@ void X11Backend::resizeX11Windows(struct display* disp,
 
     for (auto it = windows.begin(); it != windows.end(); ++it) {
         if (it->second) {
-            destroy_window(it->second);
+            destroy_window(it->second, mIsNvidia);
         }
     }
     windows.clear();
@@ -1318,7 +1670,8 @@ void X11Backend::resizeX11Windows(struct display* disp,
                 mUseSubsurface,
                 snapshot.app_id,
                 snapshot.task_id,
-                snapshot.color);
+                snapshot.color,
+                mIsNvidia);
         if (!new_window) {
             ALOGE("failed to recreate window for key=%s app=%s task=%s size=%dx%d",
                   snapshot.key.c_str(),
@@ -1511,15 +1864,25 @@ Hwc2DumpState X11Backend::getDumpState(Hwc2Display& display) {
 
 void X11Backend::createInitialWindow(struct display* disp,
                                      std::map<std::string, struct window*>& windows) {
-    auto first_window = create_window(disp, mUseSubsurface, "Openfde", "0", {0, 0, 0, 255});
+    const char* activeProp = disp->display_type == HWC_DISPLAY_EXTERNAL
+                                     ? "openfde1.active_apps"
+                                     : "openfde.active_apps";
+    if (mIsNvidia) {
+        // NVIDIA 等第一帧有效画面出现后再建窗，否则会先闪一个全黑窗口。
+        // 清掉上一次会话残留的路由属性。
+        property_set(activeProp, "none");
+        property_set("openfde.open_windows", "0");
+        return;
+    }
+
+    auto first_window = create_window(disp, mUseSubsurface, "Openfde", "0",
+                                      {0, 0, 0, 255}, mIsNvidia);
     if (!property_get_bool("openfde.background_start", true)) {
         windows["Openfde"] = first_window;
-        property_set(disp->display_type == HWC_DISPLAY_EXTERNAL ? "openfde1.active_apps"
-                                                               : "openfde.active_apps",
-                     "Openfde");
+        property_set(activeProp, "Openfde");
         property_set("openfde.open_windows", "1");
     } else {
-        destroy_window(first_window);
+        destroy_window(first_window, mIsNvidia);
     }
 }
 
@@ -1541,7 +1904,7 @@ void X11Backend::createExternalDisplays(Hwc2Device& device) {
     char property[PROPERTY_VALUE_MAX];
     property_get("ro.hardware.gralloc", property, "default");
 
-    mSecondaryDisplay = create_display(property, HWC_DISPLAY_EXTERNAL);
+    mSecondaryDisplay = create_display(property, HWC_DISPLAY_EXTERNAL, mIsNvidia);
     if (!mSecondaryDisplay) {
         ALOGE("failed to open x11 secondary connection");
         return;
@@ -1581,7 +1944,7 @@ void X11Backend::destroyExternalDisplay(void* backendData) {
         std::scoped_lock lock(disp->windowsMutex);
         for (auto& pair : mSecondaryWindows) {
             if (pair.second) {
-                destroy_window(pair.second);
+                destroy_window(pair.second, mIsNvidia);
             }
         }
         mSecondaryWindows.clear();
@@ -1593,7 +1956,7 @@ void X11Backend::destroyExternalDisplay(void* backendData) {
         }
     }
     disp->buffer_map.clear();
-    destroy_display(disp);
+    destroy_display(disp, mIsNvidia);
 
     if (disp == mSecondaryDisplay) {
         mSecondaryDisplay = nullptr;
@@ -1721,6 +2084,13 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     bool multi_windows = property_get_bool("persist.openfde.multi_windows", false);
     bool use_subsurface = property_get_bool("persist.openfde.use_subsurface", false) || multi_windows;
 
+    bool is_nvidia = false;
+    if (property_get("ro.hardware.gpu.model", property, "default") > 0) {
+        if (strcmp(property, "nvidia") == 0) {
+            ALOGD("GPU Model : NVIDIA");
+            is_nvidia = true;
+        }
+    }
     if (multi_windows) {
         if (property_get("openfde.xmodifiers", property, "@im=fcitx") > 0) {
             setenv("XMODIFIERS", property, 1);
@@ -1738,7 +2108,7 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
 
     struct display* x11_display = nullptr;
     if (property_get("ro.hardware.gralloc", property, "default") > 0) {
-        x11_display = create_display(property, HWC_DISPLAY_PRIMARY);
+        x11_display = create_display(property, HWC_DISPLAY_PRIMARY, is_nvidia);
     }
     if (!x11_display) {
         ALOGE("failed to open x11 connection");
@@ -1746,7 +2116,13 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
     }
     x11_display->mouse_icon_addr = -1;
 
-    auto backend = std::make_unique<X11Backend>(x11_display, use_subsurface, multi_windows);
+    // NVIDIA: 先把 X server 支持的 modifiers 发布给 gralloc，再创建窗口 /
+    // 送显，保证 host EGL 与 buffer 使用同一套 modifier。
+    if (is_nvidia) {
+        dri3PublishModifiersToGralloc(x11_display);
+    }
+
+    auto backend = std::make_unique<X11Backend>(x11_display, use_subsurface, multi_windows, is_nvidia);
     // The device constructor also lets the backend create the external
     // display, which is reported to the client with a hotplug event
     auto* dev = new Hwc2Device(std::move(backend), x11_display);
