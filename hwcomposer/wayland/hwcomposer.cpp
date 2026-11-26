@@ -53,6 +53,7 @@
 #include <utils/Trace.h>
 
 #include "../common/hwc2_device.h"
+#include "../common/gralloc_handle_types.h"
 #include "OpenfdeWindow.h"
 #include "egl-tools.h"
 #include "xdg-shell-client-protocol.h"

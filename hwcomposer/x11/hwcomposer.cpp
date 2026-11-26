@@ -63,6 +63,7 @@
 #include <utils/Trace.h>
 
 #include "../common/hwc2_device.h"
+#include "../common/gralloc_handle_types.h"
 #include "WaydroidWindow.h"
 #include "egl-tools.h"
 #include "x11-hybris.h"
