@@ -161,6 +161,11 @@ struct display {
     bool wheelEvtIsDiscrete;
     bool reverseScroll;
     bool isTouchDown;
+    // 模拟触摸(click_as_touch / 滚轮转触摸)写哪个设备:主屏设备被 EventHub
+    // 绑到 display 0,外接屏设备绑到外接屏 viewport。x11 每屏一个 display,
+    // 创建时按 display_type 定死;wayland 单 display,由 pointer_handle_motion
+    // 按指针所在物理屏动态更新。
+    bool touch_on_external = false;
     bool isMouseLeftDown;
     int axisY;
     int axisX;

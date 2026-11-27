@@ -411,6 +411,12 @@ class Hwc2Device : public hwc2_device_t {
     mutable std::recursive_mutex mStateMutex;
     std::map<hwc2_display_t, std::shared_ptr<Hwc2Display>> mDisplays;
 
+    // 上一次外部屏 hotplug(false) 发出的时刻(steady_clock 毫秒)。
+    // openExternalDisplay 以此强制与上次关闭保持最小间隔,防止 hotplug(true)
+    // 落入 SF 对上一个 display 的延迟拆除窗口造成两侧生死判定永久分叉
+    // (详见 openExternalDisplay 内的注释)。atomic:在拿 mStateMutex 之前读。
+    std::atomic<int64_t> mLastExternalCloseMs{0};
+
     struct CallbackInfo {
         hwc2_callback_data_t data = nullptr;
         hwc2_function_pointer_t pointer = nullptr;

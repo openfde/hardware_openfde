@@ -28,12 +28,15 @@ ScreenConfig *screenConfigs = nullptr;
 int gScreenConfigCount = 0;
 
 static int screen_config_density_for_width(int width) {
-    if (width >= 2560) {
-        return 256;
-    } else if (width <= 1920) {
+    // Keep in sync with LocalDisplayAdapter.getLogicalDensity() so the
+    // physical DPI reported through getAttribute(DpiX/DpiY) matches the
+    // framework's logical density for the primary display.
+    if (width <= 1920) {
         return 160;
+    } else if (width <= 2560) {
+        return 256;
     }
-    return 0;
+    return 340;
 }
 
 void screen_configs_init(int realWidth, int realHeight) {
