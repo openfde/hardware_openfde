@@ -32,6 +32,7 @@
 
 #include <ui/GraphicBuffer.h>
 
+#include "../common/egl-tools-common.h"
+
 void* egl_loop(void* data);
-void egl_render_to_pixels(struct display* display, struct buffer* buf);
 void egl_convert_buffer_to_BGRA_8888(struct display* display, android::sp<android::GraphicBuffer> src_buffer, android::sp<android::GraphicBuffer> dst_buffer);

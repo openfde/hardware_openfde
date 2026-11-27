@@ -26,6 +26,6 @@
 #pragma once
 
 #include "wayland-hwc.h"
+#include "../common/egl-tools-common.h"
 
 void* egl_loop(void* data);
-void egl_render_to_pixels(struct display* display, struct buffer* buf);
