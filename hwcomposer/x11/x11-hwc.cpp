@@ -36,6 +36,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+#include <atomic>
 #include <assert.h>
 #include <unistd.h>
 #include <sys/mman.h>
@@ -109,6 +110,16 @@ static int last_root_x = 960;
 static int last_root_y = 540;
 static int32_t last_display_id;
 
+// Android 外部屏(display 1)是否真的打开。由 create_display/destroy_display
+// 驱动,与 display 生命周期严格同步。跨屏强推只在这个标志为真时才有意义:
+// 单屏时 x11 侧两块物理屏都属于同一个 Android 主屏窗口,鼠标在两屏之间移动
+// 不能当成跨 Android 双屏,否则会错误地注入 REL_X 把 Android 推到外接屏。
+static std::atomic<bool> g_android_external_display_open{false};
+
+// 左键拖动状态必须是进程级:press/motion/release 会落在不同 display 的
+// 事件线程上,per-display 的 mouse_left_btn_pressed 无法可靠描述一次拖动。
+static std::atomic<bool> g_left_button_dragging{false};
+
 static double relx = 0;
 static double rely = 0;
 static double prev_relx = 0;
@@ -123,7 +134,7 @@ static int find_argb_visual(struct display *display) ;
 static int get_primary_monitor_index(struct display *display);
 static void set_fullscreen_on_monitor(struct display *display, xcb_window_t win, int monitor_index);
 static bool get_monitor_info(struct display *display, int monitor_index);
-static void warp_cursor_back(struct display *display, int back_x, int last_root_y);
+static void publish_external_display_position(struct display *display);
 
 void
 destroy_buffer(struct display * display ,struct buffer* buf) {
@@ -638,6 +649,7 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
     if(xcb_button_event->detail == XCB_BUTTON_INDEX_1){
         property_set("fde.axis_converting_touch", "false");
         display->mouse_left_btn_pressed = true;
+        g_left_button_dragging.store(true);
         last_display_id = property_get_int32("fde.last_display_id", 0);
     }
 
@@ -699,6 +711,13 @@ void on_button_press(void *data, xcb_button_press_event_t *xcb_button_event) {
 
 void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event) {
     struct display* display = (struct display*)data;
+    // release 可能投递给与 press 不同的 display;进程级拖动标志必须在这里清,
+    // 否则强推会一直被抑制或残留。先保存状态,供下面补最后的 ABS 同步使用。
+    const bool wasDragging = (xcb_button_event->detail == XCB_BUTTON_INDEX_1)
+            && g_left_button_dragging.load();
+    if(xcb_button_event->detail == XCB_BUTTON_INDEX_1){
+        g_left_button_dragging.store(false);
+    }
     if(is_x11_touch_begin(display)){
         ALOGI("on_button_release x11 touch started return");
         return;
@@ -726,7 +745,7 @@ void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event)
         // convert pointer event to touch event
         sim_pointer_button_to_touch_up(display);
     }else{
-        struct input_event event[2];
+        struct input_event event[4];
         struct timespec rt;
         ssize_t res;
         unsigned int n = 0;
@@ -746,20 +765,12 @@ void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event)
         }
 
         uint32_t button = 0;
-        int width = property_get_int32("openfde.display_width", 1920);
         switch(xcb_button_event->detail){
             case XCB_BUTTON_INDEX_1:
                 button = BTN_LEFT;
                 display->mouse_left_btn_pressed = false;
-                if ((last_display_id == property_get_int32("fde.last_display_id", 0)) == (last_display_id == 0)) {
-                    if (last_root_x >= width) {
-                        warp_cursor_back(display, width - 1, last_root_y);
-                    }
-                } else {
-                    if (last_root_x < width) {
-                        warp_cursor_back(display, width + 1, last_root_y);
-                    }
-                }
+                // 松开左键时不再 warp 光标。强推方案下跨屏由 motion 路径的
+                // 大 REL_X 完成,这里的回拉只会造成用户可见的回弹。
                 break;
             case XCB_BUTTON_INDEX_3:
                 button = BTN_RIGHT;
@@ -769,28 +780,50 @@ void on_button_release(void *data, xcb_button_release_event_t *xcb_button_event)
                 break;
         }
         if(button != 0){
+            if (wasDragging) {
+                // 松手前补一次与 motion 相同的 ABS 坐标同步。button 事件的
+                // pointerCoords 在 CursorInputMapper 里是清空的,若不补 ABS,
+                // 最终落点完全取决于拖动期间混合坐标系累积出来的内部位置,
+                // 光标就会偏离按下标题栏的那一点。
+                int x = xcb_button_event->event_x;
+                int y = xcb_button_event->event_y;
+                if (display->scale != 1) {
+                    x = int(x * display->scale);
+                    y = int(y * display->scale);
+                }
+                int android_abs_x = x;
+                const int currentDisplayId = property_get_int32("fde.last_display_id", 0);
+                if (last_display_id != currentDisplayId) {
+                    if (display->display_type == HWC_DISPLAY_PRIMARY && currentDisplayId != 0) {
+                        android_abs_x = x - display->full_width;
+                    } else if (display->display_type == HWC_DISPLAY_EXTERNAL
+                            && currentDisplayId == 0) {
+                        android_abs_x = x + property_get_int32("openfde.display_width", 0);
+                    }
+                }
+                SIM_ADD_EVENT(EV_ABS, ABS_X, android_abs_x);
+                SIM_ADD_EVENT(EV_ABS, ABS_Y, y);
+                ALOGI("x11 release final abs: local=(%d,%d) abs_x=%d display=%d drag=%d->%d",
+                      x, y, android_abs_x, display->display_type,
+                      last_display_id, currentDisplayId);
+            }
             SIM_ADD_EVENT(EV_KEY, button, 0);
             SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
-            res = write(display->input_fd[INPUT_POINTER], &event, sizeof(event));
+            res = write(display->input_fd[INPUT_POINTER], &event,
+                        n * sizeof(struct input_event));
         }
     }
 }
 
-static void warp_cursor_back(struct display *display, int back_x, int last_root_y)
-{
-    xcb_connection_t *conn = display->xcbconnection;
-    xcb_window_t root = display->xcbscreen->root;
-    xcb_warp_pointer(conn,
-             XCB_NONE,          // src_window
-             root,              // dst_window
-             0, 0, 0, 0,        // src 区域
-             back_x, last_root_y); // 目标坐标
-    ALOGD("Warped X11 cursor back to position (%d, %d)", back_x, last_root_y);
-    xcb_flush(conn);
-}
+// x11 跨屏对齐改为 wayland 式"强推"：物理屏与 Android 焦点屏不一致时,
+// 在同一批事件里注入带方向的大 REL_X,逼 InputFlinger 的 unconsumedDelta
+// 沿真实方向切屏;ABS 仍是本屏局部坐标,负责切屏后的精确落点。
+// 不再调用 xcb_warp_pointer 把光标拉回旧屏——拉回与用户继续推形成拉锯,
+// 是 x11 端"回弹/卡顿"的根源。
+static int g_last_motion_display = -1;   // 上一次收到 motion 的物理 display 类型
+static bool g_cross_pending = false;     // 本轮跨屏尚未注入首帧
+static int g_cross_boost_frames = 0;     // 跨屏后允许强推的剩余帧数(防异常 display id 持续推)
 
-static bool suppress_relative_injection = false;
-static bool ignore_relative_injection = false;
 void on_motion_notify(void *data, xcb_motion_notify_event_t *xcb_event) {
     struct display* display = (struct display*)data;
     //ALOGI("display->ptrPrvX: %d, display->ptrPrvY: %d", display->ptrPrvX, display->ptrPrvY);
@@ -809,6 +842,23 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *xcb_event) {
     x = xcb_event->event_x;
     y = xcb_event->event_y;
     ALOGD("on_motion_notify xcb_event->root_x: %d, xcb_event->root_y: %d, xcb_event->same_screen: %d", xcb_event->root_x, xcb_event->root_y, xcb_event->same_screen);
+
+    // 物理跨屏检测。x11 每个 display 一个全屏窗口,事件只投递给指针所在
+    // 屏的 event_loop_thread,所以"上一次与本次 motion 来自不同 display"
+    // 就是可靠的物理跨屏信号,不再依赖 root_x 与 openfde.display_width 的
+    // 比较(那个判据在单屏 + 双 x11 monitor 场景下会误判)。
+    const bool cross_enabled = g_android_external_display_open.load();
+    if (cross_enabled && g_last_motion_display != -1
+            && g_last_motion_display != display->display_type) {
+        g_cross_pending = true;
+        // 拖动期间不备强推额度:大 REL_X 会让 PointerController 反复
+        // setDisplayViewport,窗口跟着上下抖,且松手后位置对不上标题栏。
+        g_cross_boost_frames = g_left_button_dragging.load() ? 0 : 12;
+        ALOGI("x11 physical cross: %d -> %d (drag=%d)",
+              g_last_motion_display, display->display_type,
+              g_left_button_dragging.load() ? 1 : 0);
+    }
+    g_last_motion_display = display->display_type;
 
     if (display->scale != 1) {
         x = int(x * display->scale);
@@ -860,7 +910,10 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *xcb_event) {
         unsigned int n = 0;
 
         int android_abs_x = x;
-        if(display->mouse_left_btn_pressed){
+        // 必须用进程级拖动标志:跨屏后 motion 会落到目标 display 的线程,
+        // 那里 mouse_left_btn_pressed 仍是 false,per-display 判据会让 ABS_X
+        // 修正失效,窗口跑到另一屏而 ABS 仍指向旧屏,光标与窗口分家。
+        if(g_left_button_dragging.load()){
             //Android跨屏了
             if(last_display_id != property_get_int32("fde.last_display_id", 0)){
                 //起始屏幕是主屏
@@ -878,21 +931,10 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *xcb_event) {
                     }
                 }
             }
-        }else{
-            if(xcb_event->root_x > property_get_int32("openfde.display_width", 0)
-                && property_get_int32("fde.last_display_id", 0) == 0 ){//内部光标从主屏移动到扩展屏失败,将外部x11光标从扩展屏拉回主屏,实现内外对齐
-                android_abs_x = property_get_int32("openfde.display_width", 0) - 1;
-                suppress_relative_injection = true;
-                warp_cursor_back(display, property_get_int32("openfde.display_width", 0) - 10, last_root_y);
-            }else if(xcb_event->root_x < property_get_int32("openfde.display_width", 0)
-                && property_get_int32("fde.last_display_id", 0) != 0){//内部光标从扩展屏移动到主屏失败,将外部x11光标从主屏拉回扩展屏,实现内外对齐
-                android_abs_x = 0;
-                suppress_relative_injection = true;
-                warp_cursor_back(display, property_get_int32("openfde.display_width", 0) + 10, last_root_y);
-            }
         }
-        SIM_ADD_EVENT(EV_ABS, ABS_X, android_abs_x);
-        SIM_ADD_EVENT(EV_ABS, ABS_Y, y);
+        // 不再根据 root_x 与 openfde.display_width 比较去 warp 光标。
+        // 单屏时 x11 两块物理屏同属一个 Android 主屏,越过 root_x 边界只是
+        // 普通移动;双屏时跨屏对齐交给下面的强推 REL 完成。
 
         if(display->accumulated_relx != 0){
             relx = display->accumulated_relx;
@@ -916,18 +958,59 @@ void on_motion_notify(void *data, xcb_motion_notify_event_t *xcb_event) {
                 rely = prev_rely > 0 ? 3 : -3;
             }
         }
-        ALOGD("on_motion_notify suppress_relative_injection: %d", suppress_relative_injection);
-        if(ignore_relative_injection){
-            SIM_ADD_EVENT(EV_REL, REL_X, 0);
-            ignore_relative_injection = false;
-        }else{
-            SIM_ADD_EVENT(EV_REL, REL_X, relx);
+
+        int inject_relx = (int)relx;
+        int inject_rely = (int)rely;
+        if (cross_enabled) {
+            // 外部屏在左还是在右,由 x11 HWC 在打开外部屏时写入。Android
+            // 拓扑已按同一 property 重排,强推方向必须与之保持一致。
+            char pos_prop[PROPERTY_VALUE_MAX] = {0};
+            property_get("openfde.external_position", pos_prop, "right");
+            const bool external_on_right = (strcmp(pos_prop, "left") != 0);
+            const bool phys_on_primary = (display->display_type == HWC_DISPLAY_PRIMARY);
+            const bool android_on_primary = (property_get_int32("fde.last_display_id", 0) == 0);
+
+            if (g_cross_pending) {
+                // 跨屏首帧的局部差值是"从上一屏边缘跳到本屏边缘"的假位移,
+                // 用恰好越过边缘的小位移替代,确保 unconsumedDelta 方向正确。
+                const bool entering_external = !phys_on_primary;
+                const bool move_right = external_on_right ? entering_external : !entering_external;
+                inject_relx = move_right ? 8 : -8;
+                inject_rely = 0;
+                g_cross_pending = false;
+                ALOGI("x11 cross first frame: entering %s, external_on_right=%d, relx=%d",
+                      entering_external ? "external" : "primary", external_on_right, inject_relx);
+            }
+            // 分叉兜底:物理屏与 Android 焦点屏不一致时,在同批事件里叠加
+            // 一个大 REL_X,逼 InputFlinger 沿真实方向切屏。ABS 恒为本屏局部
+            // 坐标,切屏后的落点由同批/后续 ABS 精确纠正。
+            // 帧数上限防止某个异常 fde.last_display_id(例如 7)导致一直推。
+            if (g_cross_boost_frames > 0 && phys_on_primary != android_on_primary
+                    && !g_left_button_dragging.load()) {
+                const bool push_to_external = !phys_on_primary;
+                const bool push_right = external_on_right ? push_to_external : !push_to_external;
+                inject_relx += push_right ? 4500 : -4500;
+                g_cross_boost_frames--;
+                ALOGI("x11 boost cross: phys=%s android=%s relx=%d frames=%d",
+                      phys_on_primary ? "primary" : "external",
+                      android_on_primary ? "primary" : "external",
+                      inject_relx, g_cross_boost_frames);
+            }
         }
-        if(suppress_relative_injection){
-            ignore_relative_injection = true;
-            suppress_relative_injection = false;
+        if (g_left_button_dragging.load()) {
+            // 拖动期间限制每帧 REL 的相对位移:太小(±8)会让窗口跟不上
+            // 物理光标,太大又会在跨屏瞬间把窗口推到目标屏边缘。用可调
+            // 上限兜底,ABS 仍由 root 坐标重建负责精确落点。
+            int limit = property_get_int32("persist.openfde.drag_rel_limit", 128);
+            if (limit <= 0) limit = 128;
+            inject_relx = std::max(-limit, std::min(limit, inject_relx));
+            //inject_rely = 0;
         }
-        SIM_ADD_EVENT(EV_REL, REL_Y, rely);
+
+        SIM_ADD_EVENT(EV_ABS, ABS_X, android_abs_x);
+        SIM_ADD_EVENT(EV_ABS, ABS_Y, y);
+        SIM_ADD_EVENT(EV_REL, REL_X, inject_relx);
+        SIM_ADD_EVENT(EV_REL, REL_Y, inject_rely);
         SIM_ADD_EVENT(EV_SYN, SYN_REPORT, 0);
 
         if(relx != 0){
@@ -1230,6 +1313,15 @@ static void handle_screen_change(struct display *display)
     }
 
     xcb_flush(display->xcbconnection);
+
+    // 运行时 X11 两屏左右对调后,重新发布外部屏相对主屏的位置。
+    // framework 侧监听该 property 变化并重排 Android DisplayTopology,
+    // 使 Android 主屏/外屏的左右关系与 X11 物理布局保持一致。
+    // 只在 primary display 的事件线程发布:两个 display 都订阅了 RandR,
+    // 会各自走到这里,去重由 publish 内部的 property 比较完成。
+    if (display->display_type == HWC_DISPLAY_PRIMARY) {
+        publish_external_display_position(display);
+    }
 }
 
 
@@ -1759,6 +1851,23 @@ static void set_fullscreen_on_monitor(struct display *display, xcb_window_t win,
     xcb_connection_t *conn = display->xcbconnection;
     xcb_window_t root = display->xcbscreen->root;
 
+    // 编号空间转换:调用方传入的 monitor_index 来自 get_monitor_info /
+    // get_primary_monitor_index 的"CRTC 按 x 坐标左→右排序"空间;而 EWMH 规定
+    // _NET_WM_FULLSCREEN_MONITORS 的索引来自 Xinerama。Xorg 的 XRandR→Xinerama
+    // 兼容层把 primary output 排在第一位(mutter 源码明确依赖这一点),所以主屏
+    // 不在最左侧时两套编号不一致:例如主屏在右侧,x-sorted 中它是 1,Xinerama
+    // 中它是 0。若把 x-sorted 的 1 直接发给 WM,它会把窗口搬到它眼中的 1 号屏
+    // ——即左侧扩展屏(窗口尺寸正确却显示在错误的屏上)。转换:Xinerama 0 恒为
+    // primary,非 primary 为 1(本项目恒为双屏,此映射完备)。窗口 root 坐标本身
+    // 已由 xcb_create_window 用 display->primary_x/primary_y 放在正确屏上,这里
+    // 只需保证 fullscreen hint 不再把它拽到错误的屏。
+    int primary = get_primary_monitor_index(display);
+    int xinerama_index = (monitor_index == primary)
+            ? 0
+            : (monitor_index < primary ? monitor_index + 1 : monitor_index);
+    ALOGI("set_fullscreen_on_monitor: x-sorted=%d primary=%d -> Xinerama=%d",
+          monitor_index, primary, xinerama_index);
+
     xcb_intern_atom_cookie_t c1 = xcb_intern_atom(conn, 0, strlen("_NET_WM_STATE"), "_NET_WM_STATE");
     xcb_intern_atom_cookie_t c2 = xcb_intern_atom(conn, 0, strlen("_NET_WM_STATE_FULLSCREEN"), "_NET_WM_STATE_FULLSCREEN");
     xcb_intern_atom_cookie_t c3 = xcb_intern_atom(conn, 0, strlen("_NET_WM_FULLSCREEN_MONITORS"), "_NET_WM_FULLSCREEN_MONITORS");
@@ -1788,10 +1897,10 @@ static void set_fullscreen_on_monitor(struct display *display, xcb_window_t win,
 
     // 2. 指定只在目标 Monitor 上全屏
     ev.type = r3->atom;
-    ev.data.data32[0] = monitor_index;   // top
-    ev.data.data32[1] = monitor_index;   // bottom
-    ev.data.data32[2] = monitor_index;   // left
-    ev.data.data32[3] = monitor_index;   // right
+    ev.data.data32[0] = xinerama_index;   // top
+    ev.data.data32[1] = xinerama_index;   // bottom
+    ev.data.data32[2] = xinerama_index;   // left
+    ev.data.data32[3] = xinerama_index;   // right
     ev.data.data32[4] = 1;
     xcb_send_event(conn, 0, root,
                    XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
@@ -2522,6 +2631,82 @@ cleanup:
     return success;
 }
 
+// 打开 Android 外部屏时,把 x11 外部 monitor 相对主 monitor 的左右位置发布
+// 给 framework。framework 据此重排 Android DisplayTopology,让 Android 逻辑
+// 左右与 x11 物理左右一致;输入强推的方向也读同一个 property。
+// HAL 接口没有"外部屏位置"参数,用 system property 是最省事且跨进程可靠的通道。
+static void publish_external_display_position(struct display *display)
+{
+    xcb_connection_t *conn = display->xcbconnection;
+    xcb_window_t root = display->xcbscreen->root;
+
+    xcb_randr_get_output_primary_reply_t *primary_reply =
+        xcb_randr_get_output_primary_reply(conn,
+            xcb_randr_get_output_primary(conn, root), NULL);
+    if (!primary_reply || primary_reply->output == XCB_NONE) {
+        free(primary_reply);
+        property_set("openfde.external_position", "right");
+        ALOGW("publish_external_position: no primary output, default right");
+        return;
+    }
+    const xcb_randr_output_t primary_output = primary_reply->output;
+    free(primary_reply);
+
+    xcb_randr_get_screen_resources_current_reply_t *res_reply =
+        xcb_randr_get_screen_resources_current_reply(conn,
+            xcb_randr_get_screen_resources_current(conn, root), NULL);
+    if (!res_reply) {
+        property_set("openfde.external_position", "right");
+        ALOGW("publish_external_position: no screen resources, default right");
+        return;
+    }
+
+    xcb_randr_crtc_t *crtcs = xcb_randr_get_screen_resources_current_crtcs(res_reply);
+    int ncrtc = xcb_randr_get_screen_resources_current_crtcs_length(res_reply);
+
+    int primary_x = 0, other_x = 0;
+    bool have_primary = false, have_other = false;
+    for (int i = 0; i < ncrtc; i++) {
+        xcb_randr_get_crtc_info_reply_t *ci = xcb_randr_get_crtc_info_reply(conn,
+            xcb_randr_get_crtc_info(conn, crtcs[i], XCB_CURRENT_TIME), NULL);
+        if (!ci || ci->mode == XCB_NONE || ci->width == 0) {
+            free(ci);
+            continue;
+        }
+        bool is_primary = false;
+        xcb_randr_output_t *outputs = xcb_randr_get_crtc_info_outputs(ci);
+        int noutput = xcb_randr_get_crtc_info_outputs_length(ci);
+        for (int j = 0; j < noutput; j++) {
+            if (outputs[j] == primary_output) {
+                is_primary = true;
+                break;
+            }
+        }
+        if (is_primary) {
+            primary_x = ci->x;
+            have_primary = true;
+        } else if (!have_other) {
+            other_x = ci->x;
+            have_other = true;
+        }
+        free(ci);
+    }
+    free(res_reply);
+
+    const char *pos = (have_primary && have_other && other_x < primary_x) ? "left" : "right";
+    // RandR 事件在拖动屏幕过程中连续触发;只在左右真的翻转时才写 property,
+    // 避免反复触发 framework 的 property change callback 与拓扑重排。
+    char old_pos[PROPERTY_VALUE_MAX] = {0};
+    property_get("openfde.external_position", old_pos, "");
+    if (strcmp(old_pos, pos) == 0) {
+        ALOGD("publish_external_position: unchanged (%s), skip", pos);
+        return;
+    }
+    property_set("openfde.external_position", pos);
+    ALOGI("publish_external_position: primary_x=%d other_x=%d -> %s",
+          primary_x, other_x, pos);
+}
+
 struct display *
 create_display(const char *gralloc, int target, bool is_nvidia)
 {
@@ -2562,6 +2747,10 @@ create_display(const char *gralloc, int target, bool is_nvidia)
     display->xcbscreen = xcb_setup_roots_iterator(xcb_get_setup(display->xcbconnection)).data;
     display->screen_default_nbr = XDefaultScreen(display->x11display);
     ALOGD("XDefaultScreen display->screen_default_nbr: %d", display->screen_default_nbr);
+
+    if (target == HWC_DISPLAY_EXTERNAL) {
+        publish_external_display_position(display);
+    }
 
     display->multi_windows = property_get_bool("persist.openfde.multi_windows", false);
     if(display->multi_windows){
@@ -2643,6 +2832,9 @@ create_display(const char *gralloc, int target, bool is_nvidia)
 
     
     // for emulate touch input event
+    // 模拟触摸路由:x11 每屏一个 display,按本 display 的类型定死
+    // (与下方 INPUT_TOUCH/INPUT_TOUCH_EXTERNAL 的创建分支语义一致)。
+    d->touch_on_external = (target != HWC_DISPLAY_PRIMARY);
     if(target == HWC_DISPLAY_PRIMARY){
         d->input_fd[INPUT_TOUCH] = -1;
         mkfifo(INPUT_PIPE_NAME[INPUT_TOUCH], S_IRWXO | S_IRWXG | S_IRWXU);
@@ -2725,6 +2917,14 @@ create_display(const char *gralloc, int target, bool is_nvidia)
             int fl = fcntl(display->event_wakeup_fds[i], F_GETFL, 0);
             fcntl(display->event_wakeup_fds[i], F_SETFL, fl | O_NONBLOCK);
         }
+    }
+
+    // 只有在 create_display 全程成功、display 真正可用后才打开跨屏门控。
+    // 放在这里可以避免 XOpenDisplay 失败或 gralloc 分配失败时标志被置真,
+    // 导致 Android 单屏仍走双屏强推逻辑。
+    if (target == HWC_DISPLAY_EXTERNAL) {
+        g_android_external_display_open.store(true);
+        ALOGI("create_display: Android external display opened (cross guard ON)");
     }
 
     return display;
@@ -2816,6 +3016,13 @@ destroy_display(struct display *display, bool is_nvidia)
     // hot-unplug, or the still-live primary would lose its configs.
     if (display->display_type == HWC_DISPLAY_PRIMARY) {
         screen_configs_destroy();
+    }
+    if (display->display_type == HWC_DISPLAY_EXTERNAL) {
+        g_android_external_display_open.store(false);
+        g_last_motion_display = -1;
+        g_cross_pending = false;
+        g_cross_boost_frames = 0;
+        ALOGI("destroy_display: Android external display closed (cross guard OFF)");
     }
 
     delete display;

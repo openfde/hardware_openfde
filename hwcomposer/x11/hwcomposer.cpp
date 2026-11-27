@@ -1723,8 +1723,16 @@ Error X11Backend::setActiveConfig(Hwc2Display& display, hwc2_config_t config) {
     disp->height = target_height;
     disp->full_width = target_width;
     disp->full_height = target_height;
-    disp->primary_x = 0;
-    disp->primary_y = 0;
+    // primary_x/primary_y is the physical monitor's offset in the X11 virtual
+    // desktop (queried from RandR by get_monitor_info() in create_display(),
+    // e.g. (1920,0) when the primary monitor is on the right). It describes
+    // monitor geometry, NOT the current Android config size, so it must be
+    // preserved across a config switch. Resetting it to (0,0) makes
+    // resizeX11Windows() recreate the window at the virtual desktop origin
+    // (the left monitor), while the fullscreen hint still targets the Xinerama
+    // primary monitor - the window ends up on the wrong screen / not filling it.
+    ALOGI("setActiveConfig: keep primary offset (%d,%d) while resizing to %dx%d",
+          disp->primary_x, disp->primary_y, target_width, target_height);
 
     {
         std::scoped_lock lock(disp->windowsMutex);
@@ -1827,6 +1835,7 @@ Error X11Backend::getAttribute(Hwc2Display& display, hwc2_config_t config,
         case Attribute::DpiY:
             if (property_get("ro.sf.lcd_density", property, nullptr) > 0)
                 density = atoi(property);
+            ALOGE("X11Backend::getAttribute density: %d", density);
             *outValue = density * 1000;
             return Error::None;
         default:

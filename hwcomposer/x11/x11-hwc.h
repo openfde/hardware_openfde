@@ -149,6 +149,9 @@ struct display {
     bool wheelEvtIsDiscrete;
     bool reverseScroll;
     bool isTouchDown;
+    // 模拟触摸的路由字段,见 wayland-hwc.h 同名注释。x11 在 create_display
+    // 按 display_type 一次性设置(与旧 display_type 分支语义完全一致)。
+    bool touch_on_external = false;
     bool isMouseLeftDown;
     int axisY;
     int axisX;

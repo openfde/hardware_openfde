@@ -577,6 +577,13 @@ HWC2::Error Hwc2Device::destroyExternalDisplay(hwc2_display_t displayId) {
     mDisplays.erase(it);
 
     hotplugEvent(displayId, false);
+    // 记录关闭时刻:openExternalDisplay 据此强制重开间隔,防止快速 close→open
+    // 时 hotplug(true) 落入 SF 对上一个 display 的延迟拆除窗口(详见
+    // openExternalDisplay 注释)。
+    mLastExternalCloseMs.store(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count());
     mBackend->destroyExternalDisplay(backendData);
 
     notifyExternalDisplayEvent(static_cast<int32_t>(ExternalDisplayEvent::kExternalDisplayClosed));
@@ -584,6 +591,29 @@ HWC2::Error Hwc2Device::destroyExternalDisplay(hwc2_display_t displayId) {
 }
 
 HWC2::Error Hwc2Device::openExternalDisplay() {
+    // 狂点打开/关闭的死锁防护。SF 对 hotplug(false) 的处理是"先标记断开,
+    // 延迟到之后的 commit 才真正拆除"(HWComposer::disconnectDisplay 才清
+    // mPhysicalDisplayIdMap/mDisplayData);而 onHotplugConnect 对仍能解析出
+    // PhysicalDisplayId 的 hwc display 走 Reconnected 快路径,不重新向
+    // composer 侧注册(注册在上次断开时已移除),随后的延迟拆除又清掉 HWC
+    // 侧数据——两侧对 display 1 的生死判定永久分叉:SF 每帧报
+    // "Invalid display"/-75 且无法自愈,HWC 侧 getExternalDisplayState=true,
+    // UI 认为已打开、open 调用全部早退,只能重启恢复。
+    // 这里在锁外等待,保证距上次关闭至少 kExternalReopenDelayMs(覆盖 SF 的
+    // 延迟拆除窗口,约 1-2 个 vsync),让重连走完整的全新连接路径。等待必须
+    // 放锁外:validate/present 等入口同样持有 mStateMutex,持锁睡眠会阻塞
+    // 两块屏的渲染。
+    constexpr int64_t kExternalReopenDelayMs = 300;
+    const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    const int64_t lastCloseMs = mLastExternalCloseMs.load(std::memory_order_relaxed);
+    if (lastCloseMs > 0 && nowMs - lastCloseMs < kExternalReopenDelayMs) {
+        const int64_t waitMs = kExternalReopenDelayMs - (nowMs - lastCloseMs);
+        ALOGI("openExternalDisplay: delaying %lld ms after previous close to let SF finish display teardown",
+              static_cast<long long>(waitMs));
+        usleep(static_cast<useconds_t>(waitMs) * 1000);
+    }
+
     std::lock_guard<std::recursive_mutex> lock(mStateMutex);
 
     // The external display always uses id 1. If it is already present we are a
